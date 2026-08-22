@@ -1,7 +1,7 @@
 """
 main.py
 =======
-نقطة الدخول لتطبيق 
+نقطة الدخول لتطبيق DataLens V5.0 (Streamlit).
 """
 
 import streamlit as st
@@ -12,6 +12,7 @@ from ui.projects import show_projects
 from ui.files import show_files
 from ui.data import show_data
 from ui.chat import show_chat
+from ui.dashboards import show_dashboards
 from ui.reports import show_reports
 from ui.settings import show_settings
 from core.auth import AuthManager
@@ -20,6 +21,8 @@ from config import APP_NAME, APP_VERSION, APP_ICON
 st.set_page_config(
     page_title= APP_NAME + " V" + APP_VERSION,
     page_icon=APP_ICON,
+    page_title="DataLens V5.0",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -46,12 +49,14 @@ PAGES = {
     "📄 الملفات": show_files,
     "🧹 تنظيف البيانات": show_data,
     "💬 المحادثة": show_chat,
+    "📊 لوحات المعلومات": show_dashboards,
     "📝 التقارير": show_reports,
     "⚙️ الإعدادات": show_settings,
 }
 
 with st.sidebar:
     st.markdown("## " + APP_ICON + " " + APP_NAME + " V" + APP_VERSION)
+    st.markdown("## 📊 DataLens V5.0")
     choice = st.radio("الانتقال إلى", list(PAGES.keys()), label_visibility="collapsed")
 
 PAGES[choice]()
