@@ -20,6 +20,7 @@ PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ─── التطبيق ───────────────────────────────────────────────
 APP_NAME    = "DataLens"
+APP_ICON    = "📊"
 APP_VERSION = "5.0"
 APP_HOST    = "0.0.0.0"   # متاح على الـ LAN
 APP_PORT    = 8000
@@ -36,6 +37,7 @@ DEFAULT_SETTINGS = {
     "auto_run"   : True,
     "max_tries"  : 3,
     "timeout"    : 30,
+    "retry_delay": 10,
     "theme"      : "ocean_dark",
     "language"   : "ar",
 }
@@ -44,6 +46,12 @@ DEFAULT_SETTINGS = {
 AI_ENGINES = ["gemini", "openrouter", "grok", "ollama"]
 
 OLLAMA_DEFAULT_URL = "http://localhost:11434"
+
+# ─── الذكاء الاصطناعي — إعادة المحاولة عند فشل الاتصال ─────
+# مدة الانتظار (بالثواني) قبل إعادة المحاولة عند خطأ اتصال بمحرك AI
+# نفسه (وليس عند خطأ SQL أو رد فارغ). قابلة للتخصيص لكل مشروع من
+# صفحة الإعدادات (تُخزَّن في project settings كـ "retry_delay").
+AI_RETRY_DELAY_SECONDS = 10
 
 # ─── أنواع الملفات المقبولة ────────────────────────────────
 ALLOWED_EXTENSIONS = [".xlsx", ".xls", ".csv"]

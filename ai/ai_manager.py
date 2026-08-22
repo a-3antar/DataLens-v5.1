@@ -7,8 +7,17 @@ ai/ai_manager.py
 - إرسال السؤال مع retry loop عند الخطأ
 - استخراج SQL من الرد
 - تنفيذ SQL عبر QueryEngine
+
+إعادة المحاولة عند فشل الاتصال:
+---------------------------------
+عند فشل الاتصال بمحرك AI نفسه (وليس خطأ SQL أو رد فارغ)، بدل التوقف
+فوراً، ننتظر مدة retry_delay ثانية ثم نعيد المحاولة بنفس الـ prompt،
+طالما لا تزال هناك محاولات متبقية ضمن max_tries. مدة الانتظار قابلة
+للتخصيص لكل مشروع (تُحفظ في إعدادات المشروع)، وتُقرأ افتراضياً من
+config.AI_RETRY_DELAY_SECONDS.
 """
 
+import time
 import logging
 from typing import Optional
 
@@ -20,7 +29,7 @@ from ai.ollama         import OllamaEngine
 from ai.prompt_builder import PromptBuilder
 from core.project_db   import ProjectDB
 from core.query_engine import QueryEngine
-from config            import OLLAMA_DEFAULT_URL, STORY_SAMPLE_ROWS_IN_PROMPT
+from config            import OLLAMA_DEFAULT_URL, STORY_SAMPLE_ROWS_IN_PROMPT, AI_RETRY_DELAY_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +64,7 @@ class AIManager:
     المدير المركزي لعمليات الـ AI.
 
     الاستخدام:
-        ai = AIManager(db, engine, temperature=0.1, max_tries=3)
+        ai = AIManager(db, engine, temperature=0.1, max_tries=3, retry_delay=10)
         result = ai.ask("ما إجمالي المبيعات؟", result_type="chart")
     """
 
@@ -65,11 +74,13 @@ class AIManager:
         engine     : BaseEngine,
         temperature: float = 0.1,
         max_tries  : int   = 3,
+        retry_delay: int   = AI_RETRY_DELAY_SECONDS,
     ):
         self.db          = db
         self.engine      = engine
         self.temperature = temperature
         self.max_tries   = max(1, max_tries)
+        self.retry_delay = max(0, retry_delay)
         self.qe          = QueryEngine(db)
 
     # ──────────────────────────────────────────────────────────
@@ -95,7 +106,7 @@ class AIManager:
             "sql"        : "SELECT ...",
             "df"         : DataFrame,          ← عند النجاح
             "rows"       : N,
-            "tries"      : عدد المحاولات,
+            "tries"      : عدد المحاولات الفعلي,
             "error"      : "...",              ← عند الفشل
         }
         """
@@ -123,6 +134,7 @@ class AIManager:
 
         last_error = ""
         last_sql   = ""
+        attempt    = 0
 
         for attempt in range(1, self.max_tries + 1):
             logger.info("AI attempt %d/%d", attempt, self.max_tries)
@@ -132,8 +144,20 @@ class AIManager:
             if not send_result["ok"]:
                 last_error = send_result["error"]
                 logger.warning("Engine send failed (attempt %d): %s", attempt, last_error)
-                # خطأ في الاتصال — لا فائدة من إعادة المحاولة
-                break
+
+                # خطأ اتصال — ننتظر ثم نعيد المحاولة بنفس الـ prompt،
+                # طالما لدينا محاولات متبقية. لا داعي لإعادة بناء الـ
+                # prompt هنا لأن الخطأ من الاتصال نفسه وليس من محتوى الرد.
+                if attempt < self.max_tries:
+                    logger.info(
+                        "Waiting %ds before retry due to connection error...",
+                        self.retry_delay
+                    )
+                    if self.retry_delay > 0:
+                        time.sleep(self.retry_delay)
+                    continue
+                else:
+                    break
 
             # استخراج SQL
             extract_result = self.engine.extract_sql(send_result["text"])
@@ -177,12 +201,12 @@ class AIManager:
                 )
 
         # فشلت كل المحاولات
-        logger.error("All %d attempts failed. Last error: %s", self.max_tries, last_error)
+        logger.error("All attempts failed (%d/%d). Last error: %s", attempt, self.max_tries, last_error)
         return {
             "ok"   : False,
             "sql"  : last_sql,
             "error": last_error,
-            "tries": self.max_tries,
+            "tries": attempt,
         }
 
     # ──────────────────────────────────────────────────────────
@@ -237,7 +261,20 @@ class AIManager:
         story_builder = PromptBuilder(schema={}, relations=[], ai_rules=ai_rules)
         story_prompt = story_builder.build_story(question, df, max_rows=STORY_SAMPLE_ROWS_IN_PROMPT)
 
-        send_result = self.engine.send(story_prompt, self.temperature)
+        send_result = None
+        for attempt in range(1, self.max_tries + 1):
+            send_result = self.engine.send(story_prompt, self.temperature)
+            if send_result["ok"]:
+                break
+            logger.warning(
+                "Story engine send failed (attempt %d/%d): %s",
+                attempt, self.max_tries, send_result["error"]
+            )
+            if attempt < self.max_tries:
+                logger.info("Waiting %ds before retry (story generation)...", self.retry_delay)
+                if self.retry_delay > 0:
+                    time.sleep(self.retry_delay)
+
         if not send_result["ok"]:
             data_result["ok"] = False
             data_result["error"] = f"فشل توليد التحليل النصي: {send_result['error']}"

@@ -337,11 +337,25 @@ class ExcelExporter:
         self._auto_width(ws)
 
     def _auto_width(self, ws) -> None:
-        """ضبط عرض الأعمدة تلقائياً."""
-        for col in ws.columns:
-            max_len = 0
-            col_letter = get_column_letter(col[0].column)
-            for cell in col:
-                if cell.value:
-                    max_len = max(max_len, len(str(cell.value)))
+        """
+        ضبط عرض الأعمدة تلقائياً.
+
+        نتجنب الاعتماد على ws.columns مباشرة لأن بعض الصفوف تحتوي
+        خلايا مدمجة (MergedCell عبر merge_cells في _build_summary_sheet)،
+        وهذا النوع لا يملك خاصية .column قابلة للاستخدام في كل إصدارات
+        openpyxl، مما قد يرمي استثناءً ويوقف تصدير الملف بالكامل. بدل
+        ذلك نمر على كل الخلايا عبر iter_rows() ونتجاهل أي MergedCell
+        أو خلية فارغة بأمان.
+        """
+        from openpyxl.cell.cell import MergedCell
+
+        widths: dict[str, int] = {}
+        for row in ws.iter_rows():
+            for cell in row:
+                if isinstance(cell, MergedCell) or cell.value is None:
+                    continue
+                col_letter = get_column_letter(cell.column)
+                widths[col_letter] = max(widths.get(col_letter, 0), len(str(cell.value)))
+
+        for col_letter, max_len in widths.items():
             ws.column_dimensions[col_letter].width = min(max_len + 4, 40)

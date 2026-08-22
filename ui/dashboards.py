@@ -5,6 +5,14 @@ ui/dashboards.py
 بناء الخلايا (سؤال طبيعي + نوع عرض)، شريط Slicers قابل للطي على
 اليسار، وتحديث كل البيانات بضغطة زر واحدة فقط — لا تحديث تلقائي
 أو فوري لأي خلية أو Slicer.
+
+تحديث الخلايا:
+----------------
+- تحديث اللوحة كاملة أو خلية واحدة يستخدم AI فقط عند الحاجة الفعلية
+  (أول توليد لسؤال جديد، أو خلايا Story Telling). التحديثات الأخرى
+  تُعاد فقط بتطبيق الفلاتر على SQL محفوظ مسبقاً — أسرع وبدون تكلفة AI.
+- كل خلية تعرض badge صغير يوضح للمستخدم هل التحديث القادم سيكون
+  "⚡ سريع" أو يحتاج "🤖 AI".
 """
 
 import uuid
@@ -118,6 +126,7 @@ def _build_ai_manager(db):
         db, engine,
         temperature=settings.get("temperature", 0.1),
         max_tries=settings.get("max_tries", 3),
+        retry_delay=settings.get("retry_delay", 10),
     )
     return ai, settings
 
@@ -144,14 +153,24 @@ def _show_dashboard_detail(db):
             st.rerun()
     with c3:
         if st.button("🔄 تحديث البيانات", type="primary", use_container_width=True):
-            with st.spinner("جاري تحديث كل خلايا اللوحة... قد يستغرق هذا بعض الوقت"):
+            with st.spinner(
+                "جاري تحديث كل خلايا اللوحة... قد يستغرق هذا بعض الوقت "
+                "(بما فيها انتظار إعادة المحاولة عند فشل الاتصال بمحرك AI)"
+            ):
                 result = dm.refresh_dashboard(dashboard_id, ai_rules=settings.get("ai_rules"))
             if not result["ok"]:
                 st.error(result.get("error", "فشل التحديث"))
             elif result["errors"] == 0:
-                st.success(f"✅ تم تحديث {result['total']} خلية بنجاح")
+                st.success(
+                    f"✅ تم تحديث {result['total']} خلية بنجاح "
+                    f"(⚡ {result['fast_updates']} سريع بدون AI، 🤖 {result['ai_calls']} عبر AI)"
+                )
             else:
-                st.warning(f"⚠️ تم التحديث: {result['total'] - result['errors']} نجحت، {result['errors']} فشلت")
+                st.warning(
+                    f"⚠️ تم التحديث: {result['total'] - result['errors']} نجحت، "
+                    f"{result['errors']} فشلت "
+                    f"(⚡ {result['fast_updates']} سريع، 🤖 {result['ai_calls']} عبر AI)"
+                )
             st.rerun()
 
     st.divider()
@@ -190,7 +209,21 @@ def _show_dashboard_detail(db):
 # ══════════════════════════════════════════════════════════════
 
 def _render_slicer_panel(db, dm, dashboard_id, slicers):
-    st.markdown("##### 🔍 عوامل التصفية (Slicers)")
+    header_col, reset_col = st.columns([3, 1.6])
+    with header_col:
+        st.markdown("##### 🔍 عوامل التصفية (Slicers)")
+    with reset_col:
+        if st.button("↺ مسح الكل", key=f"reset_slicers_{dashboard_id}", use_container_width=True):
+            dm.reset_slicers(dashboard_id)
+            # تنظيف حالة الـ widgets المؤقتة حتى تعكس الواجهة القيم
+            # الفارغة فوراً بعد rerun (وإلا سيبقى selectbox/multiselect
+            # عالقاً على القيمة القديمة من session_state)
+            for i in range(DASHBOARD_SLICER_COUNT):
+                for prefix in ("slicer_table_", "slicer_col_", "slicer_vals_"):
+                    st.session_state.pop(f"{prefix}{dashboard_id}_{i}", None)
+            st.success("تم مسح كل الفلاتر — اضغط «🔄 تحديث البيانات» لتطبيق ذلك")
+            st.rerun()
+
     tables = dm.get_available_tables()
 
     for i in range(DASHBOARD_SLICER_COUNT):
@@ -255,12 +288,30 @@ def _render_dashboard_cell(db, dm, settings, dashboard_id, position, cell):
     with st.container(border=True):
         if cell and cell.get("question") and not st.session_state.get(edit_key):
             _render_cell_result(db, dashboard_id, position, cell)
-            bc1, bc2 = st.columns(2)
+
+            # ── badge يوضح هل التحديث القادم سريع أم يحتاج AI ──
+            if cell.get("display_type") == "story":
+                st.caption("🤖 يحتاج AI عند كل تحديث (تحليل نصي)")
+            elif cell.get("base_sql"):
+                st.caption("⚡ تحديث سريع (بدون AI)")
+            else:
+                st.caption("🤖 يحتاج AI (لم يُولَّد SQL بعد)")
+
+            bc1, bc2, bc3 = st.columns(3)
             with bc1:
+                if st.button("🔄 تحديث", key=f"refresh_one_{dashboard_id}_{position}", use_container_width=True):
+                    with st.spinner("جاري التحديث..."):
+                        r = dm.refresh_single_cell(dashboard_id, position, ai_rules=settings.get("ai_rules"))
+                    if r["ok"]:
+                        st.success("✅ تم" + (" (عبر AI)" if r["used_ai"] else " (سريع بدون AI)"))
+                    else:
+                        st.error(r.get("error", "فشل التحديث"))
+                    st.rerun()
+            with bc2:
                 if st.button("✏️ تعديل", key=f"edit_{dashboard_id}_{position}", use_container_width=True):
                     st.session_state[edit_key] = True
                     st.rerun()
-            with bc2:
+            with bc3:
                 if st.button("🗑️ إفراغ", key=f"clear_{dashboard_id}_{position}", use_container_width=True):
                     db.clear_dashboard_cell(dashboard_id, position)
                     st.rerun()
@@ -304,6 +355,11 @@ def _render_cell_editor(db, dashboard_id, position, cell, is_gauge_row, edit_key
                 key=f"ctype_{dashboard_id}_{position}",
             )
 
+    if display_type == "story":
+        st.caption("🤖 هذا النوع يحتاج استدعاء AI عند كل تحديث دائماً (تحليل نصي فعلي).")
+    else:
+        st.caption("ℹ️ عند الحفظ سيُستدعى AI مرة واحدة لتوليد SQL؛ التحديثات اللاحقة (بفلاتر مختلفة) ستكون سريعة بدون AI طالما لم يتغيّر نص السؤال.")
+
     bc1, bc2 = st.columns(2)
     with bc1:
         if st.button("💾 حفظ", key=f"save_cell_{dashboard_id}_{position}", use_container_width=True, type="primary"):
@@ -315,7 +371,7 @@ def _render_cell_editor(db, dashboard_id, position, cell, is_gauge_row, edit_key
                     title.strip() or None, question.strip(), chart_type,
                 )
                 st.session_state.pop(edit_key, None)
-                st.info("تم الحفظ. اضغط «🔄 تحديث البيانات» أعلى الصفحة لعرض النتيجة.")
+                st.info("تم الحفظ. اضغط «🔄 تحديث البيانات» أعلى الصفحة أو زر «🔄 تحديث» على الخلية لعرض النتيجة.")
                 st.rerun()
     with bc2:
         if cell and st.button("إلغاء", key=f"cancel_cell_{dashboard_id}_{position}", use_container_width=True):
@@ -333,7 +389,7 @@ def _render_cell_result(db, dashboard_id, position, cell):
 
     stored = cell.get("last_result")
     if not stored:
-        st.info("لم يُحدَّث بعد. اضغط «🔄 تحديث البيانات» أعلى الصفحة.")
+        st.info("لم يُحدَّث بعد. اضغط «🔄 تحديث البيانات» أعلى الصفحة أو زر «🔄 تحديث» أدناه.")
         return
 
     display_type = cell.get("display_type")

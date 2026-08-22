@@ -4,8 +4,19 @@ core/dashboard_manager.py
 المنطق البرمجي للوحات المعلومات: خيارات الـ Slicers، وتنفيذ
 "تحديث البيانات" (الذي يُشغّل كل الخلايا مع تطبيق قيود الفلترة معاً).
 
+سياسة استدعاء AI:
+--------------------
+- خلية عادية (table/chart/gauge/kpi) ولها base_sql محفوظ مسبقاً:
+  يُعاد تطبيق الفلاتر الحالية على نفس الـ SQL في طبقة بايثون/DuckDB
+  مباشرة — بدون أي استدعاء AI جديد (أسرع وأرخص وأكثر ثباتاً).
+- خلية عادية بدون base_sql (أول مرة، أو بعد تعديل نص السؤال):
+  يُستدعى AI لتوليد SQL جديد، ثم يُحفظ كـ base_sql للاستخدام لاحقاً.
+- خلية Story Telling: يُستدعى AI دائماً (لأن السرد نص جديد يُبنى فعلياً
+  على البيانات الحالية بعد الفلترة — وهذا تحليل، وليس مجرد استعلام).
+
 لا تحديث تلقائي أو فوري لأي خلية — كل شيء يحدث فقط عند استدعاء
-refresh_dashboard() (المرتبط بزر "🔄 تحديث البيانات" في الواجهة).
+refresh_dashboard() أو refresh_single_cell() (المرتبطين بأزرار صريحة
+في الواجهة).
 """
 
 import logging
@@ -58,7 +69,15 @@ class DashboardManager:
         return {"ok": True, "values": values}
 
     # ──────────────────────────────────────────────────────────
-    #  تحديث البيانات (العملية الوحيدة التي تُنفّذ أي استعلام فعلي)
+    #  إعادة تعيين الـ Slicers
+    # ──────────────────────────────────────────────────────────
+
+    def reset_slicers(self, dashboard_id: str) -> None:
+        """إعادة كل Slicers اللوحة إلى الوضع الافتراضي (بدون تنفيذ أي تحديث)."""
+        self.db.reset_dashboard_slicers(dashboard_id)
+
+    # ──────────────────────────────────────────────────────────
+    #  تحديث البيانات (كل خلايا اللوحة)
     # ──────────────────────────────────────────────────────────
 
     def refresh_dashboard(self, dashboard_id: str, ai_rules: Optional[str] = None) -> dict:
@@ -69,7 +88,8 @@ class DashboardManager:
         يُستدعى فقط عند ضغط زر "🔄 تحديث البيانات" — لا نداء تلقائياً
         من أي مكان آخر.
 
-        يرجع: {"ok": True, "results": {position: {...}}, "errors": N}
+        يرجع: {"ok": True, "results": {position: {...}}, "errors": N,
+               "total": N, "ai_calls": N, "fast_updates": N}
         """
         cells = self.db.get_dashboard_cells(dashboard_id)
         configured = [c for c in cells if c.get("question")]
@@ -81,17 +101,32 @@ class DashboardManager:
 
         results = {}
         error_count = 0
+        ai_calls = 0
+        fast_updates = 0
 
         for cell in configured:
             position = cell["position"]
             display_type = cell.get("display_type") or "table"
             question = cell["question"]
+            base_sql = cell.get("base_sql")
 
             try:
                 if display_type == "story":
+                    # السرد النصي يحتاج AI دائماً — يُبنى فعلياً على
+                    # البيانات بعد الفلترة، وليس مجرد إعادة تشغيل SQL
                     r = self.ai.tell_story(question, ai_rules=ai_rules, filters=filters)
+                    ai_calls += 1
+                elif base_sql:
+                    # لدينا SQL أساسي محفوظ — نطبّق الفلاتر بدون AI
+                    r = self._run_fast(base_sql, filters)
+                    fast_updates += 1
                 else:
+                    # أول مرة لهذا السؤال (أو بعد تعديله) — نحتاج AI
+                    # لتوليد SQL جديد، ثم نحفظه كـ base_sql للمستقبل
                     r = self.ai.ask(question, result_type=display_type, ai_rules=ai_rules, filters=filters)
+                    ai_calls += 1
+                    if r.get("ok") and r.get("sql"):
+                        self.db.save_dashboard_cell_base_sql(dashboard_id, position, r["sql"])
             except Exception as e:
                 logger.error("Dashboard cell %d execution error: %s", position, e)
                 r = {"ok": False, "error": str(e)}
@@ -111,10 +146,78 @@ class DashboardManager:
 
         self.db.touch_dashboard(dashboard_id)
         logger.info(
-            "Dashboard '%s' refreshed: %d cells, %d errors",
-            dashboard_id, len(configured), error_count
+            "Dashboard '%s' refreshed: %d cells, %d errors, %d AI calls, %d fast updates",
+            dashboard_id, len(configured), error_count, ai_calls, fast_updates
         )
-        return {"ok": True, "results": results, "errors": error_count, "total": len(configured)}
+        return {
+            "ok": True, "results": results, "errors": error_count,
+            "total": len(configured), "ai_calls": ai_calls, "fast_updates": fast_updates,
+        }
+
+    # ──────────────────────────────────────────────────────────
+    #  تحديث خلية واحدة فقط
+    # ──────────────────────────────────────────────────────────
+
+    def refresh_single_cell(self, dashboard_id: str, position: int, ai_rules: Optional[str] = None) -> dict:
+        """
+        تحديث خلية واحدة فقط بنفس منطق refresh_dashboard (AI فقط عند
+        الحاجة). مفيد أثناء بناء اللوحة أو تصحيح سؤال معين دون الانتظار
+        لتحديث كل الخلايا.
+
+        يرجع: {"ok": True/False, "used_ai": True/False, "result": {...}}
+               أو {"ok": False, "used_ai": ..., "error": "..."}
+        """
+        cells = {c["position"]: c for c in self.db.get_dashboard_cells(dashboard_id)}
+        cell = cells.get(position)
+        if not cell or not cell.get("question"):
+            return {"ok": False, "error": "الخلية غير مُهيَّأة"}
+
+        filters = self._build_active_filters(dashboard_id)
+        display_type = cell.get("display_type") or "table"
+        question = cell["question"]
+        base_sql = cell.get("base_sql")
+        used_ai = False
+
+        try:
+            if display_type == "story":
+                r = self.ai.tell_story(question, ai_rules=ai_rules, filters=filters)
+                used_ai = True
+            elif base_sql:
+                r = self._run_fast(base_sql, filters)
+            else:
+                r = self.ai.ask(question, result_type=display_type, ai_rules=ai_rules, filters=filters)
+                used_ai = True
+                if r.get("ok") and r.get("sql"):
+                    self.db.save_dashboard_cell_base_sql(dashboard_id, position, r["sql"])
+        except Exception as e:
+            logger.error("Single cell refresh error (%d): %s", position, e)
+            r = {"ok": False, "error": str(e)}
+
+        if r.get("ok"):
+            stored = self._serialize_result(display_type, r, cell.get("chart_type"))
+            self.db.save_dashboard_cell_result(dashboard_id, position, stored, r.get("sql"), None)
+            self.db.touch_dashboard(dashboard_id)
+            return {"ok": True, "used_ai": used_ai, "result": stored}
+        else:
+            self.db.save_dashboard_cell_result(dashboard_id, position, None, r.get("sql"), r.get("error"))
+            return {"ok": False, "used_ai": used_ai, "error": r.get("error")}
+
+    # ──────────────────────────────────────────────────────────
+    #  دوال داخلية
+    # ──────────────────────────────────────────────────────────
+
+    def _run_fast(self, base_sql: str, filters: list) -> dict:
+        """تنفيذ base_sql مع الفلاتر عبر QueryEngine مباشرة (بدون AI)."""
+        result = self.qe.run_with_filters(base_sql, filters)
+        if not result["ok"]:
+            return {"ok": False, "error": result["error"], "sql": base_sql}
+        return {
+            "ok": True,
+            "sql": result.get("sql", base_sql),
+            "df": result["df"],
+            "rows": result["rows"],
+            "tries": 0,
+        }
 
     def _build_active_filters(self, dashboard_id: str) -> list:
         """يحوّل Slicers المُفعَّلة فعلياً (لها جدول+عمود+قيم) إلى صيغة الفلاتر."""
@@ -130,7 +233,7 @@ class DashboardManager:
         return filters
 
     def _serialize_result(self, display_type: str, r: dict, chart_type: Optional[str]) -> dict:
-        """تحويل نتيجة ai.ask()/tell_story() إلى شكل قابل للتخزين كـ JSON."""
+        """تحويل نتيجة ai.ask()/tell_story()/_run_fast() إلى شكل قابل للتخزين كـ JSON."""
         df: pd.DataFrame = r.get("df")
         stored = {
             "columns": list(df.columns) if df is not None else [],

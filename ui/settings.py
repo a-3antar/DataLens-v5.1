@@ -2,7 +2,7 @@
 ui/settings.py
 ==============
 إعدادات المشروع: محرك AI، النموذج، مفاتيح API، الثيم، auto-run،
-عدد المحاولات، ومهلة الاتصال.
+عدد المحاولات، مهلة الاتصال، ومدة الانتظار قبل إعادة المحاولة.
 """
 
 import streamlit as st
@@ -87,8 +87,19 @@ def show_settings():
         auto_run = st.toggle("تشغيل الكود تلقائياً (Auto Run)", value=bool(settings.get("auto_run", True)))
         max_tries = st.number_input("عدد المحاولات عند الخطأ", 1, 10, int(settings.get("max_tries", 3)))
         timeout = st.number_input("مهلة الاتصال (ثانية)", 5, 300, int(settings.get("timeout", 30)))
+        retry_delay = st.number_input(
+            "مدة الانتظار قبل إعادة المحاولة عند فشل الاتصال (ثانية)",
+            0, 120, int(settings.get("retry_delay", 10)),
+            help="يُستخدم فقط عند فشل الاتصال بمحرك AI نفسه (وليس عند خطأ SQL). "
+                 "مع كل محاولة فاشلة يُنتظر هذا القدر من الوقت قبل إعادة المحاولة.",
+        )
         if st.button("💾 حفظ الإعدادات العامة"):
-            db.save_settings({"auto_run": auto_run, "max_tries": max_tries, "timeout": timeout})
+            db.save_settings({
+                "auto_run": auto_run,
+                "max_tries": max_tries,
+                "timeout": timeout,
+                "retry_delay": retry_delay,
+            })
             st.success("تم الحفظ")
 
     with tab_theme:

@@ -138,6 +138,9 @@ class ProjectDB:
             )
             """,
             # خلايا لوحة المعلومات
+            # base_sql: الـ SQL الأساسي الذي وُلِّد عبر AI أول مرة لهذا
+            # السؤال. طالما لم يتغيّر نص السؤال، يُعاد استخدامه لتطبيق
+            # فلاتر (Slicers) مختلفة بدون إعادة استدعاء AI في كل تحديث.
             """
             CREATE TABLE IF NOT EXISTS dashboard_cells (
                 id              TEXT PRIMARY KEY,
@@ -147,6 +150,7 @@ class ProjectDB:
                 title           TEXT,
                 question        TEXT,
                 chart_type      TEXT,
+                base_sql        TEXT,
                 last_result     TEXT,
                 last_sql        TEXT,
                 last_error      TEXT,
@@ -172,6 +176,21 @@ class ProjectDB:
                 for sql in sql_statements:
                     conn.execute(sql)
                 conn.commit()
+
+                # ── Migration: إضافة عمود base_sql لو الجدول موجود من
+                # تشغيل سابق قبل إضافة هذه الميزة (CREATE TABLE IF NOT
+                # EXISTS لا يضيف أعمدة جديدة لجدول موجود مسبقاً) ──────
+                try:
+                    cols = [r["name"] for r in conn.execute(
+                        "PRAGMA table_info(dashboard_cells)"
+                    ).fetchall()]
+                    if "base_sql" not in cols:
+                        conn.execute("ALTER TABLE dashboard_cells ADD COLUMN base_sql TEXT")
+                        conn.commit()
+                        logger.info("Migration: added base_sql column to dashboard_cells")
+                except sqlite3.Error as e:
+                    logger.warning("base_sql migration check failed: %s", e)
+
                 # إدراج الإعدادات الافتراضية إن لم توجد
                 for key, value in DEFAULT_SETTINGS.items():
                     conn.execute(
@@ -662,6 +681,10 @@ class ProjectDB:
                     new_id, cell["position"], cell.get("display_type"),
                     cell.get("title"), cell.get("question"), cell.get("chart_type"),
                 )
+                # ننسخ أيضاً base_sql لو كان موجوداً — بما أن السؤال لم
+                # يتغيّر، لا داعي لإعادة توليده عبر AI في اللوحة الجديدة
+                if cell.get("base_sql"):
+                    self.save_dashboard_cell_base_sql(new_id, cell["position"], cell["base_sql"])
             for slicer in self.get_dashboard_slicers(dashboard_id):
                 self.save_dashboard_slicer(
                     new_id, slicer["position"],
@@ -683,26 +706,66 @@ class ProjectDB:
         question    : Optional[str],
         chart_type  : Optional[str] = None,
     ) -> None:
-        """إنشاء/تعديل إعداد خلية (سؤالها ونوع عرضها) — لا يُنفّذها."""
+        """
+        إنشاء/تعديل إعداد خلية (سؤالها ونوع عرضها) — لا يُنفّذها.
+
+        ملاحظة: أي تعديل على السؤال هنا (سواء خلية جديدة أو سؤال مُغيَّر)
+        يُفرغ base_sql تلقائياً — لأن الـ SQL الأساسي المخزَّن أصبح غير
+        مطابق للسؤال الجديد ويجب إعادة توليده عبر AI في أول تحديث قادم.
+        نفحص هذا بمقارنة السؤال الجديد بالسؤال المخزَّن حالياً (لو وُجد).
+        """
         try:
             with _connect(self.db_path) as conn:
+                existing = conn.execute(
+                    "SELECT question, base_sql FROM dashboard_cells WHERE dashboard_id = ? AND position = ?",
+                    (dashboard_id, position)
+                ).fetchone()
+
+                question_changed = (
+                    existing is None or existing["question"] != question
+                )
+                new_base_sql = None if question_changed else existing["base_sql"]
+
                 conn.execute(
                     """
                     INSERT INTO dashboard_cells
-                        (id, dashboard_id, position, display_type, title, question, chart_type)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                        (id, dashboard_id, position, display_type, title, question, chart_type, base_sql)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(dashboard_id, position) DO UPDATE SET
                         display_type = excluded.display_type,
                         title        = excluded.title,
                         question     = excluded.question,
-                        chart_type   = excluded.chart_type
+                        chart_type   = excluded.chart_type,
+                        base_sql     = excluded.base_sql
                     """,
                     (f"{dashboard_id}_{position}", dashboard_id, position,
-                     display_type, title, question, chart_type)
+                     display_type, title, question, chart_type, new_base_sql)
+                )
+                conn.commit()
+            if question_changed:
+                logger.info(
+                    "Dashboard cell %s[%d]: question changed — base_sql invalidated",
+                    dashboard_id, position
+                )
+        except sqlite3.Error as e:
+            logger.error("save_dashboard_cell error: %s", e)
+            raise
+
+    def save_dashboard_cell_base_sql(self, dashboard_id: str, position: int, base_sql: str) -> None:
+        """
+        حفظ الـ SQL الأساسي (الناتج من أول استدعاء AI ناجح لهذا السؤال).
+        التحديثات اللاحقة (بتطبيق فلاتر مختلفة) تُعاد بناؤها فوق هذا الـ
+        SQL مباشرة في طبقة بايثون/DuckDB بدون أي استدعاء AI إضافي.
+        """
+        try:
+            with _connect(self.db_path) as conn:
+                conn.execute(
+                    "UPDATE dashboard_cells SET base_sql = ? WHERE dashboard_id = ? AND position = ?",
+                    (base_sql, dashboard_id, position)
                 )
                 conn.commit()
         except sqlite3.Error as e:
-            logger.error("save_dashboard_cell error: %s", e)
+            logger.error("save_dashboard_cell_base_sql error: %s", e)
             raise
 
     def save_dashboard_cell_result(
@@ -809,6 +872,20 @@ class ProjectDB:
         except sqlite3.Error as e:
             logger.error("get_dashboard_slicers error: %s", e)
             return []
+
+    def reset_dashboard_slicers(self, dashboard_id: str) -> None:
+        """إعادة كل Slicers لوحة إلى الوضع الافتراضي (بدون جدول/عمود/قيم)."""
+        try:
+            with _connect(self.db_path) as conn:
+                conn.execute(
+                    "DELETE FROM dashboard_slicers WHERE dashboard_id = ?",
+                    (dashboard_id,)
+                )
+                conn.commit()
+            logger.info("Slicers reset for dashboard: %s", dashboard_id)
+        except sqlite3.Error as e:
+            logger.error("reset_dashboard_slicers error: %s", e)
+            raise
 
     # ──────────────────────────────────────────────────────────
     #  النسخ الاحتياطي

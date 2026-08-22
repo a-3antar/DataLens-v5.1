@@ -11,6 +11,12 @@ core/query_engine.py
 أقرب الأسماء الصحيحة ضمن رسالة الخطأ ("Candidate bindings")، نستغل هذه
 المعلومة لتصحيح الاستعلام تلقائياً وإعادة تنفيذه — بدل استهلاك محاولة
 كاملة من محاولات الذكاء الاصطناعي على خطأ يمكن حله فوراً بدون استدعاء AI.
+
+تطبيق فلاتر (Slicers) بدون AI:
+--------------------------------
+run_with_filters() تسمح بتنفيذ SQL أساسي (وُلِّد سابقاً عبر AI مرة
+واحدة ومُخزَّن كـ base_sql لكل خلية لوحة معلومات) مع تطبيق قيود فلترة
+إضافية — كل ذلك في طبقة بايثون/DuckDB مباشرة، بدون أي استدعاء AI جديد.
 """
 
 import re
@@ -207,6 +213,81 @@ class QueryEngine:
             auto_fixes.append({"from": wrong_name, "to": correct_name})
             current_sql = fixed_sql
 
+        return result
+
+    # ──────────────────────────────────────────────────────────
+    #  تطبيق فلاتر (Slicers) على SQL جاهز — بدون AI
+    # ──────────────────────────────────────────────────────────
+
+    def run_with_filters(self, base_sql: str, filters: Optional[list] = None) -> dict:
+        """
+        تنفيذ SQL أساسي (تم توليده سابقاً عبر AI مرة واحدة) مع تطبيق
+        قيود فلترة إضافية (Slicers) — بدون أي استدعاء AI جديد.
+
+        نلف الـ SQL الأصلي كـ subquery ونضيف شروط WHERE على النتيجة
+        النهائية بدل محاولة التلاعب بشرط WHERE الموجود داخل الاستعلام
+        الأصلي (أكثر أماناً وموثوقية، ويعمل حتى لو كان الاستعلام
+        الأصلي يحتوي GROUP BY / JOIN معقدة).
+
+        ملاحظة: الفلتر يُطبَّق على أعمدة الإخراج النهائي لـ base_sql،
+        وليس على الجداول الخام مباشرة. لو كان اسم العمود المطلوب
+        فلترته غير موجود ضمن أعمدة نتيجة الاستعلام الأساسي، يُتجاهل
+        هذا الفلتر بصمت (مع تسجيله في السجل) بدل فشل الاستعلام بالكامل.
+
+        يرجع نفس بنية run(): {"ok": True, "df": ..., "rows": N}
+                              أو {"ok": False, "error": "..."}
+        """
+        base_sql = base_sql.strip().rstrip(";")
+        if not base_sql:
+            return {"ok": False, "error": "لا يوجد SQL أساسي محفوظ لهذه الخلية"}
+
+        check = self.validate(base_sql)
+        if not check["ok"]:
+            return check
+
+        if not filters:
+            return self._execute_once(base_sql)
+
+        # أولاً: ننفذ الاستعلام الأساسي بدون فلاتر لمعرفة أعمدة الإخراج
+        # الفعلية (حتى نتجاهل بأمان أي فلتر على عمود غير موجود في النتيجة)
+        probe = self._execute_once(base_sql)
+        if not probe["ok"]:
+            return probe
+
+        available_cols = set(probe["df"].columns)
+        where_clauses = []
+        skipped_filters = []
+        for f in filters:
+            column = f.get("column")
+            values = f.get("values") or []
+            if not column or not values:
+                continue
+            if column not in available_cols:
+                skipped_filters.append(column)
+                logger.info(
+                    "Filter skipped: column '%s' not present in base query output", column
+                )
+                continue
+            escaped_values = ", ".join(
+                "'" + str(v).replace("'", "''") + "'" for v in values
+            )
+            where_clauses.append(f'"{column}" IN ({escaped_values})')
+
+        if not where_clauses:
+            # لا فلاتر قابلة للتطبيق فعلياً على هذا الإخراج — نرجع النتيجة كما هي
+            if skipped_filters:
+                probe["skipped_filters"] = skipped_filters
+            return probe
+
+        wrapped_sql = (
+            f'SELECT * FROM ({base_sql}) AS __base__ '
+            f'WHERE {" AND ".join(where_clauses)}'
+        )
+        result = self._execute_once(wrapped_sql)
+        if result["ok"]:
+            result["sql"] = wrapped_sql
+            if skipped_filters:
+                result["skipped_filters"] = skipped_filters
         return result
 
     def _execute_once(self, sql: str) -> dict:

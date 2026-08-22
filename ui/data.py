@@ -3,6 +3,12 @@ ui/data.py
 ==========
 تنظيف البيانات: تغيير الأنواع، تصفية الصفوف، معالجة النصوص والفراغات،
 والعلاقات بين الجداول.
+
+العلاقات:
+----------
+اختيار أسماء الأعمدة يتم الآن عبر قوائم منسدلة (selectbox) مبنية من
+أعمدة الجدول الفعلية بدل كتابة الاسم يدوياً — يمنع أخطاء الطباعة
+ويضمن أن العمود المختار موجود فعلاً في الجدول.
 """
 
 import streamlit as st
@@ -79,28 +85,7 @@ def show_data():
             _report(r, extra=lambda r: st.caption(f"تم ملء {r.get('filled', 0)} قيمة"))
 
     with tab_relations:
-        st.caption("العلاقات الحالية:")
-        relations = db.get_relations()
-        for rel in relations:
-            c1, c2 = st.columns([4, 1])
-            c1.write(f"{rel['from_table']}.{rel['from_col']} = {rel['to_table']}.{rel['to_col']}")
-            if c2.button("حذف", key=f"del_rel_{rel['id']}"):
-                db.remove_relation(rel["id"])
-                st.rerun()
-
-        st.divider()
-        c1, c2, c3, c4 = st.columns(4)
-        from_table = c1.selectbox("من جدول", aliases, key="rel_from_t")
-        from_col = c2.text_input("العمود", key="rel_from_c")
-        to_table = c3.selectbox("إلى جدول", aliases, key="rel_to_t")
-        to_col = c4.text_input("العمود ", key="rel_to_c")
-        if st.button("➕ إضافة علاقة"):
-            if from_col and to_col:
-                db.add_relation(from_table, from_col, to_table, to_col)
-                st.success("تمت إضافة العلاقة")
-                st.rerun()
-            else:
-                st.error("الرجاء تحديد أسماء الأعمدة")
+        _render_relations_tab(db, dm, aliases)
 
     st.divider()
     st.subheader("📊 إحصاءات العمود")
@@ -113,6 +98,67 @@ def show_data():
         c4.metric("أعلى", stats["max"])
         c5.metric("متوسط", round(stats["mean"], 2) if stats["mean"] else None)
         c6.metric("وسيط", round(stats["median"], 2) if stats["median"] else None)
+
+
+def _render_relations_tab(db, dm: DataManager, aliases: list[str]):
+    """
+    تبويب العلاقات: عرض العلاقات الحالية + إضافة علاقة جديدة عبر قوائم
+    منسدلة (جدول + عمود) بدل كتابة اسم العمود يدوياً.
+    """
+    st.caption("العلاقات الحالية:")
+    relations = db.get_relations()
+    for rel in relations:
+        c1, c2 = st.columns([4, 1])
+        c1.write(f"{rel['from_table']}.{rel['from_col']} = {rel['to_table']}.{rel['to_col']}")
+        if c2.button("حذف", key=f"del_rel_{rel['id']}"):
+            db.remove_relation(rel["id"])
+            st.rerun()
+
+    st.divider()
+    c1, c2, c3, c4 = st.columns(4)
+
+    # ── من جدول / من عمود ──
+    from_table = c1.selectbox("من جدول", aliases, key="rel_from_t")
+    from_preview = dm.get_preview(from_table, rows=1) if from_table else {"ok": False}
+    from_columns = from_preview["columns"] if from_preview.get("ok") else []
+    from_col = c2.selectbox(
+        "من عمود",
+        ["(اختر عموداً)"] + from_columns,
+        key="rel_from_c",
+    )
+
+    # ── إلى جدول / إلى عمود (نستبعد الجدول نفسه من قائمة "إلى" افتراضياً
+    # لتفادي ربط جدول بنفسه بالخطأ، لكن نُبقي الخيار متاحاً لو كان هو
+    # الجدول الوحيد في المشروع) ──
+    to_table_options = [t for t in aliases if t != from_table] or aliases
+    to_table = c3.selectbox("إلى جدول", to_table_options, key="rel_to_t")
+    to_preview = dm.get_preview(to_table, rows=1) if to_table else {"ok": False}
+    to_columns = to_preview["columns"] if to_preview.get("ok") else []
+    to_col = c4.selectbox(
+        "إلى عمود",
+        ["(اختر عموداً)"] + to_columns,
+        key="rel_to_c",
+    )
+
+    # تحذير لطيف (وليس منع) لو أنواع العمودين تبدو مختلفة بشكل واضح
+    if from_col != "(اختر عموداً)" and to_col != "(اختر عموداً)":
+        from_stats = dm.get_stats(from_table, from_col)
+        to_stats = dm.get_stats(to_table, to_col)
+        from_is_numeric = bool(from_stats.get("ok")) and from_stats.get("count", 0) > 0
+        to_is_numeric = bool(to_stats.get("ok")) and to_stats.get("count", 0) > 0
+        if from_is_numeric != to_is_numeric:
+            st.warning(
+                "⚠️ يبدو أن نوعي العمودين مختلفان (رقمي مقابل نصي) — "
+                "تحقق من أن الربط صحيح قبل الإضافة."
+            )
+
+    if st.button("➕ إضافة علاقة"):
+        if from_col != "(اختر عموداً)" and to_col != "(اختر عموداً)":
+            db.add_relation(from_table, from_col, to_table, to_col)
+            st.success("تمت إضافة العلاقة")
+            st.rerun()
+        else:
+            st.error("الرجاء اختيار عمود من كل جدول")
 
 
 def _report(r: dict, extra=None):

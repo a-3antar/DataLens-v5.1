@@ -46,6 +46,7 @@ def show_chat():
         db, engine,
         temperature=settings.get("temperature", 0.1),
         max_tries=settings.get("max_tries", 3),
+        retry_delay=settings.get("retry_delay", 10),
     )
 
     c1, c2 = st.columns([3, 1])
@@ -65,7 +66,11 @@ def show_chat():
         if not question.strip():
             st.warning("الرجاء كتابة سؤال")
         else:
-            with st.spinner("جاري التفكير..." if result_type != "story" else "جاري تحليل البيانات وكتابة التقرير..."):
+            spinner_msg = (
+                "جاري تحليل البيانات وكتابة التقرير..." if result_type == "story"
+                else "جاري التفكير... (قد يُعاد المحاولة تلقائياً عند فشل الاتصال بمحرك AI)"
+            )
+            with st.spinner(spinner_msg):
                 if result_type == "story":
                     result = ai.tell_story(question, ai_rules=settings.get("ai_rules"))
                 else:
