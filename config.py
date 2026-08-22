@@ -19,9 +19,8 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ─── التطبيق ───────────────────────────────────────────────
-APP_NAME    = "ExcelLens"
-APP_ICON    = "📊"
-APP_VERSION = "5.1"
+APP_NAME    = "DataLens"
+APP_VERSION = "5.0"
 APP_HOST    = "0.0.0.0"   # متاح على الـ LAN
 APP_PORT    = 8000
 
@@ -31,7 +30,7 @@ BCRYPT_ROUNDS        = 12
 
 # ─── المشروع — قيم افتراضية ────────────────────────────────
 DEFAULT_SETTINGS = {
-    "ai_engine"  : "323",
+    "ai_engine"  : "gemini",
     "model"      : "gemini-2.0-flash",
     "temperature": 0.1,
     "auto_run"   : True,
@@ -53,7 +52,7 @@ ALLOWED_EXTENSIONS = [".xlsx", ".xls", ".csv"]
 RESULT_TYPES = ["table", "chart", "gauge", "kpi", "story"]
 
 # ─── سرد قصصي (Story Telling) ──────────────────────────────
-STORY_MAX_ROWS = 500      # أقصى عدد صفوف تُرسل للـ AI كسياق لكتابة السرد
+STORY_MAX_ROWS = 200      # أقصى عدد صفوف تُرسل للـ AI كسياق لكتابة السرد
 STORY_SAMPLE_ROWS_IN_PROMPT = 30  # عدد الصفوف الفعلي المضمّن نصياً في الـ prompt
 
 # ─── الثيمات ───────────────────────────────────────────────
@@ -73,3 +72,8 @@ SQL_FORBIDDEN = [
 
 # ─── حجم النموذج للـ Prompt ───────────────────────────────
 SAMPLE_ROWS = 3   # عدد صفوف المثال في الـ Prompt
+
+# ─── لوحات المعلومات (Dashboards) ─────────────────────────
+DASHBOARD_GAUGE_COUNT = 4    # عدد الـ Gauges الثابت أعلى كل قالب
+DASHBOARD_SLICER_COUNT = 4   # عدد شرائح الفلترة (Slicers) — قابل للتعديل هنا فقط
+DASHBOARD_SLICER_VALUES_LIMIT = 200  # أقصى عدد قيم فريدة تُعرض في قائمة اختيار Slicer
