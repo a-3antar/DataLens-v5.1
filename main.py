@@ -19,10 +19,8 @@ from core.auth import AuthManager
 from config import APP_NAME, APP_VERSION, APP_ICON
 
 st.set_page_config(
-    page_title= APP_NAME + " V" + APP_VERSION,
+    page_title=APP_NAME,
     page_icon=APP_ICON,
-    page_title="DataLens V5.0",
-    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -55,8 +53,7 @@ PAGES = {
 }
 
 with st.sidebar:
-    st.markdown("## " + APP_ICON + " " + APP_NAME + " V" + APP_VERSION)
-    st.markdown("## 📊 DataLens V5.0")
+    st.markdown(f"## {APP_ICON} {APP_NAME} V{APP_VERSION}")
     choice = st.radio("الانتقال إلى", list(PAGES.keys()), label_visibility="collapsed")
 
 PAGES[choice]()
