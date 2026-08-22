@@ -81,9 +81,13 @@ class AIManager:
         question   : str,
         result_type: Optional[str] = None,
         ai_rules   : Optional[str] = None,
+        filters    : Optional[list] = None,
     ) -> dict:
         """
         إرسال سؤال → SQL → تنفيذ → نتيجة.
+
+        filters: قيود إضافية (من Slicers لوحة معلومات)، بصيغة
+                 [{"table": "sales", "column": "المنطقة", "values": [...]}]
 
         يرجع:
         {
@@ -115,7 +119,7 @@ class AIManager:
             relations = relations,
             ai_rules  = ai_rules,
         )
-        prompt = builder.build(question, result_type)
+        prompt = builder.build(question, result_type, filters=filters)
 
         last_error = ""
         last_sql   = ""
@@ -201,6 +205,7 @@ class AIManager:
         self,
         question: str,
         ai_rules: Optional[str] = None,
+        filters : Optional[list] = None,
     ) -> dict:
         """
         سؤال → SQL → تنفيذ → تحليل نصي (سرد) بالعربية بناءً على البيانات
@@ -218,7 +223,7 @@ class AIManager:
         }
         """
         # المرحلة ١: نحصل على البيانات الفعلية بنفس آلية ask() المعتادة
-        data_result = self.ask(question, result_type="story", ai_rules=ai_rules)
+        data_result = self.ask(question, result_type="story", ai_rules=ai_rules, filters=filters)
         if not data_result["ok"]:
             return data_result
 
