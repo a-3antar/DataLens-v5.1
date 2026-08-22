@@ -1,0 +1,11 @@
+streamlit>=1.36
+pandas
+duckdb
+httpx
+bcrypt
+openpyxl
+reportlab
+arabic-reshaper>=3.0.0
+python-bidi>=0.6.6
+plotly
+Pillow>=10.0.0
