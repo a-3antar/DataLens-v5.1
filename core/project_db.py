@@ -127,6 +127,45 @@ class ProjectDB:
                 content    TEXT NOT NULL DEFAULT '{}'
             )
             """,
+            # لوحات المعلومات
+            """
+            CREATE TABLE IF NOT EXISTS dashboards (
+                id          TEXT PRIMARY KEY,
+                title       TEXT NOT NULL,
+                template_id TEXT NOT NULL,
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT
+            )
+            """,
+            # خلايا لوحة المعلومات
+            """
+            CREATE TABLE IF NOT EXISTS dashboard_cells (
+                id              TEXT PRIMARY KEY,
+                dashboard_id    TEXT NOT NULL REFERENCES dashboards(id) ON DELETE CASCADE,
+                position        INTEGER NOT NULL,
+                display_type    TEXT,
+                title           TEXT,
+                question        TEXT,
+                chart_type      TEXT,
+                last_result     TEXT,
+                last_sql        TEXT,
+                last_error      TEXT,
+                last_updated_at TEXT,
+                UNIQUE(dashboard_id, position)
+            )
+            """,
+            # عناصر الفلترة (Slicers) لكل لوحة
+            """
+            CREATE TABLE IF NOT EXISTS dashboard_slicers (
+                id              TEXT PRIMARY KEY,
+                dashboard_id    TEXT NOT NULL REFERENCES dashboards(id) ON DELETE CASCADE,
+                position        INTEGER NOT NULL,
+                table_name      TEXT,
+                column_name     TEXT,
+                selected_values TEXT,
+                UNIQUE(dashboard_id, position)
+            )
+            """,
         ]
         try:
             with _connect(self.db_path) as conn:
@@ -528,6 +567,248 @@ class ProjectDB:
         except sqlite3.Error as e:
             logger.error("delete_report error: %s", e)
             raise
+
+    # ──────────────────────────────────────────────────────────
+    #  لوحات المعلومات (Dashboards)
+    # ──────────────────────────────────────────────────────────
+
+    def create_dashboard(self, dashboard_id: str, title: str, template_id: str) -> None:
+        """إنشاء لوحة معلومات جديدة بقالب معيّن."""
+        try:
+            now = _now()
+            with _connect(self.db_path) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO dashboards (id, title, template_id, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (dashboard_id, title, template_id, now, now)
+                )
+                conn.commit()
+            logger.info("Dashboard created: '%s' (template=%s)", title, template_id)
+        except sqlite3.Error as e:
+            logger.error("create_dashboard error: %s", e)
+            raise
+
+    def get_dashboards(self) -> list[dict]:
+        """إرجاع كل لوحات المعلومات في المشروع."""
+        try:
+            with _connect(self.db_path) as conn:
+                rows = conn.execute(
+                    "SELECT * FROM dashboards ORDER BY updated_at DESC"
+                ).fetchall()
+            return [dict(r) for r in rows]
+        except sqlite3.Error as e:
+            logger.error("get_dashboards error: %s", e)
+            return []
+
+    def get_dashboard(self, dashboard_id: str) -> Optional[dict]:
+        """إرجاع لوحة معلومات واحدة."""
+        try:
+            with _connect(self.db_path) as conn:
+                row = conn.execute(
+                    "SELECT * FROM dashboards WHERE id = ?", (dashboard_id,)
+                ).fetchone()
+            return dict(row) if row else None
+        except sqlite3.Error as e:
+            logger.error("get_dashboard error: %s", e)
+            return None
+
+    def rename_dashboard(self, dashboard_id: str, new_title: str) -> None:
+        try:
+            with _connect(self.db_path) as conn:
+                conn.execute(
+                    "UPDATE dashboards SET title = ?, updated_at = ? WHERE id = ?",
+                    (new_title, _now(), dashboard_id)
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            logger.error("rename_dashboard error: %s", e)
+            raise
+
+    def touch_dashboard(self, dashboard_id: str) -> None:
+        """تحديث updated_at (يُستدعى بعد كل ضغطة تحديث بيانات ناجحة)."""
+        try:
+            with _connect(self.db_path) as conn:
+                conn.execute(
+                    "UPDATE dashboards SET updated_at = ? WHERE id = ?",
+                    (_now(), dashboard_id)
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            logger.error("touch_dashboard error: %s", e)
+
+    def delete_dashboard(self, dashboard_id: str) -> None:
+        """حذف لوحة معلومات وكل خلاياها وفلاترها."""
+        try:
+            with _connect(self.db_path) as conn:
+                conn.execute("DELETE FROM dashboards WHERE id = ?", (dashboard_id,))
+                conn.commit()
+            logger.info("Dashboard deleted: %s", dashboard_id)
+        except sqlite3.Error as e:
+            logger.error("delete_dashboard error: %s", e)
+            raise
+
+    def duplicate_dashboard(self, dashboard_id: str, new_id: str, new_title: str) -> None:
+        """تكرار لوحة معلومات كاملة (خلايا + فلاتر) بمعرّف جديد."""
+        import uuid as _uuid
+        try:
+            src = self.get_dashboard(dashboard_id)
+            if not src:
+                raise ValueError("اللوحة الأصلية غير موجودة")
+            self.create_dashboard(new_id, new_title, src["template_id"])
+            for cell in self.get_dashboard_cells(dashboard_id):
+                self.save_dashboard_cell(
+                    new_id, cell["position"], cell.get("display_type"),
+                    cell.get("title"), cell.get("question"), cell.get("chart_type"),
+                )
+            for slicer in self.get_dashboard_slicers(dashboard_id):
+                self.save_dashboard_slicer(
+                    new_id, slicer["position"],
+                    slicer.get("table_name"), slicer.get("column_name"),
+                    slicer.get("selected_values") or [],
+                )
+        except sqlite3.Error as e:
+            logger.error("duplicate_dashboard error: %s", e)
+            raise
+
+    # ── خلايا اللوحة ──
+
+    def save_dashboard_cell(
+        self,
+        dashboard_id: str,
+        position    : int,
+        display_type: Optional[str],
+        title       : Optional[str],
+        question    : Optional[str],
+        chart_type  : Optional[str] = None,
+    ) -> None:
+        """إنشاء/تعديل إعداد خلية (سؤالها ونوع عرضها) — لا يُنفّذها."""
+        try:
+            with _connect(self.db_path) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO dashboard_cells
+                        (id, dashboard_id, position, display_type, title, question, chart_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(dashboard_id, position) DO UPDATE SET
+                        display_type = excluded.display_type,
+                        title        = excluded.title,
+                        question     = excluded.question,
+                        chart_type   = excluded.chart_type
+                    """,
+                    (f"{dashboard_id}_{position}", dashboard_id, position,
+                     display_type, title, question, chart_type)
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            logger.error("save_dashboard_cell error: %s", e)
+            raise
+
+    def save_dashboard_cell_result(
+        self,
+        dashboard_id: str,
+        position    : int,
+        result      : Optional[dict],
+        sql         : Optional[str],
+        error       : Optional[str],
+    ) -> None:
+        """حفظ نتيجة تنفيذ خلية (تُستدعى فقط عند ضغط زر تحديث البيانات)."""
+        try:
+            with _connect(self.db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE dashboard_cells
+                    SET last_result = ?, last_sql = ?, last_error = ?, last_updated_at = ?
+                    WHERE dashboard_id = ? AND position = ?
+                    """,
+                    (json.dumps(result) if result is not None else None,
+                     sql, error, _now(), dashboard_id, position)
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            logger.error("save_dashboard_cell_result error: %s", e)
+            raise
+
+    def get_dashboard_cells(self, dashboard_id: str) -> list[dict]:
+        """إرجاع كل خلايا لوحة، مرتبة حسب الموضع."""
+        try:
+            with _connect(self.db_path) as conn:
+                rows = conn.execute(
+                    "SELECT * FROM dashboard_cells WHERE dashboard_id = ? ORDER BY position",
+                    (dashboard_id,)
+                ).fetchall()
+            result = []
+            for row in rows:
+                d = dict(row)
+                d["last_result"] = json.loads(d["last_result"]) if d.get("last_result") else None
+                result.append(d)
+            return result
+        except sqlite3.Error as e:
+            logger.error("get_dashboard_cells error: %s", e)
+            return []
+
+    def clear_dashboard_cell(self, dashboard_id: str, position: int) -> None:
+        """إفراغ إعداد خلية (تعيدها لحالة «إضافة عنصر» فارغة)."""
+        try:
+            with _connect(self.db_path) as conn:
+                conn.execute(
+                    "DELETE FROM dashboard_cells WHERE dashboard_id = ? AND position = ?",
+                    (dashboard_id, position)
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            logger.error("clear_dashboard_cell error: %s", e)
+            raise
+
+    # ── فلاتر اللوحة (Slicers) ──
+
+    def save_dashboard_slicer(
+        self,
+        dashboard_id : str,
+        position     : int,
+        table_name   : Optional[str],
+        column_name  : Optional[str],
+        selected_values: list,
+    ) -> None:
+        """حفظ إعداد Slicer (قد تكون قيمه staged ولم تُطبَّق بعد)."""
+        try:
+            with _connect(self.db_path) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO dashboard_slicers
+                        (id, dashboard_id, position, table_name, column_name, selected_values)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(dashboard_id, position) DO UPDATE SET
+                        table_name      = excluded.table_name,
+                        column_name     = excluded.column_name,
+                        selected_values = excluded.selected_values
+                    """,
+                    (f"{dashboard_id}_slicer_{position}", dashboard_id, position,
+                     table_name, column_name, json.dumps(selected_values or []))
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            logger.error("save_dashboard_slicer error: %s", e)
+            raise
+
+    def get_dashboard_slicers(self, dashboard_id: str) -> list[dict]:
+        """إرجاع كل Slicers لوحة، مرتبة حسب الموضع."""
+        try:
+            with _connect(self.db_path) as conn:
+                rows = conn.execute(
+                    "SELECT * FROM dashboard_slicers WHERE dashboard_id = ? ORDER BY position",
+                    (dashboard_id,)
+                ).fetchall()
+            result = []
+            for row in rows:
+                d = dict(row)
+                d["selected_values"] = json.loads(d["selected_values"]) if d.get("selected_values") else []
+                result.append(d)
+            return result
+        except sqlite3.Error as e:
+            logger.error("get_dashboard_slicers error: %s", e)
+            return []
 
     # ──────────────────────────────────────────────────────────
     #  النسخ الاحتياطي
