@@ -63,12 +63,16 @@ class PromptBuilder:
         self,
         question   : str,
         result_type: Optional[str] = None,
+        filters    : Optional[list] = None,
     ) -> str:
         """
         بناء Prompt كامل لسؤال المستخدم.
 
         question    : السؤال بالعربية أو الإنجليزية
-        result_type : "chart" | "table" | "gauge" | "kpi" | None
+        result_type : "chart" | "table" | "gauge" | "kpi" | "story" | None
+        filters     : قيود إضافية تُفرض على الاستعلام (من Slicers لوحة
+                      المعلومات مثلاً)، بصيغة:
+                      [{"table": "sales", "column": "المنطقة", "values": ["الرياض", "جدة"]}]
         """
         parts = []
 
@@ -91,15 +95,41 @@ class PromptBuilder:
         if result_type:
             parts.append(self._section("RESULT TYPE", self._build_result_hint(result_type)))
 
-        # 6. Question
+        # 6. Filters (اختياري — قيود Slicers)
+        if filters:
+            parts.append(self._section("FILTERS", self._build_filters(filters)))
+
+        # 7. Question
         parts.append(self._section("QUESTION", question))
 
-        # 7. Output reminder
+        # 8. Output reminder
         parts.append("SQL QUERY:")
 
         prompt = "\n\n".join(parts)
-        logger.debug("Prompt built: %d chars, %d tables", len(prompt), len(self.schema))
+        logger.debug("Prompt built: %d chars, %d tables, %d filters",
+                     len(prompt), len(self.schema), len(filters or []))
         return prompt
+
+    def _build_filters(self, filters: list) -> str:
+        """صياغة قيود الفلترة (Slicers) كتعليمات واضحة للـ AI."""
+        lines = [
+            "يجب تقييد نتيجة الاستعلام بكل الشروط التالية معاً (AND فيما بينها):"
+        ]
+        for f in filters:
+            values = f.get("values") or []
+            if not values:
+                continue
+            vals_text = "، ".join(str(v) for v in values)
+            lines.append(
+                f'- من الجدول "{f["table"]}"، يجب أن يكون العمود "{f["column"]}" '
+                f"ضمن إحدى القيم التالية فقط: {vals_text}"
+            )
+        lines.append(
+            "أضف شرط WHERE مناسب يحقق هذه القيود. لو كان الاستعلام يحتاج جدولاً "
+            "غير مذكور أصلاً في السؤال لتطبيق أحد هذه الشروط، اربطه عبر "
+            "العلاقات المذكورة أعلاه (JOIN) إن وُجدت علاقة مناسبة."
+        )
+        return "\n".join(lines)
 
     # ──────────────────────────────────────────────────────────
     #  بناء Prompt إعادة المحاولة عند الخطأ
