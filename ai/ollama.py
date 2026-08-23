@@ -58,23 +58,28 @@ class OllamaEngine(BaseEngine):
         except httpx.ConnectError:
             msg = f"تعذر الاتصال بـ Ollama على {self.base_url}"
             logger.error(msg)
-            return {"ok": False, "error": msg}
+            return {"ok": False, "error": msg, "error_type": "transient"}
         except httpx.TimeoutException:
-            return {"ok": False, "error": "انتهت مهلة الاتصال بـ Ollama"}
+            return {"ok": False, "error": "انتهت مهلة الاتصال بـ Ollama", "error_type": "transient"}
         except Exception as e:
             logger.error("Ollama get_models error: %s", e)
-            return {"ok": False, "error": str(e)}
+            return {"ok": False, "error": str(e), "error_type": "other"}
 
     # ──────────────────────────────────────────────────────────
     #  إرسال Prompt
     # ──────────────────────────────────────────────────────────
 
     def send(self, prompt: str, temperature: float = 0.1) -> dict:
-        """إرسال prompt إلى Ollama وإرجاع الرد."""
+        """إرسال prompt إلى Ollama وإرجاع الرد.
+
+        ملاحظة: Ollama محلي ولا يملك مفهوم "مفتاح API"، لذا لا يوجد
+        error_type="auth" هنا — أخطاؤه إما اتصال/مهلة (transient) أو
+        غير ذلك (other).
+        """
         if not self.model:
-            return {"ok": False, "error": "لم يتم تحديد النموذج"}
+            return {"ok": False, "error": "لم يتم تحديد النموذج", "error_type": "other"}
         if not prompt.strip():
-            return {"ok": False, "error": "الـ prompt فارغ"}
+            return {"ok": False, "error": "الـ prompt فارغ", "error_type": "other"}
 
         try:
             resp = httpx.post(
@@ -95,7 +100,7 @@ class OllamaEngine(BaseEngine):
             text = data.get("response", "").strip()
 
             if not text:
-                return {"ok": False, "error": "الرد فارغ من Ollama"}
+                return {"ok": False, "error": "الرد فارغ من Ollama", "error_type": "other"}
 
             logger.info("Ollama response: %d chars", len(text))
             return {"ok": True, "text": text}
@@ -103,12 +108,12 @@ class OllamaEngine(BaseEngine):
         except httpx.ConnectError:
             msg = f"تعذر الاتصال بـ Ollama على {self.base_url}"
             logger.error(msg)
-            return {"ok": False, "error": msg}
+            return {"ok": False, "error": msg, "error_type": "transient"}
         except httpx.TimeoutException:
-            return {"ok": False, "error": f"انتهت مهلة الاتصال ({self.timeout}s)"}
+            return {"ok": False, "error": f"انتهت مهلة الاتصال ({self.timeout}s)", "error_type": "transient"}
         except Exception as e:
             logger.error("Ollama send error: %s", e)
-            return {"ok": False, "error": str(e)}
+            return {"ok": False, "error": str(e), "error_type": "other"}
 
     # ──────────────────────────────────────────────────────────
     #  فحص الحالة
