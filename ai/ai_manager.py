@@ -8,13 +8,22 @@ ai/ai_manager.py
 - استخراج SQL من الرد
 - تنفيذ SQL عبر QueryEngine
 
-إعادة المحاولة عند فشل الاتصال:
----------------------------------
-عند فشل الاتصال بمحرك AI نفسه (وليس خطأ SQL أو رد فارغ)، بدل التوقف
-فوراً، ننتظر مدة retry_delay ثانية ثم نعيد المحاولة بنفس الـ prompt،
-طالما لا تزال هناك محاولات متبقية ضمن max_tries. مدة الانتظار قابلة
-للتخصيص لكل مشروع (تُحفظ في إعدادات المشروع)، وتُقرأ افتراضياً من
-config.AI_RETRY_DELAY_SECONDS.
+إعادة المحاولة عند فشل الاتصال — دائم مقابل مؤقت:
+-----------------------------------------------------
+كل محرك AI يُرجع الآن (اختيارياً) "error_type" ضمن نتيجة send() الفاشلة:
+  - "auth"      : خطأ مصادقة دائم (مفتاح مرفوض/غير صالح/عليه قيود). لا فائدة
+                  إطلاقاً من إعادة المحاولة بنفس المفتاح — نتوقف فوراً بدل
+                  استهلاك max_tries كاملة و retry_delay على كل واحدة، لأن
+                  هذا كان يُطيل وقت انتظار المستخدم بلا داعٍ (وقد يُخفي
+                  رسالة الخطأ الحقيقية خلف محاولات متكررة فاشلة بنفس السبب).
+  - "rate_limit": تجاوز حصة/معدل الطلبات (429) — يستحق إعادة المحاولة
+                  (المشكلة قد تزول خلال ثوانٍ)، فنُبقيه ضمن حلقة الانتظار.
+  - "transient" : انقطاع شبكة/مهلة/خطأ سيرفر عابر (5xx) — نفس المعاملة.
+  - "other"/غير محدد: نتعامل معه بحذر كأنه قد يكون مؤقتاً (السلوك القديم)
+                  حفاظاً على التوافق مع أي محرك لا يُرجع error_type بعد.
+
+مدة الانتظار (retry_delay) قابلة للتخصيص لكل مشروع (تُحفظ في إعدادات
+المشروع)، وتُقرأ افتراضياً من config.AI_RETRY_DELAY_SECONDS.
 """
 
 import time
@@ -32,6 +41,9 @@ from core.query_engine import QueryEngine
 from config            import OLLAMA_DEFAULT_URL, STORY_SAMPLE_ROWS_IN_PROMPT, AI_RETRY_DELAY_SECONDS
 
 logger = logging.getLogger(__name__)
+
+# error_type التي لا فائدة من إعادة المحاولة عليها بنفس الإعدادات
+_PERMANENT_ERROR_TYPES = {"auth"}
 
 
 def get_engine(
@@ -108,6 +120,7 @@ class AIManager:
             "rows"       : N,
             "tries"      : عدد المحاولات الفعلي,
             "error"      : "...",              ← عند الفشل
+            "error_type" : "auth"|"rate_limit"|"transient"|"other",  ← عند الفشل بسبب اتصال المحرك
         }
         """
         question = question.strip()
@@ -133,6 +146,7 @@ class AIManager:
         prompt = builder.build(question, result_type, filters=filters)
 
         last_error = ""
+        last_error_type = None
         last_sql   = ""
         attempt    = 0
 
@@ -143,15 +157,25 @@ class AIManager:
             send_result = self.engine.send(prompt, self.temperature)
             if not send_result["ok"]:
                 last_error = send_result["error"]
+                last_error_type = send_result.get("error_type")
                 logger.warning("Engine send failed (attempt %d): %s", attempt, last_error)
 
-                # خطأ اتصال — ننتظر ثم نعيد المحاولة بنفس الـ prompt،
-                # طالما لدينا محاولات متبقية. لا داعي لإعادة بناء الـ
-                # prompt هنا لأن الخطأ من الاتصال نفسه وليس من محتوى الرد.
+                # خطأ دائم (مثل رفض المصادقة) — لا فائدة من إعادة
+                # المحاولة بنفس الإعدادات، نتوقف فوراً بدل هدر الوقت
+                # على max_tries × retry_delay على نفس الخطأ بالضبط.
+                if last_error_type in _PERMANENT_ERROR_TYPES:
+                    logger.error(
+                        "Permanent error (%s) — stopping without further retries",
+                        last_error_type
+                    )
+                    break
+
+                # خطأ مؤقت (اتصال/مهلة/rate limit/غير معروف) — ننتظر ثم
+                # نعيد المحاولة بنفس الـ prompt، طالما لدينا محاولات متبقية.
                 if attempt < self.max_tries:
                     logger.info(
-                        "Waiting %ds before retry due to connection error...",
-                        self.retry_delay
+                        "Waiting %ds before retry due to %s error...",
+                        self.retry_delay, last_error_type or "connection"
                     )
                     if self.retry_delay > 0:
                         time.sleep(self.retry_delay)
@@ -163,6 +187,7 @@ class AIManager:
             extract_result = self.engine.extract_sql(send_result["text"])
             if not extract_result["ok"]:
                 last_error = extract_result["error"]
+                last_error_type = None
                 logger.warning("SQL extraction failed (attempt %d): %s", attempt, last_error)
                 # نحاول مرة أخرى مع نفس الـ prompt
                 continue
@@ -191,6 +216,7 @@ class AIManager:
 
             # SQL فشل — نبني retry prompt
             last_error = run_result["error"]
+            last_error_type = None
             logger.warning("SQL execution failed (attempt %d): %s", attempt, last_error)
 
             if attempt < self.max_tries:
@@ -200,14 +226,17 @@ class AIManager:
                     error_message   = last_error,
                 )
 
-        # فشلت كل المحاولات
+        # فشلت كل المحاولات (أو توقفنا مبكراً بسبب خطأ دائم)
         logger.error("All attempts failed (%d/%d). Last error: %s", attempt, self.max_tries, last_error)
-        return {
+        result = {
             "ok"   : False,
             "sql"  : last_sql,
             "error": last_error,
             "tries": attempt,
         }
+        if last_error_type:
+            result["error_type"] = last_error_type
+        return result
 
     # ──────────────────────────────────────────────────────────
     #  دوال مساعدة
@@ -247,6 +276,7 @@ class AIManager:
         }
         """
         # المرحلة ١: نحصل على البيانات الفعلية بنفس آلية ask() المعتادة
+        # (وتشمل نفس منطق التوقف المبكر عند خطأ مصادقة دائم)
         data_result = self.ask(question, result_type="story", ai_rules=ai_rules, filters=filters)
         if not data_result["ok"]:
             return data_result
@@ -266,10 +296,19 @@ class AIManager:
             send_result = self.engine.send(story_prompt, self.temperature)
             if send_result["ok"]:
                 break
+
+            error_type = send_result.get("error_type")
             logger.warning(
                 "Story engine send failed (attempt %d/%d): %s",
                 attempt, self.max_tries, send_result["error"]
             )
+
+            # خطأ دائم (مصادقة) — نتوقف فوراً بدل إعادة نفس الخطأ 3 مرات
+            # مع انتظار كامل بينها بلا أي فائدة.
+            if error_type in _PERMANENT_ERROR_TYPES:
+                logger.error("Permanent error (%s) during story generation — stopping", error_type)
+                break
+
             if attempt < self.max_tries:
                 logger.info("Waiting %ds before retry (story generation)...", self.retry_delay)
                 if self.retry_delay > 0:
@@ -278,6 +317,8 @@ class AIManager:
         if not send_result["ok"]:
             data_result["ok"] = False
             data_result["error"] = f"فشل توليد التحليل النصي: {send_result['error']}"
+            if send_result.get("error_type"):
+                data_result["error_type"] = send_result["error_type"]
             return data_result
 
         story_text = self.engine.clean_response(send_result["text"]).strip()
