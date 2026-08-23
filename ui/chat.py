@@ -3,6 +3,12 @@ ui/chat.py
 ==========
 واجهة المحادثة: كتابة سؤال بلغة طبيعية → SQL من AI → تنفيذ → عرض النتيجة
 كـ جدول / رسم بياني / gauge / KPI، مع إمكانية الإرسال للتقرير.
+
+نوع الرسم البياني:
+--------------------
+عند اختيار "رسم بياني" كنوع نتيجة، تظهر قائمة منسدلة إضافية لاختيار
+نوع الرسم (أعمدة/خطي/دائري/مساحي/متفرق) — بدل افتراض "أعمدة" دائماً.
+الاختيار يُحفظ مع النتيجة ويُستخدم أيضاً عند الإرسال لتقرير.
 """
 
 import uuid
@@ -15,6 +21,7 @@ import plotly.graph_objects as go
 from ui.common import apply_rtl, require_login, require_project, sidebar_header
 from ai.ai_manager import AIManager, get_engine
 from core.query_engine import QueryEngine
+from config import CHART_TYPES
 
 
 def show_chat():
@@ -60,6 +67,13 @@ def show_chat():
                 "kpi": "بطاقة مؤشر (KPI)", "story": "تحليل نصي (Story Telling)",
             }.get(t, t),
         )
+        chart_type = "bar"
+        if result_type == "chart":
+            chart_type = st.selectbox(
+                "نوع الرسم",
+                list(CHART_TYPES.keys()),
+                format_func=lambda t: CHART_TYPES[t],
+            )
         run_clicked = st.button("▶️ إرسال", width='stretch', type="primary")
 
     if run_clicked:
@@ -77,6 +91,7 @@ def show_chat():
                     result = ai.ask(question, result_type=result_type, ai_rules=settings.get("ai_rules"))
             st.session_state.last_result = result
             st.session_state.last_result_type = result_type
+            st.session_state.last_chart_type = chart_type
             st.session_state.last_question = question
             chat_id = str(uuid.uuid4())
             db.save_chat_result(
@@ -89,7 +104,11 @@ def show_chat():
 
     result = st.session_state.get("last_result")
     if result:
-        _render_result(db, result, st.session_state.get("last_result_type", "table"))
+        _render_result(
+            db, result,
+            st.session_state.get("last_result_type", "table"),
+            st.session_state.get("last_chart_type", "bar"),
+        )
 
     st.divider()
     with st.expander("🕓 سجل المحادثة"):
@@ -105,7 +124,7 @@ def show_chat():
             st.markdown("---")
 
 
-def _render_result(db, result: dict, result_type: str):
+def _render_result(db, result: dict, result_type: str, chart_type: str = "bar"):
     if not result["ok"]:
         st.error(f"فشل الاستعلام بعد {result.get('tries', 0)} محاولة: {result.get('error')}")
         if result.get("sql"):
@@ -133,9 +152,22 @@ def _render_result(db, result: dict, result_type: str):
         else:
             x_col = df.columns[0]
             y_cols = list(df.columns[1:3])
-            fig = px.bar(df, x=x_col, y=y_cols, barmode="group", text_auto=True)
-            fig.update_layout(margin=dict(l=10, r=10, t=30, b=10))
-            st.plotly_chart(fig, width='stretch')
+            try:
+                if chart_type == "line":
+                    fig = px.line(df, x=x_col, y=y_cols, markers=True)
+                elif chart_type == "pie":
+                    fig = px.pie(df, names=x_col, values=y_cols[0])
+                elif chart_type == "area":
+                    fig = px.area(df, x=x_col, y=y_cols)
+                elif chart_type == "scatter":
+                    fig = px.scatter(df, x=x_col, y=y_cols[0])
+                else:
+                    fig = px.bar(df, x=x_col, y=y_cols, barmode="group", text_auto=True)
+                fig.update_layout(margin=dict(l=10, r=10, t=30, b=10))
+                st.plotly_chart(fig, width='stretch')
+            except Exception as e:
+                st.error(f"تعذر رسم البيانات بنوع «{chart_type}»: {e}")
+                st.dataframe(df, width='stretch', hide_index=True)
 
     elif result_type == "gauge":
         row = df.iloc[0].to_dict() if not df.empty else {}
@@ -185,6 +217,7 @@ def _render_result(db, result: dict, result_type: str):
                 r = _add_block_for_type(
                     rm, report_id, result_id, result_type, df, label,
                     story_text=result.get("story"), include_data_table=include_data_table,
+                    chart_type=chart_type,
                 )
                 if r["ok"]:
                     st.success("تمت الإضافة إلى التقرير")
@@ -193,14 +226,15 @@ def _render_result(db, result: dict, result_type: str):
 
 
 def _add_block_for_type(rm, report_id, result_id, result_type, df: pd.DataFrame, label,
-                         story_text: str = None, include_data_table: bool = False):
+                         story_text: str = None, include_data_table: bool = False,
+                         chart_type: str = "bar"):
     if result_type == "table":
         return rm.add_table(report_id, result_id, df.to_dict(orient="records"), list(df.columns))
     if result_type == "chart":
         x_col = df.columns[0]
         y_cols = list(df.columns[1:3])
         return rm.add_chart(
-            report_id, result_id, "bar", df.to_dict(orient="records"), x_col, y_cols, title=label,
+            report_id, result_id, chart_type, df.to_dict(orient="records"), x_col, y_cols, title=label,
         )
     if result_type == "gauge":
         row = df.iloc[0].to_dict() if not df.empty else {}
