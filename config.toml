@@ -1,0 +1,20 @@
+[server]
+# أقصى حجم لملف مرفوع (ميغابايت) — مهم لأن التطبيق يعتمد على رفع
+# ملفات Excel/CSV قد تكون كبيرة نسبياً. القيمة الافتراضية في Streamlit
+# هي 200 أصلاً، لكن نضبطها صراحة هنا لتوضيح النية ولسهولة تعديلها.
+maxUploadSize = 200
+enableXsrfProtection = true
+
+[theme]
+# ثيم افتراضي متوافق مع "Ocean Dark" المستخدم في التطبيق (config.py →
+# THEME_COLORS). المستخدم لا يزال يتحكم بثيمات إضافية من داخل التطبيق
+# نفسه؛ هذا فقط يضبط المظهر العام لعناصر Streamlit الأساسية (الأزرار،
+# الخلفية) قبل تحميل أي مشروع.
+base = "dark"
+primaryColor = "#2563EB"
+backgroundColor = "#0F172A"
+secondaryBackgroundColor = "#1E3A5F"
+textColor = "#F8FAFC"
+
+[browser]
+gatherUsageStats = false
