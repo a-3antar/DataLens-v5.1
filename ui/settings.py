@@ -29,6 +29,15 @@ def show_settings():
             index=AI_ENGINES.index(settings.get("ai_engine", "gemini")),
         )
 
+        if engine_name == "ollama":
+            st.warning(
+                "⚠️ Ollama محرك محلي يتصل بسيرفر يعمل على جهازك أو شبكتك "
+                "المحلية فقط. لن يعمل هذا الخيار إطلاقاً لو كان التطبيق "
+                "منشوراً على Streamlit Community Cloud أو أي استضافة "
+                "سحابية أخرى — استخدمه فقط عند تشغيل التطبيق محلياً على "
+                "جهازك."
+            )
+
         api_key = ""
         ollama_url = settings.get("ollama_url", "http://localhost:11434")
         if engine_name == "ollama":
