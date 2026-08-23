@@ -34,8 +34,8 @@ class BaseEngine(ABC):
     """
 
     def __init__(self, api_key: str = "", model: str = "", timeout: int = 30):
-        self.api_key = api_key
-        self.model   = model
+        self.api_key = api_key.strip()
+        self.model   = model.strip()
         self.timeout = timeout
 
     # ── دوال مجردة — يجب تطبيقها في كل محرك ─────────────────
