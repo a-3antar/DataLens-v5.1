@@ -13,6 +13,12 @@ ui/dashboards.py
   تُعاد فقط بتطبيق الفلاتر على SQL محفوظ مسبقاً — أسرع وبدون تكلفة AI.
 - كل خلية تعرض badge صغير يوضح للمستخدم هل التحديث القادم سيكون
   "⚡ سريع" أو يحتاج "🤖 AI".
+
+واجهة الخلية:
+---------------
+أزرار "تحديث/تعديل/إفراغ" مخفية داخل قائمة مطوية (⚙️) بدل ظهورها
+كثلاثة أزرار دائمة تحت كل خلية — يقلل الازدحام البصري خصوصاً في
+القوالب ذات الخلايا الكثيرة (مثل قالب E بـ ٦ خلايا + ٤ Gauges).
 """
 
 import uuid
@@ -26,13 +32,21 @@ from ui.common import apply_rtl, require_login, require_project, sidebar_header
 from core.dashboard_templates import DASHBOARD_TEMPLATES, get_template
 from core.dashboard_manager import DashboardManager
 from ai.ai_manager import AIManager, get_engine
-from config import DASHBOARD_SLICER_COUNT, DASHBOARD_GAUGE_COUNT, DASHBOARD_SLICER_VALUES_LIMIT
+from config import (
+    DASHBOARD_SLICER_COUNT, DASHBOARD_GAUGE_COUNT,
+    DASHBOARD_SLICER_VALUES_LIMIT, CHART_TYPES,
+)
 
 DISPLAY_TYPE_LABELS = {
     "table": "جدول", "chart": "رسم بياني", "gauge": "مقياس (Gauge)",
     "kpi": "بطاقة مؤشر (KPI)", "story": "تحليل نصي (Story Telling)",
 }
-CHART_TYPE_LABELS = {"bar": "أعمدة", "line": "خطي", "pie": "دائري", "area": "مساحي"}
+CHART_TYPE_LABELS = CHART_TYPES
+
+# دعم st.popover ظهر في إصدارات Streamlit الحديثة (>=1.32). بما أن
+# requirements.txt يثبّت streamlit>=1.40 فهو متاح دائماً هنا، لكن
+# نتحقق دفاعياً لتفادي أي كسر لو شُغِّل التطبيق ببيئة أقدم بالخطأ.
+_HAS_POPOVER = hasattr(st, "popover")
 
 
 def show_dashboards():
@@ -63,7 +77,7 @@ def _show_dashboard_gallery(db):
                 st.markdown(f"**{key} — {tmpl['name']}**")
                 st.caption(tmpl["description"])
             with c2:
-                if st.button("اختيار", key=f"pick_tmpl_{key}", use_container_width=True):
+                if st.button("اختيار", key=f"pick_tmpl_{key}", width='stretch'):
                     if not title.strip():
                         st.error("الرجاء إدخال عنوان اللوحة أولاً")
                     else:
@@ -87,23 +101,23 @@ def _show_dashboard_gallery(db):
                 st.markdown(f"**{d['title']}**")
                 st.caption(f"القالب: {tmpl['name']} | آخر تحديث: {d.get('updated_at') or 'لم يُحدَّث بعد'}")
             with c2:
-                if st.button("📂 فتح", key=f"open_dash_{d['id']}", use_container_width=True):
+                if st.button("📂 فتح", key=f"open_dash_{d['id']}", width='stretch'):
                     st.session_state.current_dashboard_id = d["id"]
                     st.rerun()
             with c3:
-                if st.button("📑 تكرار", key=f"dup_dash_{d['id']}", use_container_width=True):
+                if st.button("📑 تكرار", key=f"dup_dash_{d['id']}", width='stretch'):
                     new_id = str(uuid.uuid4())
                     db.duplicate_dashboard(d["id"], new_id, f"{d['title']} (نسخة)")
                     st.rerun()
             with c4:
                 confirm_key = f"confirm_del_dash_{d['id']}"
                 if st.session_state.get(confirm_key):
-                    if st.button("⚠️ تأكيد الحذف", key=f"confirm_btn_{d['id']}", use_container_width=True):
+                    if st.button("⚠️ تأكيد الحذف", key=f"confirm_btn_{d['id']}", width='stretch'):
                         db.delete_dashboard(d["id"])
                         st.session_state.pop(confirm_key, None)
                         st.rerun()
                 else:
-                    if st.button("🗑️ حذف", key=f"del_dash_{d['id']}", use_container_width=True):
+                    if st.button("🗑️ حذف", key=f"del_dash_{d['id']}", width='stretch'):
                         st.session_state[confirm_key] = True
                         st.rerun()
 
@@ -148,11 +162,11 @@ def _show_dashboard_detail(db):
         st.title(f"📊 {dashboard['title']}")
         st.caption(f"آخر تحديث: {dashboard.get('updated_at') or 'لم يُحدَّث بعد'}")
     with c2:
-        if st.button("↩️ اللوحات", use_container_width=True):
+        if st.button("↩️ اللوحات", width='stretch'):
             st.session_state.current_dashboard_id = None
             st.rerun()
     with c3:
-        if st.button("🔄 تحديث البيانات", type="primary", use_container_width=True):
+        if st.button("🔄 تحديث البيانات", type="primary", width='stretch'):
             with st.spinner(
                 "جاري تحديث كل خلايا اللوحة... قد يستغرق هذا بعض الوقت "
                 "(بما فيها انتظار إعادة المحاولة عند فشل الاتصال بمحرك AI)"
@@ -213,7 +227,7 @@ def _render_slicer_panel(db, dm, dashboard_id, slicers):
     with header_col:
         st.markdown("##### 🔍 عوامل التصفية (Slicers)")
     with reset_col:
-        if st.button("↺ مسح الكل", key=f"reset_slicers_{dashboard_id}", use_container_width=True):
+        if st.button("↺ مسح الكل", key=f"reset_slicers_{dashboard_id}", width='stretch'):
             dm.reset_slicers(dashboard_id)
             # تنظيف حالة الـ widgets المؤقتة حتى تعكس الواجهة القيم
             # الفارغة فوراً بعد rerun (وإلا سيبقى selectbox/multiselect
@@ -265,7 +279,7 @@ def _render_slicer_panel(db, dm, dashboard_id, slicers):
                     else:
                         st.error(dv["error"])
 
-            if st.button("💾 حفظ", key=f"slicer_save_{dashboard_id}_{i}", use_container_width=True):
+            if st.button("💾 حفظ", key=f"slicer_save_{dashboard_id}_{i}", width='stretch'):
                 final_table = sel_table if sel_table != "(بدون)" else None
                 final_column = sel_column if sel_column and sel_column != "(بدون)" else None
                 db.save_dashboard_slicer(
@@ -297,26 +311,41 @@ def _render_dashboard_cell(db, dm, settings, dashboard_id, position, cell):
             else:
                 st.caption("🤖 يحتاج AI (لم يُولَّد SQL بعد)")
 
-            bc1, bc2, bc3 = st.columns(3)
-            with bc1:
-                if st.button("🔄 تحديث", key=f"refresh_one_{dashboard_id}_{position}", use_container_width=True):
-                    with st.spinner("جاري التحديث..."):
-                        r = dm.refresh_single_cell(dashboard_id, position, ai_rules=settings.get("ai_rules"))
-                    if r["ok"]:
-                        st.success("✅ تم" + (" (عبر AI)" if r["used_ai"] else " (سريع بدون AI)"))
-                    else:
-                        st.error(r.get("error", "فشل التحديث"))
-                    st.rerun()
-            with bc2:
-                if st.button("✏️ تعديل", key=f"edit_{dashboard_id}_{position}", use_container_width=True):
-                    st.session_state[edit_key] = True
-                    st.rerun()
-            with bc3:
-                if st.button("🗑️ إفراغ", key=f"clear_{dashboard_id}_{position}", use_container_width=True):
-                    db.clear_dashboard_cell(dashboard_id, position)
-                    st.rerun()
+            _render_cell_actions_menu(db, dm, settings, dashboard_id, position, edit_key)
         else:
             _render_cell_editor(db, dashboard_id, position, cell, is_gauge_row, edit_key)
+
+
+def _render_cell_actions_menu(db, dm, settings, dashboard_id, position, edit_key):
+    """
+    قائمة مطوية واحدة تجمع أزرار (تحديث / تعديل / إفراغ) بدل عرضها
+    كثلاثة أزرار دائمة تحت كل خلية — تقلل الازدحام البصري خصوصاً في
+    القوالب ذات الخلايا الكثيرة. تُستخدم st.popover عند توفرها
+    (تجربة أقرب لقائمة منسدلة حقيقية)، مع fallback إلى st.expander
+    في حال تشغيل التطبيق على إصدار Streamlit أقدم لا يدعم popover.
+    """
+    if _HAS_POPOVER:
+        menu_ctx = st.popover("⚙️ خيارات")
+    else:
+        menu_ctx = st.expander("⚙️ خيارات", expanded=False)
+
+    with menu_ctx:
+        if st.button("🔄 تحديث هذه الخلية", key=f"refresh_one_{dashboard_id}_{position}", width='stretch'):
+            with st.spinner("جاري التحديث..."):
+                r = dm.refresh_single_cell(dashboard_id, position, ai_rules=settings.get("ai_rules"))
+            if r["ok"]:
+                st.success("✅ تم" + (" (عبر AI)" if r["used_ai"] else " (سريع بدون AI)"))
+            else:
+                st.error(r.get("error", "فشل التحديث"))
+            st.rerun()
+
+        if st.button("✏️ تعديل السؤال", key=f"edit_{dashboard_id}_{position}", width='stretch'):
+            st.session_state[edit_key] = True
+            st.rerun()
+
+        if st.button("🗑️ إفراغ الخلية", key=f"clear_{dashboard_id}_{position}", width='stretch'):
+            db.clear_dashboard_cell(dashboard_id, position)
+            st.rerun()
 
 
 def _render_cell_editor(db, dashboard_id, position, cell, is_gauge_row, edit_key):
@@ -362,7 +391,7 @@ def _render_cell_editor(db, dashboard_id, position, cell, is_gauge_row, edit_key
 
     bc1, bc2 = st.columns(2)
     with bc1:
-        if st.button("💾 حفظ", key=f"save_cell_{dashboard_id}_{position}", use_container_width=True, type="primary"):
+        if st.button("💾 حفظ", key=f"save_cell_{dashboard_id}_{position}", width='stretch', type="primary"):
             if not question.strip():
                 st.error("الرجاء كتابة سؤال")
             else:
@@ -371,10 +400,10 @@ def _render_cell_editor(db, dashboard_id, position, cell, is_gauge_row, edit_key
                     title.strip() or None, question.strip(), chart_type,
                 )
                 st.session_state.pop(edit_key, None)
-                st.info("تم الحفظ. اضغط «🔄 تحديث البيانات» أعلى الصفحة أو زر «🔄 تحديث» على الخلية لعرض النتيجة.")
+                st.info("تم الحفظ. اضغط «🔄 تحديث البيانات» أعلى الصفحة أو «⚙️ خيارات → تحديث هذه الخلية» لعرض النتيجة.")
                 st.rerun()
     with bc2:
-        if cell and st.button("إلغاء", key=f"cancel_cell_{dashboard_id}_{position}", use_container_width=True):
+        if cell and st.button("إلغاء", key=f"cancel_cell_{dashboard_id}_{position}", width='stretch'):
             st.session_state.pop(edit_key, None)
             st.rerun()
 
@@ -389,14 +418,14 @@ def _render_cell_result(db, dashboard_id, position, cell):
 
     stored = cell.get("last_result")
     if not stored:
-        st.info("لم يُحدَّث بعد. اضغط «🔄 تحديث البيانات» أعلى الصفحة أو زر «🔄 تحديث» أدناه.")
+        st.info("لم يُحدَّث بعد. اضغط «🔄 تحديث البيانات» أعلى الصفحة أو «⚙️ خيارات» أدناه.")
         return
 
     display_type = cell.get("display_type")
     df = pd.DataFrame(stored.get("rows", []))
 
     if display_type == "table":
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
 
     elif display_type == "chart":
         if df.empty or df.shape[1] < 2:
@@ -412,10 +441,12 @@ def _render_cell_result(db, dashboard_id, position, cell):
                     fig = px.pie(df, names=x_col, values=y_cols[0])
                 elif ctype == "area":
                     fig = px.area(df, x=x_col, y=y_cols)
+                elif ctype == "scatter":
+                    fig = px.scatter(df, x=x_col, y=y_cols[0])
                 else:
                     fig = px.bar(df, x=x_col, y=y_cols, barmode="group", text_auto=True)
                 fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=280)
-                st.plotly_chart(fig, use_container_width=True, key=f"chart_{dashboard_id}_{position}")
+                st.plotly_chart(fig, width='stretch', key=f"chart_{dashboard_id}_{position}")
             except Exception as e:
                 st.error(f"تعذر رسم البيانات: {e}")
 
@@ -429,7 +460,7 @@ def _render_cell_result(db, dashboard_id, position, cell):
             gauge={"axis": {"range": [mn, mx]}},
         ))
         fig.update_layout(height=180, margin=dict(l=10, r=10, t=10, b=10))
-        st.plotly_chart(fig, use_container_width=True, key=f"gauge_{dashboard_id}_{position}")
+        st.plotly_chart(fig, width='stretch', key=f"gauge_{dashboard_id}_{position}")
 
     elif display_type == "kpi":
         row = df.iloc[0].to_dict() if not df.empty else {}
@@ -443,7 +474,7 @@ def _render_cell_result(db, dashboard_id, position, cell):
         story_text = stored.get("story", "")
         st.markdown(story_text)
         with st.expander("📊 البيانات المستخدمة"):
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width='stretch', hide_index=True)
 
     updated = cell.get("last_updated_at")
     if updated:
