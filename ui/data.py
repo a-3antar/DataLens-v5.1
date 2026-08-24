@@ -13,7 +13,7 @@ ui/data.py
 
 import streamlit as st
 
-from ui.common import apply_rtl, require_login, require_project, sidebar_header
+from ui.common import apply_rtl, apply_theme_css, require_login, require_project, sidebar_header
 from core.file_manager import FileManager
 from core.data_manager import DataManager
 
@@ -22,6 +22,7 @@ def show_data():
     apply_rtl()
     require_login()
     db = require_project()
+    apply_theme_css(db.get_settings().get("theme", "ocean_dark"))
     sidebar_header()
 
     fm = FileManager(st.session_state.user_id, st.session_state.project_id)
@@ -117,7 +118,6 @@ def _render_relations_tab(db, dm: DataManager, aliases: list[str]):
     st.divider()
     c1, c2, c3, c4 = st.columns(4)
 
-    # ── من جدول / من عمود ──
     from_table = c1.selectbox("من جدول", aliases, key="rel_from_t")
     from_preview = dm.get_preview(from_table, rows=1) if from_table else {"ok": False}
     from_columns = from_preview["columns"] if from_preview.get("ok") else []
@@ -127,9 +127,6 @@ def _render_relations_tab(db, dm: DataManager, aliases: list[str]):
         key="rel_from_c",
     )
 
-    # ── إلى جدول / إلى عمود (نستبعد الجدول نفسه من قائمة "إلى" افتراضياً
-    # لتفادي ربط جدول بنفسه بالخطأ، لكن نُبقي الخيار متاحاً لو كان هو
-    # الجدول الوحيد في المشروع) ──
     to_table_options = [t for t in aliases if t != from_table] or aliases
     to_table = c3.selectbox("إلى جدول", to_table_options, key="rel_to_t")
     to_preview = dm.get_preview(to_table, rows=1) if to_table else {"ok": False}
@@ -140,7 +137,6 @@ def _render_relations_tab(db, dm: DataManager, aliases: list[str]):
         key="rel_to_c",
     )
 
-    # تحذير لطيف (وليس منع) لو أنواع العمودين تبدو مختلفة بشكل واضح
     if from_col != "(اختر عموداً)" and to_col != "(اختر عموداً)":
         from_stats = dm.get_stats(from_table, from_col)
         to_stats = dm.get_stats(to_table, to_col)
