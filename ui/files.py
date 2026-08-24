@@ -16,7 +16,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from ui.common import apply_rtl, require_login, require_project, sidebar_header
+from ui.common import apply_rtl, apply_theme_css, require_login, require_project, sidebar_header
 from core.file_manager import FileManager
 from core.data_manager import DataManager
 
@@ -25,6 +25,7 @@ def show_files():
     apply_rtl()
     require_login()
     db = require_project()
+    apply_theme_css(db.get_settings().get("theme", "ocean_dark"))
     sidebar_header()
 
     fm = FileManager(st.session_state.user_id, st.session_state.project_id)
