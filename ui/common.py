@@ -63,8 +63,9 @@ RTL_CSS = """
 </style>
 """
 
-# ألوان كل ثيم — تُستخدم لعرض color_picker في صفحة الإعدادات، وأيضاً
-# لتطبيق الثيم فعلياً على الواجهة عبر apply_theme_css() أدناه.
+# ألوان كل ثيم — القيم الافتراضية. لون النص (text) قابل للتخصيص من
+# المستخدم عبر إعدادات المشروع (custom_text_color) — راجع
+# get_theme_colors() أدناه التي تدمج الاختيار الشخصي مع ألوان الثيم.
 THEME_COLORS = {
     "ocean_dark":     {"primary": "#1E3A5F", "accent": "#2563EB", "bg": "#0F172A", "text": "#F8FAFC", "card": "#1E293B"},
     "arctic_light":   {"primary": "#0EA5E9", "accent": "#38BDF8", "bg": "#F8FAFC", "text": "#0F172A", "card": "#FFFFFF"},
@@ -78,12 +79,34 @@ def apply_rtl():
     st.markdown(RTL_CSS, unsafe_allow_html=True)
 
 
-def apply_theme_css(theme_key: str = "ocean_dark"):
+def get_theme_colors(settings: dict) -> dict:
+    """
+    إرجاع قاموس ألوان الثيم النهائي بعد تطبيق أي تخصيص شخصي.
+
+    settings["theme"]             : مفتاح الثيم المختار (ocean_dark, ...)
+    settings["custom_text_color"] : لون نص اختياري يختاره المستخدم بحرية
+                                     من صفحة الإعدادات؛ لو موجود يُستخدم
+                                     بدل لون النص الافتراضي للثيم فقط —
+                                     بقية الألوان (primary/accent/bg/card)
+                                     تبقى كما هي محددة في الثيم.
+
+    تُستخدم هذه الدالة في كل مكان يحتاج معرفة "لون النص الحالي" — سواء
+    لتطبيق CSS على الواجهة (apply_theme_css) أو لتلوين نصوص الرسوم
+    البيانية (Plotly gauge/chart) حتى تتطابق مع باقي نصوص الصفحة.
+    """
+    theme_key = (settings or {}).get("theme", "ocean_dark")
+    colors = dict(THEME_COLORS.get(theme_key, THEME_COLORS["ocean_dark"]))
+    custom_text = (settings or {}).get("custom_text_color")
+    if custom_text:
+        colors["text"] = custom_text
+    return colors
+
+
+def apply_theme_css(theme_key_or_settings):
     """
     تطبيق ألوان الثيم فعلياً على الواجهة (خلفية، أزرار، عناوين، بطاقات،
-    تبويبات، روابط). قبل هذا التعديل كانت THEME_COLORS تُستخدم فقط
-    لعرض color_picker في صفحة الإعدادات (للعرض لا للتطبيق الفعلي)،
-    ولم يكن هناك أي CSS يُغيّر شكل الواجهة عند تبديل الثيم.
+    تبويبات، روابط). يقبل إما مفتاح ثيم نصي (السلوك القديم، للتوافق)
+    أو قاموس settings كامل (يسمح بتطبيق custom_text_color أيضاً).
 
     ملاحظة تقنية مهمة: الألوان "الرسمية" لـ Streamlit (primaryColor،
     backgroundColor...) تُقرأ من config.toml مرة واحدة فقط عند إقلاع
@@ -93,7 +116,11 @@ def apply_theme_css(theme_key: str = "ocean_dark"):
     العناوين، الروابط، الشريط الجانبي) — يُغطي عملياً أغلب ما يراه
     المستخدم دون الحاجة لإعادة تشغيل السيرفر لكل تغيير.
     """
-    colors = THEME_COLORS.get(theme_key, THEME_COLORS["ocean_dark"])
+    if isinstance(theme_key_or_settings, dict):
+        colors = get_theme_colors(theme_key_or_settings)
+    else:
+        colors = dict(THEME_COLORS.get(theme_key_or_settings, THEME_COLORS["ocean_dark"]))
+
     primary = colors["primary"]
     accent = colors["accent"]
     bg = colors["bg"]
@@ -155,16 +182,51 @@ def apply_theme_css(theme_key: str = "ocean_dark"):
     st.markdown(css, unsafe_allow_html=True)
 
 
-def apply_page_style(theme_key: str = None):
+def apply_page_style(settings: dict = None):
     """
     اختصار موحّد لبداية أي صفحة: يُطبّق RTL دائماً، ثم يُطبّق ألوان
-    الثيم فعلياً لو تم تمرير theme_key (عادة settings.get("theme")).
-    الصفحات التي لا يوجد فيها مشروع مفتوح بعد (تسجيل الدخول، معرض
-    المشاريع) تستدعيها بدون theme_key فتحصل على RTL فقط.
+    الثيم (بما فيها لون النص المخصص إن وُجد) لو تم تمرير settings.
     """
     apply_rtl()
-    if theme_key:
-        apply_theme_css(theme_key)
+    if settings:
+        apply_theme_css(settings)
+
+
+def apply_plotly_theme(fig, settings: dict):
+    """
+    توحيد مظهر أي رسم Plotly (gauge أو chart) مع ثيم الصفحة الحالي:
+    - خلفية الرسم بالكامل شفافة (paper_bgcolor/plot_bgcolor) بدل الأبيض
+      الافتراضي من Plotly، حتى تندمج بصرياً مع بطاقة/خلفية الصفحة أياً
+      كان الثيم المختار، بدل تكرار لون الثيم يدوياً (وهو ما قد يتغيّر
+      مستقبلاً مع كل ثيم جديد بينما الشفافية تعمل تلقائياً مع أي ثيم).
+    - لون كل النصوص داخل الرسم (الأرقام، التسميات، المحاور) يُطابق لون
+      النص المختار في الثيم — بما فيه لون النص المخصص الذي يختاره
+      المستخدم بحرية من صفحة الإعدادات — حتى لا تبقى الكتابة سوداء
+      افتراضياً على خلفية شفافة قد تكون داكنة (مشكلة قراءة).
+
+    يُستدعى دائماً بعد بناء أي fig وقبل st.plotly_chart(fig, ...).
+    يُعدّل الـ fig في مكانه ويُرجعه أيضاً لسهولة الاستخدام المتسلسل.
+    """
+    colors = get_theme_colors(settings)
+    text_color = colors["text"]
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color=text_color),
+    )
+    # عناصر الـ gauge (go.Indicator) لا تتبع دائماً font العام أعلاه
+    # بنفس القوة لبعض إصدارات Plotly، فنضبطها صراحة لو كانت موجودة.
+    try:
+        for trace in fig.data:
+            if getattr(trace, "type", None) == "indicator":
+                trace.update(number=dict(font=dict(color=text_color)))
+                if getattr(trace, "gauge", None) is not None:
+                    trace.gauge.update(
+                        axis=dict(tickfont=dict(color=text_color)),
+                    )
+    except Exception:
+        pass
+    return fig
 
 
 def require_login():
@@ -211,11 +273,6 @@ def sidebar_header():
 # ══════════════════════════════════════════════════════════════
 #  التواريخ والمنطقة الزمنية
 # ══════════════════════════════════════════════════════════════
-#
-# كل التواريخ تُخزَّن داخلياً بصيغة ISO بتوقيت UTC (راجع
-# core/project_db.py::_now()). طبقة العرض فقط هي المسؤولة عن التحويل
-# للمنطقة الزمنية المفضّلة للمستخدم (محفوظة في project settings تحت
-# مفتاح "timezone")، حتى لا نُغيّر أي شيء في طريقة التخزين نفسها.
 
 def format_local_dt(iso_str, settings: dict, fmt: str = "%Y-%m-%d %H:%M") -> str:
     """
@@ -230,7 +287,6 @@ def format_local_dt(iso_str, settings: dict, fmt: str = "%Y-%m-%d %H:%M") -> str
     try:
         dt = datetime.fromisoformat(str(iso_str))
         if dt.tzinfo is None:
-            # كل الأوقات المخزَّنة عبر project_db._now() هي UTC ضمنياً
             dt = dt.replace(tzinfo=_dt_timezone.utc)
 
         tz_name = (settings or {}).get("timezone", "Asia/Riyadh")
