@@ -14,11 +14,53 @@ exporters/report_manager.py
 
 import uuid
 import logging
+import datetime as _dt
 from typing import Optional
+
+import pandas as pd
+import numpy as np
 
 from core.project_db import ProjectDB
 
 logger = logging.getLogger(__name__)
+
+
+def _json_safe(value):
+    """
+    تحويل قيمة واحدة إلى نوع قابل للتسلسل عبر json.dumps مباشرة.
+    يعالج أنواع pandas/numpy الشائعة (Timestamp، NaT، int64...) التي
+    تظهر عند تمرير بيانات جاءت من DuckDB/pandas إلى بلوك تقرير، والتي
+    كانت تُسبب "Object of type Timestamp is not JSON serializable".
+    """
+    if value is None:
+        return None
+    if isinstance(value, (pd.Timestamp, _dt.datetime, _dt.date)):
+        return value.isoformat()
+    if isinstance(value, pd.Timedelta):
+        return str(value)
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating,)):
+        f = float(value)
+        return None if pd.isna(f) else f
+    if isinstance(value, (np.bool_,)):
+        return bool(value)
+    if isinstance(value, float) and pd.isna(value):
+        return None
+    if value is pd.NaT:
+        return None
+    return value
+
+
+def _sanitize_content(content: dict) -> dict:
+    """تطبيق _json_safe على كل قيمة داخل content، بشكل متكرر (dict/list متداخلة)."""
+    def walk(obj):
+        if isinstance(obj, dict):
+            return {k: walk(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [walk(v) for v in obj]
+        return _json_safe(obj)
+    return walk(content)
 
 
 class ReportManager:
@@ -214,8 +256,12 @@ class ReportManager:
         if not any(r["id"] == report_id for r in reports):
             return {"ok": False, "error": "التقرير غير موجود"}
         try:
+            # 🆕 تعقيم المحتوى قبل الحفظ — يمنع "Object of type Timestamp
+            # is not JSON serializable" عندما تحتوي البيانات (القادمة من
+            # DuckDB/pandas) أعمدة تاريخ أو أنواع numpy غير قابلة للتسلسل
+            safe_content = _sanitize_content(content)
             position = self._next_position(report_id)
-            self.db.save_report_block(report_id, position, block_type, content)
+            self.db.save_report_block(report_id, position, block_type, safe_content)
             logger.info("Block added: %s[%d] type=%s", report_id, position, block_type)
             return {"ok": True, "position": position}
         except Exception as e:
