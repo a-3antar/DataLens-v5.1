@@ -13,6 +13,13 @@ config.py
 دائمة على الخطة المجانية. لدعم تخزين دائم لاحقاً (مثلاً عبر قرص خارجي
 مثبَّت أو خدمة تخزين سحابية)، اضبط متغير البيئة DATALENS_DATA_DIR
 ليشير لمسار دائم — الكود هنا يقرأه تلقائياً دون أي تعديل إضافي.
+
+ملاحظة عن مفاتيح API:
+------------------------
+مفاتيح API لم تعد تُخزَّن في project.db (راجع core/auth.py) — بل في
+users.db لكل مستخدم لكل محرك. project.db يحتفظ فقط بمرجع اسم المحرك
+والنموذج المُستخدَمين (ai_engine, model)، دون المفتاح نفسه، حتى لا
+يتسرّب أي مفتاح عند تصدير/استيراد/مشاركة ملف مشروع.
 """
 
 import os
@@ -54,6 +61,19 @@ DEFAULT_SETTINGS = {
     "retry_delay": 10,
     "theme"      : "ocean_dark",
     "language"   : "ar",
+    # 🆕 المنطقة الزمنية المستخدمة لعرض كل التواريخ/الأوقات في الواجهة
+    # (آخر تحديث للوحات/الخلايا، سجل المحادثة...). التخزين الداخلي
+    # يبقى دائماً UTC (كما هو في project_db._now())، والتحويل يحدث
+    # فقط في طبقة العرض عبر ui.common.format_local_dt().
+    "timezone"   : "Asia/Riyadh",
+    # 🆕 حد زمني إجمالي اختياري (بالثواني) لعملية توليد SQL الواحدة
+    # (ask())، يوقف إعادة المحاولة فوراً لو تجاوزها حتى مع وجود محاولات
+    # متبقية ضمن max_tries. 0 = بدون حد (السلوك الافتراضي القديم).
+    "max_total_wait_seconds": 0,
+    # 🆕 نفس الفكرة لكن مستقلة لعملية tell_story() الكاملة (التي تحتوي
+    # مرحلتين متتاليتين: توليد SQL ثم توليد نص السرد)، لأن طبيعتها
+    # الزمنية مختلفة عن سؤال SQL عادي.
+    "story_max_total_wait_seconds": 0,
 }
 
 # ─── محركات الـ AI ─────────────────────────────────────────
@@ -115,3 +135,16 @@ SAMPLE_ROWS = 3   # عدد صفوف المثال في الـ Prompt
 DASHBOARD_GAUGE_COUNT = 4    # عدد الـ Gauges الثابت أعلى كل قالب
 DASHBOARD_SLICER_COUNT = 4   # عدد شرائح الفلترة (Slicers) — قابل للتعديل هنا فقط
 DASHBOARD_SLICER_VALUES_LIMIT = 200  # أقصى عدد قيم فريدة تُعرض في قائمة اختيار Slicer
+
+# ─── المناطق الزمنية المقترحة في الواجهة ────────────────────
+# قائمة مختصرة ومعقولة بدل عرض المئات من zoneinfo.available_timezones()
+# دفعة واحدة في selectbox. المنطقة الحالية المحفوظة تُضاف تلقائياً في
+# أعلى القائمة لو لم تكن ضمن هذه المجموعة (راجع ui/settings.py).
+COMMON_TIMEZONES = [
+    "Asia/Riyadh", "Asia/Dubai", "Asia/Kuwait", "Asia/Qatar",
+    "Asia/Bahrain", "Asia/Baghdad", "Asia/Amman", "Asia/Beirut",
+    "Asia/Damascus", "Africa/Cairo", "Africa/Casablanca",
+    "Africa/Tunis", "Africa/Algiers", "Asia/Jerusalem",
+    "Europe/London", "Europe/Paris", "Europe/Berlin",
+    "America/New_York", "America/Los_Angeles", "Asia/Tokyo", "UTC",
+]
