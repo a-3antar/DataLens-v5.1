@@ -21,7 +21,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-from ui.common import apply_rtl, apply_theme_css, require_login, require_project, sidebar_header, format_local_dt
+from ui.common import apply_rtl, apply_theme_css, require_login, require_project, sidebar_header, format_local_dt, apply_plotly_theme
 from ai.ai_manager import AIManager, get_engine
 from core.query_engine import QueryEngine
 from config import CHART_TYPES
@@ -32,7 +32,7 @@ def show_chat():
     require_login()
     db = require_project()
     settings = db.get_settings()
-    apply_theme_css(settings.get("theme", "ocean_dark"))
+    apply_theme_css(settings)
     sidebar_header()
 
     st.title("💬 اسأل بياناتك")
@@ -114,6 +114,7 @@ def show_chat():
             db, result,
             st.session_state.get("last_result_type", "table"),
             st.session_state.get("last_chart_type", "bar"),
+            settings,
         )
 
     st.divider()
@@ -131,7 +132,7 @@ def show_chat():
             st.markdown("---")
 
 
-def _render_result(db, result: dict, result_type: str, chart_type: str = "bar"):
+def _render_result(db, result: dict, result_type: str, chart_type: str = "bar", settings: dict = None):
     if not result["ok"]:
         st.error(f"فشل الاستعلام بعد {result.get('tries', 0)} محاولة: {result.get('error')}")
         if result.get("sql"):
@@ -171,6 +172,7 @@ def _render_result(db, result: dict, result_type: str, chart_type: str = "bar"):
                 else:
                     fig = px.bar(df, x=x_col, y=y_cols, barmode="group", text_auto=True)
                 fig.update_layout(margin=dict(l=10, r=10, t=30, b=10))
+                apply_plotly_theme(fig, settings)
                 st.plotly_chart(fig, width='stretch')
             except Exception as e:
                 st.error(f"تعذر رسم البيانات بنوع «{chart_type}»: {e}")
@@ -186,6 +188,7 @@ def _render_result(db, result: dict, result_type: str, chart_type: str = "bar"):
             value=current,
             gauge={"axis": {"range": [mn, mx]}},
         ))
+        apply_plotly_theme(fig, settings)
         st.plotly_chart(fig, width='stretch')
 
     elif result_type == "kpi":
