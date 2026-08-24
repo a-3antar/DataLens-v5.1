@@ -25,7 +25,7 @@ def show_files():
     apply_rtl()
     require_login()
     db = require_project()
-    apply_theme_css(db.get_settings().get("theme", "ocean_dark"))
+    apply_theme_css(db.get_settings())
     sidebar_header()
 
     fm = FileManager(st.session_state.user_id, st.session_state.project_id)
