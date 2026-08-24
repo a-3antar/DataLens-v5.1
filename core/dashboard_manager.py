@@ -35,7 +35,6 @@ refresh_dashboard() أو refresh_single_cell() (المرتبطين بأزرار 
 
 import json
 import logging
-import threading
 import datetime as _dt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, Callable
@@ -172,20 +171,18 @@ class DashboardManager:
 
         filters = self._build_active_filters(dashboard_id)
         total = len(configured)
-
-        done_lock = threading.Lock()
         done_count = [0]
 
-        def run_and_track(cell):
-            res = self._process_cell(cell, filters, ai_rules)
-            with done_lock:
-                done_count[0] += 1
-                if on_progress:
-                    try:
-                        on_progress(done_count[0], total)
-                    except Exception as e:
-                        logger.warning("on_progress callback failed: %s", e)
-            return res
+        def track_progress():
+            """يُستدعى فقط من الـ main thread (داخل حلقة as_completed أدناه)
+            حتى لا تُستدعى أي دالة st.* من داخل worker thread — استدعاء
+            Streamlit من ثريد غير الرئيسي يُصدر تحذير missing ScriptRunContext."""
+            done_count[0] += 1
+            if on_progress:
+                try:
+                    on_progress(done_count[0], total)
+                except Exception as e:
+                    logger.warning("on_progress callback failed: %s", e)
 
         story_cells = [c for c in configured if (c.get("display_type") or "table") == "story"]
         story_positions = {c["position"] for c in story_cells}
@@ -194,24 +191,31 @@ class DashboardManager:
         all_outcomes = []
 
         # ── خلايا Story Telling: متوازية دائماً بغض النظر عن المحرك ──
+        # ملاحظة: _process_cell لا يستدعي أي دالة st.* — فقط منطق بيانات
+        # بحت (AI/DuckDB)، لذا تشغيله داخل thread آمن تماماً. التحديث
+        # البصري (track_progress) يحدث فقط بعد استلام النتيجة في الـ
+        # main thread عبر as_completed، وليس من داخل الـ thread نفسه.
         if story_cells:
             workers = min(max_workers, max(1, len(story_cells)))
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="story") as ex:
-                futures = [ex.submit(run_and_track, c) for c in story_cells]
+                futures = {ex.submit(self._process_cell, c, filters, ai_rules): c for c in story_cells}
                 for f in as_completed(futures):
                     all_outcomes.append(f.result())
+                    track_progress()
 
         # ── بقية الخلايا: متوازية فقط لو المحرك ليس Ollama ──
         if other_cells:
             if engine_name != "ollama":
                 with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="cell") as ex:
-                    futures = [ex.submit(run_and_track, c) for c in other_cells]
+                    futures = {ex.submit(self._process_cell, c, filters, ai_rules): c for c in other_cells}
                     for f in as_completed(futures):
                         all_outcomes.append(f.result())
+                        track_progress()
             else:
                 # Ollama محلي — لا فائدة حقيقية من التوازي، نبقيه تسلسلياً
                 for c in other_cells:
-                    all_outcomes.append(run_and_track(c))
+                    all_outcomes.append(self._process_cell(c, filters, ai_rules))
+                    track_progress()
 
         # ── كتابة النتائج تسلسلياً في project.db بعد انتهاء كل الـ threads ──
         # (تجنّباً لأي تزامن كتابة SQLite من عدة threads في وقت واحد)
