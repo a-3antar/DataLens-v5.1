@@ -4,6 +4,9 @@ ui/chat.py
 واجهة المحادثة: كتابة سؤال بلغة طبيعية → SQL من AI → تنفيذ → عرض النتيجة
 كـ جدول / رسم بياني / gauge / KPI، مع إمكانية الإرسال للتقرير.
 
+مفتاح API يُقرأ من إعدادات المشروع (project.db) كما كان دائماً — كل
+مشروع له مفتاحه الخاص.
+
 نوع الرسم البياني:
 --------------------
 عند اختيار "رسم بياني" كنوع نتيجة، تظهر قائمة منسدلة إضافية لاختيار
@@ -18,7 +21,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-from ui.common import apply_rtl, require_login, require_project, sidebar_header
+from ui.common import apply_rtl, apply_theme_css, require_login, require_project, sidebar_header, format_local_dt
 from ai.ai_manager import AIManager, get_engine
 from core.query_engine import QueryEngine
 from config import CHART_TYPES
@@ -28,19 +31,20 @@ def show_chat():
     apply_rtl()
     require_login()
     db = require_project()
+    settings = db.get_settings()
+    apply_theme_css(settings.get("theme", "ocean_dark"))
     sidebar_header()
 
     st.title("💬 اسأل بياناتك")
-
-    settings = db.get_settings()
 
     if not db.get_files():
         st.info("لا توجد جداول بعد. ارفع ملفاً أولاً من صفحة الملفات.")
         return
 
+    engine_name = settings.get("ai_engine", "gemini")
     engine = get_engine(
-        engine_name=settings.get("ai_engine", "gemini"),
-        api_key=settings.get(f"api_key_{settings.get('ai_engine', 'gemini')}", ""),
+        engine_name=engine_name,
+        api_key=settings.get(f"api_key_{engine_name}", ""),
         model=settings.get("model", ""),
         timeout=settings.get("timeout", 30),
         ollama_url=settings.get("ollama_url", "http://localhost:11434"),
@@ -54,6 +58,8 @@ def show_chat():
         temperature=settings.get("temperature", 0.1),
         max_tries=settings.get("max_tries", 3),
         retry_delay=settings.get("retry_delay", 10),
+        max_total_wait_seconds=settings.get("max_total_wait_seconds", 0),
+        story_max_total_wait_seconds=settings.get("story_max_total_wait_seconds", 0),
     )
 
     c1, c2 = st.columns([3, 1])
@@ -120,7 +126,8 @@ def show_chat():
                 st.code(h["sql_query"], language="sql")
             if h.get("error"):
                 st.caption(f"خطأ: {h['error']}")
-            st.caption(h["created_at"])
+            # 🆕 عرض التوقيت بالمنطقة الزمنية المفضّلة للمستخدم بدل UTC خام
+            st.caption(format_local_dt(h["created_at"], settings))
             st.markdown("---")
 
 
