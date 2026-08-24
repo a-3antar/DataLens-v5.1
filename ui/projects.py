@@ -2,6 +2,12 @@
 ui/projects.py
 ==============
 إنشاء / فتح / إعادة تسمية / حذف / تصدير / استيراد المشاريع.
+
+عند إنشاء مشروع جديد، تُعبَّأ إعدادات محرك AI (والمفتاح) تلقائياً
+بآخر محرك+مفتاح+نموذج استخدمه المستخدم (من users.db عبر AuthManager)
+كقيمة افتراضية مبدئية فقط — تُحفظ داخل project.db الخاص بالمشروع
+الجديد تماماً كأي إعداد آخر، ويستطيع المستخدم تغييرها أو حتى استخدام
+محرك مختلف تماماً لهذا المشروع بدون أي قيد.
 """
 
 from pathlib import Path
@@ -10,10 +16,11 @@ import tempfile
 import streamlit as st
 
 from ui.common import (
-    apply_rtl, require_login, sidebar_header, get_project_manager,
+    apply_rtl, apply_theme_css, require_login, sidebar_header, get_project_manager,
     temp_export_dir, offer_download,
 )
 from core.project_db import ProjectDB
+from core.auth import AuthManager
 
 
 def show_projects():
@@ -21,6 +28,13 @@ def show_projects():
     require_login()
     sidebar_header()
     pm = get_project_manager()
+
+    # لا مشروع مفتوح بالضرورة في هذه الصفحة؛ نطبّق ثيم آخر مشروع كان
+    # مفتوحاً إن وُجد، وإلا الثيم الافتراضي، حتى تبقى الصفحة متسقة بصرياً
+    fallback_theme = "ocean_dark"
+    if st.session_state.get("db"):
+        fallback_theme = st.session_state.db.get_settings().get("theme", "ocean_dark")
+    apply_theme_css(fallback_theme)
 
     st.title("📁 المشاريع")
 
@@ -30,6 +44,19 @@ def show_projects():
             if st.form_submit_button("إنشاء"):
                 r = pm.create(name)
                 if r["ok"]:
+                    # 🆕 تعبئة تلقائية بآخر محرك/مفتاح/نموذج AI استخدمه
+                    # المستخدم — تُحفظ في project.db الخاص بهذا المشروع
+                    # الجديد فقط كنقطة انطلاق، وقابلة للتعديل فوراً من
+                    # صفحة الإعدادات دون أي قيد.
+                    last = AuthManager().get_last_used_engine(st.session_state.user_id)
+                    if last and last.get("engine_name"):
+                        updates = {
+                            "ai_engine": last["engine_name"],
+                            "model": last.get("model", "") or "",
+                        }
+                        if last["engine_name"] != "ollama" and last.get("api_key"):
+                            updates[f"api_key_{last['engine_name']}"] = last["api_key"]
+                        r["db"].save_settings(updates)
                     st.success(f"تم إنشاء المشروع: {name}")
                     st.session_state.project_id = r["project_id"]
                     st.session_state.db = r["db"]
