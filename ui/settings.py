@@ -13,11 +13,22 @@ ui/settings.py
 users.db (عبر core.auth.AuthManager) — تُستخدم فقط كقيمة افتراضية
 تُقترح تلقائياً عند إنشاء مشروع جديد (راجع ui/projects.py)، ولا تحل
 محل مفتاح المشروع أو تفرض عليه أي شيء.
+
+لون النص:
+-----------
+لون النص الأساسي كان قبل هذا التعديل ثابتاً حسب الثيم المختار فقط
+(color_picker معطّل للعرض فقط). الآن المستخدم يستطيع اختيار لون نص
+مخصص بحرية عبر color_picker فعلي — يُحفظ في project settings تحت
+"custom_text_color" ويُطبَّق في كل الواجهة (عبر apply_theme_css)
+وفي نصوص الرسوم البيانية (عبر apply_plotly_theme في ui/common.py).
 """
 
 import streamlit as st
 
-from ui.common import apply_rtl, apply_theme_css, require_login, require_project, sidebar_header, THEME_COLORS
+from ui.common import (
+    apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
+    THEME_COLORS, get_theme_colors,
+)
 from ai.ai_manager import get_engine
 from core.auth import AuthManager
 from config import AI_ENGINES, THEMES, COMMON_TIMEZONES
@@ -28,7 +39,7 @@ def show_settings():
     require_login()
     db = require_project()
     settings = db.get_settings()
-    apply_theme_css(settings.get("theme", "ocean_dark"))
+    apply_theme_css(settings)
     sidebar_header()
 
     st.title("⚙️ الإعدادات")
@@ -107,8 +118,8 @@ def show_settings():
                 updates[f"api_key_{engine_name}"] = api_key
             db.save_settings(updates)
 
-            # 🆕 مزامنة نسخة "آخر مفتاح استُخدم" في users.db — فقط
-            # كاقتراح افتراضي لمشاريع جديدة مستقبلاً، لا يمس هذا المشروع
+            # مزامنة نسخة "آخر مفتاح استُخدم" في users.db — فقط كاقتراح
+            # افتراضي لمشاريع جديدة مستقبلاً، لا يمس هذا المشروع
             if engine_name != "ollama" and api_key:
                 auth.save_api_key(user_id, engine_name, api_key, model)
 
@@ -171,16 +182,37 @@ def show_settings():
             format_func=lambda k: THEMES[k],
             index=list(THEMES.keys()).index(settings.get("theme", "ocean_dark")),
         )
-        colors = THEME_COLORS.get(theme_key, {})
-        c1, c2, c3 = st.columns(3)
-        c1.color_picker("اللون الأساسي", colors.get("primary", "#1E3A5F"), disabled=True)
-        c2.color_picker("لون التمييز", colors.get("accent", "#2563EB"), disabled=True)
-        c3.color_picker("لون الخلفية", colors.get("bg", "#0F172A"), disabled=True)
+        default_colors = THEME_COLORS.get(theme_key, {})
 
-        st.caption("👀 معاينة فورية للثيم المختار قبل الحفظ:")
-        apply_theme_css(theme_key)
+        c1, c2 = st.columns(2)
+        c1.color_picker("اللون الأساسي (ثابت حسب الثيم)", default_colors.get("primary", "#1E3A5F"), disabled=True)
+        c2.color_picker("لون التمييز (ثابت حسب الثيم)", default_colors.get("accent", "#2563EB"), disabled=True)
+
+        st.markdown("**🖋️ لون النص**")
+        st.caption(
+            "لون النص الافتراضي يتبع الثيم المختار، لكن يمكنك اختيار لون "
+            "مخصص خاص بك بدلاً منه. هذا اللون يُطبَّق أيضاً على نصوص "
+            "الرسوم البيانية (Gauges والمخططات) لتبقى متناسقة ومقروءة."
+        )
+        current_custom = settings.get("custom_text_color") or default_colors.get("text", "#F8FAFC")
+        custom_text_color = st.color_picker("لون النص", current_custom)
+
+        use_default_text = st.checkbox(
+            "استخدام لون النص الافتراضي للثيم (تجاهل اختياري أعلاه)",
+            value=not bool(settings.get("custom_text_color")),
+        )
+
+        st.caption("👀 معاينة فورية قبل الحفظ:")
+        preview_settings = {
+            "theme": theme_key,
+            "custom_text_color": None if use_default_text else custom_text_color,
+        }
+        apply_theme_css(preview_settings)
 
         if st.button("💾 حفظ الثيم"):
-            db.save_settings({"theme": theme_key})
-            st.success("تم الحفظ وتطبيقه على كل صفحات التطبيق فوراً")
+            db.save_settings({
+                "theme": theme_key,
+                "custom_text_color": None if use_default_text else custom_text_color,
+            })
+            st.success("تم الحفظ وتطبيقه على كل صفحات التطبيق فوراً (بما فيها الرسوم البيانية)")
             st.rerun()
