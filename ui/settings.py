@@ -1,25 +1,39 @@
 """
 ui/settings.py
 ==============
-إعدادات المشروع: محرك AI، النموذج، مفاتيح API، الثيم، auto-run،
-عدد المحاولات، مهلة الاتصال، ومدة الانتظار قبل إعادة المحاولة.
+إعدادات المشروع: محرك AI، النموذج، مفتاح API، الثيم، auto-run،
+عدد المحاولات، مهلة الاتصال، مدة الانتظار، المنطقة الزمنية،
+والحد الزمني الشامل الاختياري.
+
+مفتاح API:
+------------
+يبقى مخزَّناً في project.db لكل مشروع تحديداً (api_key_{engine})،
+تماماً كالسابق — كل مشروع يحتفظ بمفتاحه الخاص وقابل للتغيير بحرية.
+بالإضافة لذلك، عند كل حفظ نُخزِّن نسخة "آخر مفتاح استُخدم" في
+users.db (عبر core.auth.AuthManager) — تُستخدم فقط كقيمة افتراضية
+تُقترح تلقائياً عند إنشاء مشروع جديد (راجع ui/projects.py)، ولا تحل
+محل مفتاح المشروع أو تفرض عليه أي شيء.
 """
 
 import streamlit as st
 
-from ui.common import apply_rtl, require_login, require_project, sidebar_header, THEME_COLORS
+from ui.common import apply_rtl, apply_theme_css, require_login, require_project, sidebar_header, THEME_COLORS
 from ai.ai_manager import get_engine
-from config import AI_ENGINES, THEMES
+from core.auth import AuthManager
+from config import AI_ENGINES, THEMES, COMMON_TIMEZONES
 
 
 def show_settings():
     apply_rtl()
     require_login()
     db = require_project()
+    settings = db.get_settings()
+    apply_theme_css(settings.get("theme", "ocean_dark"))
     sidebar_header()
 
     st.title("⚙️ الإعدادات")
-    settings = db.get_settings()
+    auth = AuthManager()
+    user_id = st.session_state.user_id
 
     tab_ai, tab_general, tab_theme = st.tabs(["🤖 محرك AI", "⚙️ عام", "🎨 الثيم"])
 
@@ -47,6 +61,8 @@ def show_settings():
                 f"مفتاح API لـ {engine_name}",
                 value=settings.get(f"api_key_{engine_name}", ""),
                 type="password",
+                help="خاص بهذا المشروع فقط ويمكن تغييره بحرية. آخر مفتاح "
+                     "تحفظه يُقترح تلقائياً كافتراضي عند إنشاء مشروع جديد.",
             )
 
         c1, c2 = st.columns([3, 1])
@@ -90,6 +106,12 @@ def show_settings():
             else:
                 updates[f"api_key_{engine_name}"] = api_key
             db.save_settings(updates)
+
+            # 🆕 مزامنة نسخة "آخر مفتاح استُخدم" في users.db — فقط
+            # كاقتراح افتراضي لمشاريع جديدة مستقبلاً، لا يمس هذا المشروع
+            if engine_name != "ollama" and api_key:
+                auth.save_api_key(user_id, engine_name, api_key, model)
+
             st.success("تم الحفظ")
 
     with tab_general:
@@ -102,12 +124,43 @@ def show_settings():
             help="يُستخدم فقط عند فشل الاتصال بمحرك AI نفسه (وليس عند خطأ SQL). "
                  "مع كل محاولة فاشلة يُنتظر هذا القدر من الوقت قبل إعادة المحاولة.",
         )
+
+        st.markdown("**⏱️ حد زمني إجمالي (اختياري)**")
+        st.caption(
+            "0 = بدون حد (السلوك الافتراضي: تُستهلك كل المحاولات مع كامل مدة "
+            "الانتظار بينها). لو ضُبط بقيمة أكبر من صفر، تتوقف إعادة المحاولة "
+            "فوراً عند تجاوز هذا الحد الكلي حتى لو تبقّت محاولات ضمن الحد "
+            "الأقصى للمحاولات أعلاه."
+        )
+        max_total_wait = st.number_input(
+            "الحد الزمني الإجمالي لتوليد SQL (ثانية، 0 = بدون حد)",
+            0, 3600, int(settings.get("max_total_wait_seconds", 0)),
+        )
+        story_max_total_wait = st.number_input(
+            "الحد الزمني الإجمالي للتحليل النصي — Story Telling (ثانية، 0 = بدون حد)",
+            0, 3600, int(settings.get("story_max_total_wait_seconds", 0)),
+            help="مستقل عن الحد أعلاه لأن السرد النصي يحتاج استدعاءين "
+                 "متتاليين (توليد SQL ثم توليد النص) وطبيعته الزمنية مختلفة.",
+        )
+
+        st.markdown("**🌍 المنطقة الزمنية**")
+        current_tz = settings.get("timezone", "Asia/Riyadh")
+        tz_options = COMMON_TIMEZONES if current_tz in COMMON_TIMEZONES else [current_tz] + COMMON_TIMEZONES
+        timezone_choice = st.selectbox(
+            "تُستخدم لعرض كل التواريخ والأوقات في التطبيق (آخر تحديث للوحات، "
+            "سجل المحادثة...). التخزين الداخلي يبقى UTC دائماً.",
+            tz_options, index=tz_options.index(current_tz),
+        )
+
         if st.button("💾 حفظ الإعدادات العامة"):
             db.save_settings({
                 "auto_run": auto_run,
                 "max_tries": max_tries,
                 "timeout": timeout,
                 "retry_delay": retry_delay,
+                "max_total_wait_seconds": max_total_wait,
+                "story_max_total_wait_seconds": story_max_total_wait,
+                "timezone": timezone_choice,
             })
             st.success("تم الحفظ")
 
@@ -119,9 +172,15 @@ def show_settings():
             index=list(THEMES.keys()).index(settings.get("theme", "ocean_dark")),
         )
         colors = THEME_COLORS.get(theme_key, {})
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns(3)
         c1.color_picker("اللون الأساسي", colors.get("primary", "#1E3A5F"), disabled=True)
         c2.color_picker("لون التمييز", colors.get("accent", "#2563EB"), disabled=True)
+        c3.color_picker("لون الخلفية", colors.get("bg", "#0F172A"), disabled=True)
+
+        st.caption("👀 معاينة فورية للثيم المختار قبل الحفظ:")
+        apply_theme_css(theme_key)
+
         if st.button("💾 حفظ الثيم"):
             db.save_settings({"theme": theme_key})
-            st.success("تم الحفظ — سيُطبق الثيم عند إعادة التحميل")
+            st.success("تم الحفظ وتطبيقه على كل صفحات التطبيق فوراً")
+            st.rerun()
