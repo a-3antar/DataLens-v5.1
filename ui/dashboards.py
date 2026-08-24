@@ -9,6 +9,13 @@ Threads عند استخدام محرك سحابي.
 
 مفتاح API يُقرأ من إعدادات المشروع (project.db) كما كان دائماً.
 
+مظهر الرسوم البيانية:
+------------------------
+كل رسوم Plotly (Gauges والمخططات) تُمرَّر عبر apply_plotly_theme()
+(ui/common.py) قبل عرضها — تُصبح خلفيتها شفافة (تندمج مع خلفية/بطاقة
+الثيم الحالي بدل الأبيض الافتراضي)، وتُصبح كل نصوصها (الأرقام،
+التسميات، المحاور) بنفس لون النص الذي يختاره المستخدم من الإعدادات.
+
 تحديث الخلايا:
 ----------------
 - تحديث اللوحة كاملة أو خلية واحدة يستخدم AI فقط عند الحاجة الفعلية
@@ -17,7 +24,10 @@ Threads عند استخدام محرك سحابي.
 - خلايا Story Telling تُنفَّذ دائماً بالتوازي (الأبطأ). بقية الخلايا
   تتوازى فقط عند استخدام محرك سحابي (وليس Ollama المحلي).
 - أثناء التحديث الكامل، يظهر مؤشر بصري بسيط (نص متحرك) بدل شريط تقدم
-  دقيق — أبسط وأخف على الأداء.
+  دقيق — أبسط وأخف على الأداء. مؤشر التقدم يُحدَّث فقط من الـ main
+  thread (بعد استلام كل نتيجة عبر as_completed في core/dashboard_manager.py)
+  حتى لا تُستدعى أي دالة Streamlit من داخل worker thread (وهو ما كان
+  يُصدر تحذير "missing ScriptRunContext").
 
 إنشاء لوحة تلقائياً بالذكاء الاصطناعي:
 ------------------------------------------
@@ -34,7 +44,10 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-from ui.common import apply_rtl, apply_theme_css, require_login, require_project, sidebar_header, format_local_dt
+from ui.common import (
+    apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
+    format_local_dt, apply_plotly_theme,
+)
 from core.dashboard_templates import DASHBOARD_TEMPLATES, get_template
 from core.dashboard_manager import DashboardManager
 from ai.ai_manager import AIManager, get_engine
@@ -58,7 +71,7 @@ def show_dashboards():
     require_login()
     db = require_project()
     settings = db.get_settings()
-    apply_theme_css(settings.get("theme", "ocean_dark"))
+    apply_theme_css(settings)
     sidebar_header()
 
     if st.session_state.get("current_dashboard_id"):
@@ -213,6 +226,9 @@ def _show_dashboard_detail(db):
         refresh_clicked = st.button("🔄 تحديث البيانات", type="primary", width='stretch')
 
     if refresh_clicked:
+        # مؤشر بصري بسيط بدل progress bar دقيق. يتحدث فقط من الـ main
+        # thread (راجع core/dashboard_manager.py::refresh_dashboard —
+        # on_progress يُستدعى بعد as_completed، وليس داخل worker thread).
         progress_placeholder = st.empty()
         progress_placeholder.markdown("⏳ جاري تحديث خلايا اللوحة...")
 
@@ -534,6 +550,7 @@ def _render_cell_result(db, dashboard_id, position, cell, settings):
                 else:
                     fig = px.bar(df, x=x_col, y=y_cols, barmode="group", text_auto=True)
                 fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=280)
+                apply_plotly_theme(fig, settings)
                 st.plotly_chart(fig, width='stretch', key=f"chart_{dashboard_id}_{position}")
             except Exception as e:
                 st.error(f"تعذر رسم البيانات: {e}")
@@ -545,6 +562,7 @@ def _render_cell_result(db, dashboard_id, position, cell, settings):
         mx = row.get("max_value", 100)
         fig = go.Figure(go.Indicator(mode="gauge+number", value=current, gauge={"axis": {"range": [mn, mx]}}))
         fig.update_layout(height=180, margin=dict(l=10, r=10, t=10, b=10))
+        apply_plotly_theme(fig, settings)
         st.plotly_chart(fig, width='stretch', key=f"gauge_{dashboard_id}_{position}")
 
     elif display_type == "kpi":
