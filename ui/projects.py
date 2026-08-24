@@ -31,10 +31,10 @@ def show_projects():
 
     # لا مشروع مفتوح بالضرورة في هذه الصفحة؛ نطبّق ثيم آخر مشروع كان
     # مفتوحاً إن وُجد، وإلا الثيم الافتراضي، حتى تبقى الصفحة متسقة بصرياً
-    fallback_theme = "ocean_dark"
+    fallback_settings = {}
     if st.session_state.get("db"):
-        fallback_theme = st.session_state.db.get_settings().get("theme", "ocean_dark")
-    apply_theme_css(fallback_theme)
+        fallback_settings = st.session_state.db.get_settings()
+    apply_theme_css(fallback_settings or {"theme": "ocean_dark"})
 
     st.title("📁 المشاريع")
 
