@@ -13,17 +13,23 @@ ai/ai_manager.py
 كل محرك AI يُرجع الآن (اختيارياً) "error_type" ضمن نتيجة send() الفاشلة:
   - "auth"      : خطأ مصادقة دائم (مفتاح مرفوض/غير صالح/عليه قيود). لا فائدة
                   إطلاقاً من إعادة المحاولة بنفس المفتاح — نتوقف فوراً بدل
-                  استهلاك max_tries كاملة و retry_delay على كل واحدة، لأن
-                  هذا كان يُطيل وقت انتظار المستخدم بلا داعٍ (وقد يُخفي
-                  رسالة الخطأ الحقيقية خلف محاولات متكررة فاشلة بنفس السبب).
+                  استهلاك max_tries كاملة و retry_delay على كل واحدة.
   - "rate_limit": تجاوز حصة/معدل الطلبات (429) — يستحق إعادة المحاولة
                   (المشكلة قد تزول خلال ثوانٍ)، فنُبقيه ضمن حلقة الانتظار.
   - "transient" : انقطاع شبكة/مهلة/خطأ سيرفر عابر (5xx) — نفس المعاملة.
-  - "other"/غير محدد: نتعامل معه بحذر كأنه قد يكون مؤقتاً (السلوك القديم)
-                  حفاظاً على التوافق مع أي محرك لا يُرجع error_type بعد.
+  - "other"/غير محدد: نتعامل معه بحذر كأنه قد يكون مؤقتاً.
 
-مدة الانتظار (retry_delay) قابلة للتخصيص لكل مشروع (تُحفظ في إعدادات
-المشروع)، وتُقرأ افتراضياً من config.AI_RETRY_DELAY_SECONDS.
+حد زمني إجمالي (max_total_wait_seconds / story_max_total_wait_seconds):
+--------------------------------------------------------------------------
+بالإضافة إلى max_tries × retry_delay كحد أقصى نظري، يمكن الآن ضبط
+ميزانية زمنية كلية اختيارية لكل عملية:
+  - max_total_wait_seconds       : لعملية ask() الواحدة (توليد SQL)
+  - story_max_total_wait_seconds : لعملية tell_story() الكاملة (توليد
+                                    SQL ثم توليد نص السرد — مرحلتان)
+0 أو None = بدون حد (السلوك القديم يبقى كما هو تماماً). لو ضُبطت قيمة
+أكبر من صفر، يتوقف الانتظار قبل إعادة أي محاولة لو كان الوقت المُستهلك
+حتى الآن + مدة الانتظار القادمة سيتجاوز هذه الميزانية — بدل الانتظار
+الكامل ثم اكتشاف تجاوز الوقت لاحقاً بلا فائدة.
 """
 
 import time
@@ -76,8 +82,16 @@ class AIManager:
     المدير المركزي لعمليات الـ AI.
 
     الاستخدام:
-        ai = AIManager(db, engine, temperature=0.1, max_tries=3, retry_delay=10)
+        ai = AIManager(
+            db, engine, temperature=0.1, max_tries=3, retry_delay=10,
+            max_total_wait_seconds=0, story_max_total_wait_seconds=0,
+        )
         result = ai.ask("ما إجمالي المبيعات؟", result_type="chart")
+
+    max_total_wait_seconds       : 0/None = بدون حد. خلاف ذلك، ميزانية
+                                    زمنية كلية لعملية ask() الواحدة.
+    story_max_total_wait_seconds : نفس الفكرة لكن مستقلة لعملية
+                                    tell_story() الكاملة.
     """
 
     def __init__(
@@ -87,13 +101,31 @@ class AIManager:
         temperature: float = 0.1,
         max_tries  : int   = 3,
         retry_delay: int   = AI_RETRY_DELAY_SECONDS,
+        max_total_wait_seconds: Optional[int] = 0,
+        story_max_total_wait_seconds: Optional[int] = 0,
     ):
         self.db          = db
         self.engine      = engine
         self.temperature = temperature
         self.max_tries   = max(1, max_tries)
         self.retry_delay = max(0, retry_delay)
+        self.max_total_wait_seconds = max_total_wait_seconds or None
+        self.story_max_total_wait_seconds = story_max_total_wait_seconds or None
         self.qe          = QueryEngine(db)
+
+    # ──────────────────────────────────────────────────────────
+    #  ميزانية الوقت الإجمالية
+    # ──────────────────────────────────────────────────────────
+
+    def _budget_exceeded(self, start_time: float, budget: Optional[int]) -> bool:
+        """
+        هل تجاوزنا (أو سنتجاوز بعد الانتظار القادم) الميزانية الزمنية
+        الكلية لهذه العملية؟ بدون budget (None) دائماً False.
+        """
+        if not budget:
+            return False
+        elapsed = time.monotonic() - start_time
+        return (elapsed + self.retry_delay) > budget
 
     # ──────────────────────────────────────────────────────────
     #  الدالة الرئيسية
@@ -120,14 +152,13 @@ class AIManager:
             "rows"       : N,
             "tries"      : عدد المحاولات الفعلي,
             "error"      : "...",              ← عند الفشل
-            "error_type" : "auth"|"rate_limit"|"transient"|"other",  ← عند الفشل بسبب اتصال المحرك
+            "error_type" : "auth"|"rate_limit"|"transient"|"other",
         }
         """
         question = question.strip()
         if not question:
             return {"ok": False, "error": "السؤال فارغ", "tries": 0}
 
-        # بناء الـ Prompt الأولي
         schema    = self.db.get_schema()
         relations = self.db.get_relations()
 
@@ -149,20 +180,17 @@ class AIManager:
         last_error_type = None
         last_sql   = ""
         attempt    = 0
+        start_time = time.monotonic()
 
         for attempt in range(1, self.max_tries + 1):
             logger.info("AI attempt %d/%d", attempt, self.max_tries)
 
-            # إرسال Prompt
             send_result = self.engine.send(prompt, self.temperature)
             if not send_result["ok"]:
                 last_error = send_result["error"]
                 last_error_type = send_result.get("error_type")
                 logger.warning("Engine send failed (attempt %d): %s", attempt, last_error)
 
-                # خطأ دائم (مثل رفض المصادقة) — لا فائدة من إعادة
-                # المحاولة بنفس الإعدادات، نتوقف فوراً بدل هدر الوقت
-                # على max_tries × retry_delay على نفس الخطأ بالضبط.
                 if last_error_type in _PERMANENT_ERROR_TYPES:
                     logger.error(
                         "Permanent error (%s) — stopping without further retries",
@@ -170,9 +198,19 @@ class AIManager:
                     )
                     break
 
-                # خطأ مؤقت (اتصال/مهلة/rate limit/غير معروف) — ننتظر ثم
-                # نعيد المحاولة بنفس الـ prompt، طالما لدينا محاولات متبقية.
                 if attempt < self.max_tries:
+                    if self._budget_exceeded(start_time, self.max_total_wait_seconds):
+                        logger.warning(
+                            "Total wait budget (%ds) exceeded — stopping retries early",
+                            self.max_total_wait_seconds
+                        )
+                        last_error = (
+                            f"{last_error} "
+                            f"(تم إيقاف إعادة المحاولة بسبب تجاوز الحد الزمني الإجمالي "
+                            f"المحدد: {self.max_total_wait_seconds} ثانية)"
+                        )
+                        break
+
                     logger.info(
                         "Waiting %ds before retry due to %s error...",
                         self.retry_delay, last_error_type or "connection"
@@ -183,27 +221,22 @@ class AIManager:
                 else:
                     break
 
-            # استخراج SQL
             extract_result = self.engine.extract_sql(send_result["text"])
             if not extract_result["ok"]:
                 last_error = extract_result["error"]
                 last_error_type = None
                 logger.warning("SQL extraction failed (attempt %d): %s", attempt, last_error)
-                # نحاول مرة أخرى مع نفس الـ prompt
                 continue
 
             last_sql = extract_result["sql"]
             logger.info("SQL extracted (attempt %d): %s...", attempt, last_sql[:60])
 
-            # تنفيذ SQL
             run_result = self.qe.run(last_sql)
             if run_result["ok"]:
                 logger.info(
                     "Query succeeded on attempt %d: %d rows",
                     attempt, run_result["rows"]
                 )
-                # لو صحّح QueryEngine اسم عمود تلقائياً، نُحدّث الـ SQL المعروض
-                # للمستخدم ليطابق ما نُفّذ فعلياً، ونُبلغ عن التصحيح.
                 executed_sql = run_result.get("sql", last_sql)
                 return {
                     "ok"        : True,
@@ -214,7 +247,6 @@ class AIManager:
                     "auto_fixes": run_result.get("auto_fixes"),
                 }
 
-            # SQL فشل — نبني retry prompt
             last_error = run_result["error"]
             last_error_type = None
             logger.warning("SQL execution failed (attempt %d): %s", attempt, last_error)
@@ -226,7 +258,6 @@ class AIManager:
                     error_message   = last_error,
                 )
 
-        # فشلت كل المحاولات (أو توقفنا مبكراً بسبب خطأ دائم)
         logger.error("All attempts failed (%d/%d). Last error: %s", attempt, self.max_tries, last_error)
         result = {
             "ok"   : False,
@@ -264,6 +295,9 @@ class AIManager:
         سؤال → SQL → تنفيذ → تحليل نصي (سرد) بالعربية بناءً على البيانات
         الفعلية الناتجة، بدل عرضها كجدول/رسم فقط.
 
+        يستخدم ميزانية زمنية مستقلة (story_max_total_wait_seconds) عن
+        عملية ask() الداخلية، لأن العملية الكاملة هنا مرحلتان متتاليتان.
+
         يرجع نفس بنية ask() تقريباً + مفتاح إضافي "story":
         {
             "ok"    : True/False,
@@ -275,8 +309,9 @@ class AIManager:
             "error" : "..."  ← عند الفشل (في أي مرحلة)
         }
         """
+        story_start = time.monotonic()
+
         # المرحلة ١: نحصل على البيانات الفعلية بنفس آلية ask() المعتادة
-        # (وتشمل نفس منطق التوقف المبكر عند خطأ مصادقة دائم)
         data_result = self.ask(question, result_type="story", ai_rules=ai_rules, filters=filters)
         if not data_result["ok"]:
             return data_result
@@ -303,13 +338,17 @@ class AIManager:
                 attempt, self.max_tries, send_result["error"]
             )
 
-            # خطأ دائم (مصادقة) — نتوقف فوراً بدل إعادة نفس الخطأ 3 مرات
-            # مع انتظار كامل بينها بلا أي فائدة.
             if error_type in _PERMANENT_ERROR_TYPES:
                 logger.error("Permanent error (%s) during story generation — stopping", error_type)
                 break
 
             if attempt < self.max_tries:
+                if self._budget_exceeded(story_start, self.story_max_total_wait_seconds):
+                    logger.warning(
+                        "Story total wait budget (%ds) exceeded — stopping retries early",
+                        self.story_max_total_wait_seconds
+                    )
+                    break
                 logger.info("Waiting %ds before retry (story generation)...", self.retry_delay)
                 if self.retry_delay > 0:
                     time.sleep(self.retry_delay)
