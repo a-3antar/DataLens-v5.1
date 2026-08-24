@@ -1,8 +1,15 @@
 """
 core/auth.py
 ============
-إدارة المستخدمين والجلسات.
+إدارة المستخدمين والجلسات، ومفاتيح API الخاصة بكل مستخدم لكل محرك AI.
 يستخدم users.db المنفصل عن project.db.
+
+مفاتيح API:
+------------
+تُخزَّن هنا (وليس في project.db) لكل مستخدم لكل محرك على حدة، بدون
+تشفير (قرار صريح). هذا يمنع تسرّب المفاتيح عند تصدير/استيراد/مشاركة
+ملف مشروع، ويسمح بتعبئة إعدادات AI تلقائياً بآخر محرك/مفتاح استخدمه
+المستخدم عند إنشاء مشروع جديد.
 """
 
 import sqlite3
@@ -51,9 +58,23 @@ def _init_users_db() -> None:
                 user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 expires_at TEXT NOT NULL
             );
+
+            -- مفاتيح API لكل مستخدم، مفصولة حسب محرك AI. تُخزَّن هنا
+            -- (وليس في project.db) حتى لا تظهر المفاتيح داخل ملفات
+            -- المشاريع القابلة للتصدير/الاستيراد أو المشاركة. غير
+            -- مُشفَّرة حالياً بناءً على قرار صريح.
+            CREATE TABLE IF NOT EXISTS user_api_keys (
+                user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                engine_name TEXT NOT NULL,
+                api_key     TEXT NOT NULL DEFAULT '',
+                model       TEXT NOT NULL DEFAULT '',
+                updated_at  TEXT NOT NULL,
+                PRIMARY KEY (user_id, engine_name)
+            );
         """)
         conn.commit()
     logger.info("users.db initialized: %s", USERS_DB)
+
 
 # ══════════════════════════════════════════════════════════════
 #  AuthManager
@@ -61,13 +82,16 @@ def _init_users_db() -> None:
 
 class AuthManager:
     """
-    واجهة موحدة لعمليات المصادقة.
+    واجهة موحدة لعمليات المصادقة ومفاتيح API الشخصية للمستخدم.
 
     Example:
         auth = AuthManager()
         auth.register("admin", "password123")
         token = auth.login("admin", "password123")
         user  = auth.get_user_by_token(token)
+
+        auth.save_api_key(user_id, "gemini", "AIza...", "gemini-2.0-flash")
+        saved = auth.get_api_key(user_id, "gemini")
     """
 
     def __init__(self):
@@ -263,3 +287,73 @@ class AuthManager:
         except sqlite3.Error as e:
             logger.error("clean_expired_sessions error: %s", e)
             return 0
+
+    # ──────────────────────────────────────────────────────────
+    #  مفاتيح API لكل مستخدم (جديد)
+    # ──────────────────────────────────────────────────────────
+
+    def save_api_key(self, user_id: str, engine_name: str, api_key: str, model: str = "") -> None:
+        """
+        حفظ/تحديث مفتاح API لمحرك معيّن لهذا المستخدم.
+        غير مُشفَّر (قرار صريح). لا يُستخدم لمحرك "ollama" (لا مفتاح له).
+        """
+        try:
+            with _connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO user_api_keys (user_id, engine_name, api_key, model, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, engine_name) DO UPDATE SET
+                        api_key    = excluded.api_key,
+                        model      = excluded.model,
+                        updated_at = excluded.updated_at
+                    """,
+                    (user_id, engine_name, api_key, model, _now_str())
+                )
+                conn.commit()
+            logger.info("API key saved for user %s, engine %s", user_id, engine_name)
+        except sqlite3.Error as e:
+            logger.error("save_api_key error: %s", e)
+            raise
+
+    def get_api_key(self, user_id: str, engine_name: str) -> dict:
+        """
+        إرجاع {"api_key": "...", "model": "..."} لمحرك معيّن، أو
+        {"api_key": "", "model": ""} لو لم يُحفظ شيء بعد لهذا المستخدم
+        على هذا المحرك تحديداً.
+        """
+        try:
+            with _connect() as conn:
+                row = conn.execute(
+                    "SELECT api_key, model FROM user_api_keys WHERE user_id = ? AND engine_name = ?",
+                    (user_id, engine_name)
+                ).fetchone()
+            if row:
+                return {"api_key": row["api_key"], "model": row["model"]}
+            return {"api_key": "", "model": ""}
+        except sqlite3.Error as e:
+            logger.error("get_api_key error: %s", e)
+            return {"api_key": "", "model": ""}
+
+    def get_last_used_engine(self, user_id: str) -> Optional[dict]:
+        """
+        آخر محرك+مفتاح استخدمه المستخدم (بناءً على أحدث updated_at) —
+        يُستخدم لتعبئة إعدادات AI تلقائياً عند إنشاء مشروع جديد بدل
+        ترك المستخدم يُعيد إدخال نفس البيانات من جديد لكل مشروع.
+
+        يرجع {"engine_name": ..., "api_key": ..., "model": ...} أو None
+        لو لم يستخدم المستخدم أي محرك بعد.
+        """
+        try:
+            with _connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT engine_name, api_key, model FROM user_api_keys
+                    WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1
+                    """,
+                    (user_id,)
+                ).fetchone()
+            return dict(row) if row else None
+        except sqlite3.Error as e:
+            logger.error("get_last_used_engine error: %s", e)
+            return None
