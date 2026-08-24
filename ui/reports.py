@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 
 from ui.common import (
     apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
-    temp_export_dir, offer_download,
+    temp_export_dir, offer_download, apply_plotly_theme,
 )
 from exporters.report_manager import ReportManager
 from exporters.pdf_exporter import PDFExporter
@@ -23,7 +23,8 @@ def show_reports():
     apply_rtl()
     require_login()
     db = require_project()
-    apply_theme_css(db.get_settings().get("theme", "ocean_dark"))
+    settings = db.get_settings()
+    apply_theme_css(settings)
     sidebar_header()
 
     rm = ReportManager(db)
@@ -82,7 +83,7 @@ def show_reports():
 
     for block in blocks:
         with st.container(border=True):
-            _render_block(block)
+            _render_block(block, settings)
             if st.button("🗑️ حذف هذا البلوك", key=f"del_block_{block['id']}"):
                 rm.delete_block(report_id, block["id"])
                 st.rerun()
@@ -115,7 +116,7 @@ def _export_and_offer(exporter, report_id, ext, title):
             st.error(r["error"])
 
 
-def _render_block(block: dict):
+def _render_block(block: dict, settings: dict = None):
     btype = block["block_type"]
     content = block["content"]
 
@@ -134,6 +135,7 @@ def _render_block(block: dict):
             df = pd.DataFrame(data)
             fig = px.bar(df, x=x_col, y=y_cols, barmode="group", text_auto=True,
                          title=content.get("title", ""))
+            apply_plotly_theme(fig, settings)
             st.plotly_chart(fig, width='stretch')
 
     elif btype == "gauge":
@@ -143,6 +145,7 @@ def _render_block(block: dict):
             title={"text": content.get("label", "")},
             gauge={"axis": {"range": [content.get("min_value", 0), content.get("max_value", 100)]}},
         ))
+        apply_plotly_theme(fig, settings)
         st.plotly_chart(fig, width='stretch')
 
     elif btype == "kpi":
