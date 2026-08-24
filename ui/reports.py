@@ -10,7 +10,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from ui.common import (
-    apply_rtl, require_login, require_project, sidebar_header,
+    apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
     temp_export_dir, offer_download,
 )
 from exporters.report_manager import ReportManager
@@ -23,6 +23,7 @@ def show_reports():
     apply_rtl()
     require_login()
     db = require_project()
+    apply_theme_css(db.get_settings().get("theme", "ocean_dark"))
     sidebar_header()
 
     rm = ReportManager(db)
