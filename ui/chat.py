@@ -7,11 +7,9 @@ ui/chat.py
 مفتاح API يُقرأ من إعدادات المشروع (project.db) كما كان دائماً — كل
 مشروع له مفتاحه الخاص.
 
-نوع الرسم البياني:
---------------------
-عند اختيار "رسم بياني" كنوع نتيجة، تظهر قائمة منسدلة إضافية لاختيار
-نوع الرسم (أعمدة/خطي/دائري/مساحي/متفرق) — بدل افتراض "أعمدة" دائماً.
-الاختيار يُحفظ مع النتيجة ويُستخدم أيضاً عند الإرسال لتقرير.
+🆕 خلفية الرسوم البيانية شفافة ومتوافقة مع لون نص الثيم الحالي (نفس
+مبدأ ui/dashboards.py عبر ui.common.get_chart_theme()). الرسائل
+التوضيحية الثابتة استُبدلت بإشعارات toast عابرة عبر ui.common.notify.
 """
 
 import uuid
@@ -21,7 +19,10 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-from ui.common import apply_rtl, apply_theme_css, require_login, require_project, sidebar_header, format_local_dt, apply_plotly_theme
+from ui.common import (
+    apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
+    format_local_dt, notify, get_chart_theme,
+)
 from ai.ai_manager import AIManager, get_engine
 from core.query_engine import QueryEngine
 from config import CHART_TYPES
@@ -32,13 +33,13 @@ def show_chat():
     require_login()
     db = require_project()
     settings = db.get_settings()
-    apply_theme_css(settings)
+    apply_theme_css(settings.get("theme", "ocean_dark"))
     sidebar_header()
 
     st.title("💬 اسأل بياناتك")
 
     if not db.get_files():
-        st.info("لا توجد جداول بعد. ارفع ملفاً أولاً من صفحة الملفات.")
+        st.caption("لا توجد جداول بعد. ارفع ملفاً أولاً من صفحة الملفات.")
         return
 
     engine_name = settings.get("ai_engine", "gemini")
@@ -50,7 +51,7 @@ def show_chat():
         ollama_url=settings.get("ollama_url", "http://localhost:11434"),
     )
     if engine is None:
-        st.error("محرك AI غير معروف. راجع الإعدادات.")
+        notify("محرك AI غير معروف. راجع الإعدادات.", kind="error")
         return
 
     ai = AIManager(
@@ -60,6 +61,7 @@ def show_chat():
         retry_delay=settings.get("retry_delay", 10),
         max_total_wait_seconds=settings.get("max_total_wait_seconds", 0),
         story_max_total_wait_seconds=settings.get("story_max_total_wait_seconds", 0),
+        story_timeout=settings.get("story_timeout", 45),
     )
 
     c1, c2 = st.columns([3, 1])
@@ -84,11 +86,11 @@ def show_chat():
 
     if run_clicked:
         if not question.strip():
-            st.warning("الرجاء كتابة سؤال")
+            notify("الرجاء كتابة سؤال", kind="warning")
         else:
             spinner_msg = (
                 "جاري تحليل البيانات وكتابة التقرير..." if result_type == "story"
-                else "جاري التفكير... (قد يُعاد المحاولة تلقائياً عند فشل الاتصال بمحرك AI)"
+                else "جاري التفكير..."
             )
             with st.spinner(spinner_msg):
                 if result_type == "story":
@@ -107,14 +109,15 @@ def show_chat():
                 result_data={"rows": result.get("rows")} if result["ok"] else None,
                 error=None if result["ok"] else result.get("error"),
             )
+            if not result["ok"]:
+                notify(f"فشل الاستعلام: {result.get('error')}", kind="error")
 
     result = st.session_state.get("last_result")
     if result:
         _render_result(
-            db, result,
+            db, settings, result,
             st.session_state.get("last_result_type", "table"),
             st.session_state.get("last_chart_type", "bar"),
-            settings,
         )
 
     st.divider()
@@ -127,14 +130,12 @@ def show_chat():
                 st.code(h["sql_query"], language="sql")
             if h.get("error"):
                 st.caption(f"خطأ: {h['error']}")
-            # 🆕 عرض التوقيت بالمنطقة الزمنية المفضّلة للمستخدم بدل UTC خام
             st.caption(format_local_dt(h["created_at"], settings))
             st.markdown("---")
 
 
-def _render_result(db, result: dict, result_type: str, chart_type: str = "bar", settings: dict = None):
+def _render_result(db, settings, result: dict, result_type: str, chart_type: str = "bar"):
     if not result["ok"]:
-        st.error(f"فشل الاستعلام بعد {result.get('tries', 0)} محاولة: {result.get('error')}")
         if result.get("sql"):
             with st.expander("SQL الأخير"):
                 st.code(result["sql"], language="sql")
@@ -146,16 +147,17 @@ def _render_result(db, result: dict, result_type: str, chart_type: str = "bar", 
 
     if result.get("auto_fixes"):
         fixes_text = "، ".join(f"«{f['from']}» → «{f['to']}»" for f in result["auto_fixes"])
-        st.info(f"✏️ تم تصحيح اسم عمود تلقائياً: {fixes_text}")
+        st.caption(f"✏️ تم تصحيح اسم عمود تلقائياً: {fixes_text}")
 
     df: pd.DataFrame = result["df"]
+    chart_theme = get_chart_theme(settings)
 
     if result_type == "table":
         st.dataframe(df, width='stretch', hide_index=True)
 
     elif result_type == "chart":
         if df.shape[1] < 2:
-            st.warning("النتيجة لا تحتوي أعمدة كافية لرسم بياني")
+            st.caption("النتيجة لا تحتوي أعمدة كافية لرسم بياني")
             st.dataframe(df, width='stretch', hide_index=True)
         else:
             x_col = df.columns[0]
@@ -171,8 +173,7 @@ def _render_result(db, result: dict, result_type: str, chart_type: str = "bar", 
                     fig = px.scatter(df, x=x_col, y=y_cols[0])
                 else:
                     fig = px.bar(df, x=x_col, y=y_cols, barmode="group", text_auto=True)
-                fig.update_layout(margin=dict(l=10, r=10, t=30, b=10))
-                apply_plotly_theme(fig, settings)
+                fig.update_layout(margin=dict(l=10, r=10, t=30, b=10), **chart_theme)
                 st.plotly_chart(fig, width='stretch')
             except Exception as e:
                 st.error(f"تعذر رسم البيانات بنوع «{chart_type}»: {e}")
@@ -184,11 +185,14 @@ def _render_result(db, result: dict, result_type: str, chart_type: str = "bar", 
         mn = row.get("min_value", 0)
         mx = row.get("max_value", 100)
         fig = go.Figure(go.Indicator(
-            mode="gauge+number",
-            value=current,
-            gauge={"axis": {"range": [mn, mx]}},
+            mode="gauge+number", value=current,
+            number={"font": {"color": chart_theme["font_color"]}},
+            gauge={
+                "axis": {"range": [mn, mx], "tickfont": {"color": chart_theme["font_color"]}},
+                "bar": {"color": chart_theme["font_color"]},
+            },
         ))
-        apply_plotly_theme(fig, settings)
+        fig.update_layout(**chart_theme)
         st.plotly_chart(fig, width='stretch')
 
     elif result_type == "kpi":
@@ -201,7 +205,10 @@ def _render_result(db, result: dict, result_type: str, chart_type: str = "bar", 
 
     elif result_type == "story":
         story_text = result.get("story", "")
-        st.markdown(story_text)
+        st.markdown(
+            f'<div dir="rtl" style="text-align:right">{story_text}</div>',
+            unsafe_allow_html=True,
+        )
         with st.expander("📊 البيانات المستخدمة في التحليل"):
             st.dataframe(df, width='stretch', hide_index=True)
 
@@ -218,7 +225,7 @@ def _render_result(db, result: dict, result_type: str, chart_type: str = "bar", 
         submitted = st.form_submit_button("إرسال")
         if submitted:
             if not reports:
-                st.error("أنشئ تقريراً أولاً من صفحة التقارير")
+                notify("أنشئ تقريراً أولاً من صفحة التقارير", kind="warning")
             else:
                 from exporters.report_manager import ReportManager
                 rm = ReportManager(db)
@@ -230,9 +237,9 @@ def _render_result(db, result: dict, result_type: str, chart_type: str = "bar", 
                     chart_type=chart_type,
                 )
                 if r["ok"]:
-                    st.success("تمت الإضافة إلى التقرير")
+                    notify("تمت الإضافة إلى التقرير", kind="success")
                 else:
-                    st.error(r["error"])
+                    notify(r["error"], kind="error")
 
 
 def _add_block_for_type(rm, report_id, result_id, result_type, df: pd.DataFrame, label,
