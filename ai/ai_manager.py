@@ -30,21 +30,37 @@ ai/ai_manager.py
 أكبر من صفر، يتوقف الانتظار قبل إعادة أي محاولة لو كان الوقت المُستهلك
 حتى الآن + مدة الانتظار القادمة سيتجاوز هذه الميزانية — بدل الانتظار
 الكامل ثم اكتشاف تجاوز الوقت لاحقاً بلا فائدة.
+
+مهلة اتصال منفصلة لمرحلة السرد (story_timeout):
+--------------------------------------------------
+مرحلة توليد نص السرد (المرحلة الثانية من tell_story()) تستخدم الآن
+مهلة اتصال (timeout) مستقلة تماماً عن "timeout" العام المستخدم في
+توليد SQL، عبر تمرير timeout_override إلى engine.send(). هذا يحل
+مشكلة انتظار مهلة طويلة (مثلاً 100 ثانية) على استدعاء أول فاشل قبل
+إعادة المحاولة، رغم أن المحاولة الثانية عادة تنجح بسرعة معقولة.
+
+توحيد محركات AI:
+-------------------
+"gemini" و"ollama" يبقيان بكلاس منفصل خاص بكل منهما (بروتوكول مختلف).
+أي محرك آخر (مثل "groq"، "openrouter"، وأي محرك مستقبلي متوافق مع
+OpenAI API) يُبنى ديناميكياً عبر ai.engine_registry +
+ai.openai_compatible_engine.OpenAICompatibleEngine — إضافة محرك جديد
+تتم بسطر واحد في ai/engine_registry.py فقط، دون أي تعديل هنا.
 """
 
 import time
 import logging
 from typing import Optional
 
-from ai.base_engine    import BaseEngine
-from ai.gemini         import GeminiEngine
-from ai.openrouter     import OpenRouterEngine
-from ai.grok           import GrokEngine
-from ai.ollama         import OllamaEngine
-from ai.prompt_builder import PromptBuilder
-from core.project_db   import ProjectDB
-from core.query_engine import QueryEngine
-from config            import OLLAMA_DEFAULT_URL, STORY_SAMPLE_ROWS_IN_PROMPT, AI_RETRY_DELAY_SECONDS
+from ai.base_engine               import BaseEngine
+from ai.gemini                    import GeminiEngine
+from ai.ollama                    import OllamaEngine
+from ai.openai_compatible_engine  import OpenAICompatibleEngine
+from ai.engine_registry           import get_registry_entry
+from ai.prompt_builder            import PromptBuilder
+from core.project_db              import ProjectDB
+from core.query_engine            import QueryEngine
+from config import OLLAMA_DEFAULT_URL, STORY_SAMPLE_ROWS_IN_PROMPT, AI_RETRY_DELAY_SECONDS, STORY_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -61,20 +77,30 @@ def get_engine(
 ) -> Optional[BaseEngine]:
     """
     إرجاع محرك AI بناءً على الاسم.
-    يرجع None لو الاسم غير معروف.
+    "gemini" و"ollama": كلاس مخصص لكل منهما (بروتوكول مختلف).
+    أي اسم آخر: يُبحث عنه في ai.engine_registry ويُبنى عبر
+    OpenAICompatibleEngine — يشمل هذا "groq" و"openrouter" حالياً،
+    وأي محرك يُضاف مستقبلاً للسجل بدون تعديل هذه الدالة.
+    يرجع None لو الاسم غير معروف في أي من المسارين.
     """
     name = engine_name.lower().strip()
     if name == "gemini":
         return GeminiEngine(api_key=api_key, model=model, timeout=timeout)
-    elif name == "openrouter":
-        return OpenRouterEngine(api_key=api_key, model=model, timeout=timeout)
-    elif name == "grok":
-        return GrokEngine(api_key=api_key, model=model, timeout=timeout)
-    elif name == "ollama":
+    if name == "ollama":
         return OllamaEngine(base_url=ollama_url, model=model, timeout=timeout)
-    else:
-        logger.error("Unknown engine: %s", engine_name)
-        return None
+
+    entry = get_registry_entry(name)
+    if entry:
+        return OpenAICompatibleEngine(
+            base_url    =entry["base_url"],
+            api_key     =api_key,
+            model       =model or entry.get("default_model", ""),
+            timeout     =timeout,
+            display_name=entry.get("display_name", name),
+        )
+
+    logger.error("Unknown engine: %s", engine_name)
+    return None
 
 
 class AIManager:
@@ -85,6 +111,7 @@ class AIManager:
         ai = AIManager(
             db, engine, temperature=0.1, max_tries=3, retry_delay=10,
             max_total_wait_seconds=0, story_max_total_wait_seconds=0,
+            story_timeout=45,
         )
         result = ai.ask("ما إجمالي المبيعات؟", result_type="chart")
 
@@ -92,6 +119,9 @@ class AIManager:
                                     زمنية كلية لعملية ask() الواحدة.
     story_max_total_wait_seconds : نفس الفكرة لكن مستقلة لعملية
                                     tell_story() الكاملة.
+    story_timeout                 : مهلة اتصال (بالثواني) لمرحلة توليد
+                                    نص السرد فقط، مستقلة عن "timeout"
+                                    الممرَّر للمحرك (المستخدم في SQL).
     """
 
     def __init__(
@@ -103,6 +133,7 @@ class AIManager:
         retry_delay: int   = AI_RETRY_DELAY_SECONDS,
         max_total_wait_seconds: Optional[int] = 0,
         story_max_total_wait_seconds: Optional[int] = 0,
+        story_timeout: Optional[int] = None,
     ):
         self.db          = db
         self.engine      = engine
@@ -111,6 +142,7 @@ class AIManager:
         self.retry_delay = max(0, retry_delay)
         self.max_total_wait_seconds = max_total_wait_seconds or None
         self.story_max_total_wait_seconds = story_max_total_wait_seconds or None
+        self.story_timeout = story_timeout or STORY_TIMEOUT_SECONDS
         self.qe          = QueryEngine(db)
 
     # ──────────────────────────────────────────────────────────
@@ -295,8 +327,14 @@ class AIManager:
         سؤال → SQL → تنفيذ → تحليل نصي (سرد) بالعربية بناءً على البيانات
         الفعلية الناتجة، بدل عرضها كجدول/رسم فقط.
 
-        يستخدم ميزانية زمنية مستقلة (story_max_total_wait_seconds) عن
-        عملية ask() الداخلية، لأن العملية الكاملة هنا مرحلتان متتاليتان.
+        المرحلة الأولى (توليد SQL عبر ask()) تستخدم "timeout" العادي
+        كما هو. المرحلة الثانية (توليد نص السرد) تستخدم self.story_timeout
+        المستقل تماماً — يُمرَّر إلى engine.send() عبر timeout_override
+        بدل تعديل self.timeout الدائم للمحرك، حتى لا يتأثر أي استدعاء
+        آخر (مثل ask() لخلايا أخرى تستخدم نفس instance المحرك).
+
+        يستخدم أيضاً ميزانية زمنية مستقلة (story_max_total_wait_seconds)
+        عن عملية ask() الداخلية، لأن العملية الكاملة هنا مرحلتان متتاليتان.
 
         يرجع نفس بنية ask() تقريباً + مفتاح إضافي "story":
         {
@@ -323,12 +361,16 @@ class AIManager:
             return data_result
 
         # المرحلة ٢: نطلب من AI كتابة سرد نصي بناءً على البيانات الفعلية
+        # — بمهلة اتصال مستقلة (story_timeout) عن مرحلة SQL أعلاه.
         story_builder = PromptBuilder(schema={}, relations=[], ai_rules=ai_rules)
         story_prompt = story_builder.build_story(question, df, max_rows=STORY_SAMPLE_ROWS_IN_PROMPT)
 
         send_result = None
         for attempt in range(1, self.max_tries + 1):
-            send_result = self.engine.send(story_prompt, self.temperature)
+            send_result = self.engine.send(
+                story_prompt, self.temperature,
+                timeout_override=self.story_timeout,
+            )
             if send_result["ok"]:
                 break
 
