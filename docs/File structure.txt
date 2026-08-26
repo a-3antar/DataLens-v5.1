@@ -1,0 +1,42 @@
+📁 datalens/
+├── 📄 main.py                       # Streamlit application entry point
+├── 📄 config.py                     # Global constants and settings
+├── 📁 ai/                           # AI engine layer
+│   ├── 📄 __init__.py
+│   ├── 📄 base_engine.py            # Abstract base class for all AI engines
+│   ├── 📄 engine_registry.py        # Registry for OpenAI-compatible engines
+│   ├── 📄 openai_compatible_engine.py # Generic OpenAI API wrapper
+│   ├── 📄 gemini.py                 # Google Gemini engine
+│   ├── 📄 ollama.py                 # Local Ollama engine
+│   ├── 📄 grok.py                   # xAI Grok engine (legacy, replaced by OpenAICompatible)
+│   ├── 📄 openrouter.py             # OpenRouter engine (legacy, replaced by OpenAICompatible)
+│   ├── 📄 ai_manager.py             # Central AI orchestration
+│   └── 📄 prompt_builder.py         # Prompt construction
+├── 📁 core/                         # Core business logic
+│   ├── 📄 __init__.py
+│   ├── 📄 auth.py                   # User authentication and API key storage
+│   ├── 📄 project_db.py             # SQLite database operations per project
+│   ├── 📄 project_manager.py        # Project lifecycle management
+│   ├── 📄 file_manager.py           # File reading from memory (no disk storage)
+│   ├── 📄 data_manager.py           # Data cleaning and transformation
+│   ├── 📄 query_engine.py           # DuckDB SQL execution
+│   ├── 📄 dashboard_manager.py      # Dashboard logic: refresh, slicers, auto-plan
+│   └── 📄 dashboard_templates.py    # Dashboard layout templates (A-F)
+├── 📁 exporters/                    # Report export modules
+│   ├── 📄 __init__.py
+│   ├── 📄 report_manager.py         # Report CRUD operations
+│   ├── 📄 pdf_exporter.py           # PDF export with Arabic support
+│   ├── 📄 excel_exporter.py         # Excel export with charts
+│   ├── 📄 markdown_exporter.py      # Markdown export
+│   └── 📄 chart_renderer.py         # Chart/Gauge PNG rendering via Pillow
+└── 📁 ui/                           # Streamlit UI pages
+    ├── 📄 __init__.py
+    ├── 📄 common.py                 # Shared UI utilities (RTL, themes, toasts, timezone)
+    ├── 📄 login.py                  # Login/Register page
+    ├── 📄 projects.py               # Project gallery (create/open/export/import)
+    ├── 📄 files.py                  # File upload and refresh
+    ├── 📄 data.py                   # Data cleaning interface
+    ├── 📄 chat.py                   # Natural language query interface
+    ├── 📄 dashboards.py             # Dashboard builder and viewer
+    ├── 📄 reports.py                # Report builder
+    └── 📄 settings.py               # Project settings (AI engine, theme, timeouts)
