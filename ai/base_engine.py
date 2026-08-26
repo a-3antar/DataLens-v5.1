@@ -49,9 +49,16 @@ class BaseEngine(ABC):
         """
 
     @abstractmethod
-    def send(self, prompt: str, temperature: float = 0.1) -> dict:
+    def send(self, prompt: str, temperature: float = 0.1, timeout_override: Optional[int] = None) -> dict:
         """
         إرسال prompt وإرجاع الرد.
+
+        timeout_override: لو مُمرَّرة، تُستخدم بدل self.timeout لهذا
+        الاستدعاء تحديداً فقط (بدون تعديل self.timeout الدائم للمحرك).
+        مفيدة لعمليات لها طبيعة زمنية مختلفة عن باقي استدعاءات نفس
+        المحرك — مثل مرحلة توليد نص السرد (Story Telling) التي يُفضَّل
+        أن تفشل بسرعة أكبر وتُعاد محاولتها بدل انتظار طويل عديم الفائدة.
+
         يرجع: {"ok": True, "text": "..."} أو {"ok": False, "error": "..."}
         """
 
