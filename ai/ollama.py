@@ -6,6 +6,8 @@ ai/ollama.py
 """
 
 import logging
+from typing import Optional
+
 import httpx
 from ai.base_engine import BaseEngine
 from config import OLLAMA_DEFAULT_URL
@@ -69,17 +71,22 @@ class OllamaEngine(BaseEngine):
     #  إرسال Prompt
     # ──────────────────────────────────────────────────────────
 
-    def send(self, prompt: str, temperature: float = 0.1) -> dict:
+    def send(self, prompt: str, temperature: float = 0.1, timeout_override: Optional[int] = None) -> dict:
         """إرسال prompt إلى Ollama وإرجاع الرد.
 
         ملاحظة: Ollama محلي ولا يملك مفهوم "مفتاح API"، لذا لا يوجد
         error_type="auth" هنا — أخطاؤه إما اتصال/مهلة (transient) أو
         غير ذلك (other).
+
+        timeout_override: مهلة اتصال بديلة لهذا الاستدعاء فقط — راجع
+        BaseEngine.send للتفاصيل.
         """
         if not self.model:
             return {"ok": False, "error": "لم يتم تحديد النموذج", "error_type": "other"}
         if not prompt.strip():
             return {"ok": False, "error": "الـ prompt فارغ", "error_type": "other"}
+
+        effective_timeout = timeout_override or self.timeout
 
         try:
             resp = httpx.post(
@@ -93,7 +100,7 @@ class OllamaEngine(BaseEngine):
                         "num_predict": 2048,
                     },
                 },
-                timeout=self.timeout,
+                timeout=effective_timeout,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -110,7 +117,7 @@ class OllamaEngine(BaseEngine):
             logger.error(msg)
             return {"ok": False, "error": msg, "error_type": "transient"}
         except httpx.TimeoutException:
-            return {"ok": False, "error": f"انتهت مهلة الاتصال ({self.timeout}s)", "error_type": "transient"}
+            return {"ok": False, "error": f"انتهت مهلة الاتصال ({effective_timeout}s)", "error_type": "transient"}
         except Exception as e:
             logger.error("Ollama send error: %s", e)
             return {"ok": False, "error": str(e), "error_type": "other"}
