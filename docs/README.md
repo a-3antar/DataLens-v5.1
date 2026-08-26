@@ -1,6 +1,7 @@
 # تشغيل DataLens V5.0 عبر Docker (التطبيق + Ollama في حاوية واحدة معزولة)
 
 ## المتطلبات
+
 - Docker Desktop (Windows) أو Docker Engine + Docker Compose (Linux)
 - ذاكرة (RAM) لا تقل عن 8GB متاحة للحاوية إن كنت ستشغّل نموذج Ollama متوسط الحجم (7B تقريباً)
 
@@ -24,6 +25,7 @@ http://<عنوان-السيرفر-على-الشبكة>:8501
 ```
 
 ## ما الذي تحصل عليه؟
+
 - حاوية واحدة فقط تحتوي: تطبيق Streamlit + خادم Ollama معاً
 - **معزولة تماماً عن جهاز السيرفر**: لا شيء يُكتب على نظام الملفات المضيف مباشرة — كل البيانات (حسابات المستخدمين، المشاريع، التقارير، نماذج Ollama المُحمَّلة) تُحفظ في Docker volume واحد مُدار بالكامل بواسطة Docker (`datalens_data`)
 - منفذ Ollama (11434) **غير مُتاح** خارج الحاوية — فقط واجهة التطبيق (8501) تظهر على الشبكة، حماية إضافية
@@ -49,13 +51,16 @@ docker system df -v
 ```
 
 ## تحديث التطبيق لاحقاً
+
 عند وجود نسخة جديدة من كود التطبيق:
+
 ```bash
 docker compose up -d --build
 ```
 هذا يعيد بناء الصورة فقط — البيانات في الـ volume لا تتأثر إطلاقاً.
 
 ## استخدام كرت GPU (اختياري، لتسريع Ollama بشكل كبير)
+
 لو كان السيرفر يملك كرت NVIDIA:
 1. ثبّت [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) على المضيف
 2. فعّل السطور المُعلّقة تحت `deploy.resources.reservations` في `docker-compose.yml`
