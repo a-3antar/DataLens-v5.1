@@ -17,6 +17,10 @@ from ui.reports import show_reports
 from ui.settings import show_settings
 from core.auth import AuthManager
 from config import APP_NAME, APP_VERSION, APP_ICON
+from core.logger_config import setup_logging
+
+
+setup_logging()
 
 st.set_page_config(
     page_title=APP_NAME,
