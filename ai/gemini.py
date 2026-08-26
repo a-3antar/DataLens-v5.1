@@ -73,7 +73,7 @@ class GeminiEngine(BaseEngine):
     #  إرسال Prompt
     # ──────────────────────────────────────────────────────────
 
-    def send(self, prompt: str, temperature: float = 0.1) -> dict:
+    def send(self, prompt: str, temperature: float = 0.1, timeout_override: Optional[int] = None) -> dict:
         """
         إرسال prompt إلى Gemini وإرجاع الرد.
         يرجع: {"ok": True, "text": "..."} أو
@@ -82,6 +82,9 @@ class GeminiEngine(BaseEngine):
         error_type يُستخدم في AIManager للتمييز بين خطأ دائم (مثل رفض
         المصادقة — لا فائدة من إعادة المحاولة بنفس المفتاح) وخطأ مؤقت
         (انقطاع شبكة عابر أو ضغط مؤقت) يستحق إعادة المحاولة فعلاً.
+
+        timeout_override: مهلة اتصال بديلة لهذا الاستدعاء فقط (بدون
+        تعديل self.timeout الدائم) — راجع BaseEngine.send للتفاصيل.
         """
         if not self.api_key:
             return {"ok": False, "error": "API key غير موجود", "error_type": "auth"}
@@ -89,6 +92,8 @@ class GeminiEngine(BaseEngine):
             return {"ok": False, "error": "لم يتم تحديد النموذج", "error_type": "other"}
         if not prompt.strip():
             return {"ok": False, "error": "الـ prompt فارغ", "error_type": "other"}
+
+        effective_timeout = timeout_override or self.timeout
 
         url     = GEMINI_GEN_URL.format(model=self.model)
         payload = {
@@ -104,7 +109,7 @@ class GeminiEngine(BaseEngine):
                 url,
                 params={"key": self.api_key},
                 json=payload,
-                timeout=self.timeout,
+                timeout=effective_timeout,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -159,8 +164,8 @@ class GeminiEngine(BaseEngine):
             return {"ok": False, "error": msg, "error_type": "other"}
 
         except httpx.TimeoutException:
-            logger.error("Gemini send timeout after %ds", self.timeout)
-            return {"ok": False, "error": f"انتهت مهلة الاتصال ({self.timeout}s)", "error_type": "transient"}
+            logger.error("Gemini send timeout after %ds", effective_timeout)
+            return {"ok": False, "error": f"انتهت مهلة الاتصال ({effective_timeout}s)", "error_type": "transient"}
         except httpx.RequestError as e:
             logger.error("Gemini send connection error: %s", e)
             return {"ok": False, "error": f"خطأ في الاتصال: {e}", "error_type": "transient"}
