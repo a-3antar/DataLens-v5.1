@@ -2,7 +2,9 @@
 ui/common.py
 ============
 أدوات مشتركة لكل صفحات الواجهة: RTL، الثيمات، التحقق من تسجيل الدخول،
-التأكد من وجود مشروع مفتوح، وتحويل التواريخ للمنطقة الزمنية المحلية.
+التأكد من وجود مشروع مفتوح، تحويل التواريخ للمنطقة الزمنية المحلية،
+وإشعارات موحّدة عبر Toast بدل الرسائل التوضيحية الثابتة المنتشرة في
+الصفحات.
 """
 
 import shutil
@@ -63,9 +65,9 @@ RTL_CSS = """
 </style>
 """
 
-# ألوان كل ثيم — القيم الافتراضية. لون النص (text) قابل للتخصيص من
-# المستخدم عبر إعدادات المشروع (custom_text_color) — راجع
-# get_theme_colors() أدناه التي تدمج الاختيار الشخصي مع ألوان الثيم.
+# ألوان كل ثيم — تُستخدم لعرض color_picker في صفحة الإعدادات، وأيضاً
+# لتطبيق الثيم فعلياً على الواجهة عبر apply_theme_css() أدناه، ولتلوين
+# الرسوم البيانية (Plotly) بما يطابق الثيم الحالي عبر apply_plotly_theme().
 THEME_COLORS = {
     "ocean_dark":     {"primary": "#1E3A5F", "accent": "#2563EB", "bg": "#0F172A", "text": "#F8FAFC", "card": "#1E293B"},
     "arctic_light":   {"primary": "#0EA5E9", "accent": "#38BDF8", "bg": "#F8FAFC", "text": "#0F172A", "card": "#FFFFFF"},
@@ -79,48 +81,26 @@ def apply_rtl():
     st.markdown(RTL_CSS, unsafe_allow_html=True)
 
 
-def get_theme_colors(settings: dict) -> dict:
-    """
-    إرجاع قاموس ألوان الثيم النهائي بعد تطبيق أي تخصيص شخصي.
-
-    settings["theme"]             : مفتاح الثيم المختار (ocean_dark, ...)
-    settings["custom_text_color"] : لون نص اختياري يختاره المستخدم بحرية
-                                     من صفحة الإعدادات؛ لو موجود يُستخدم
-                                     بدل لون النص الافتراضي للثيم فقط —
-                                     بقية الألوان (primary/accent/bg/card)
-                                     تبقى كما هي محددة في الثيم.
-
-    تُستخدم هذه الدالة في كل مكان يحتاج معرفة "لون النص الحالي" — سواء
-    لتطبيق CSS على الواجهة (apply_theme_css) أو لتلوين نصوص الرسوم
-    البيانية (Plotly gauge/chart) حتى تتطابق مع باقي نصوص الصفحة.
-    """
-    theme_key = (settings or {}).get("theme", "ocean_dark")
-    colors = dict(THEME_COLORS.get(theme_key, THEME_COLORS["ocean_dark"]))
-    custom_text = (settings or {}).get("custom_text_color")
-    if custom_text:
-        colors["text"] = custom_text
-    return colors
-
-
-def apply_theme_css(theme_key_or_settings):
+def apply_theme_css(theme_key_or_settings="ocean_dark"):
     """
     تطبيق ألوان الثيم فعلياً على الواجهة (خلفية، أزرار، عناوين، بطاقات،
-    تبويبات، روابط). يقبل إما مفتاح ثيم نصي (السلوك القديم، للتوافق)
-    أو قاموس settings كامل (يسمح بتطبيق custom_text_color أيضاً).
+    تبويبات، روابط، جداول)، بما يشمل جعل خلفية الجداول (st.dataframe)
+    شفافة ومتوافقة مع لون نص الثيم بدل الخلفية البيضاء الافتراضية التي
+    تكسر التناسق البصري في الثيمات الداكنة.
+
+    تقبل إما اسم ثيم كنص مباشرة ("ocean_dark") أو dict إعدادات مشروع
+    كامل (settings) — نفس مرونة get_chart_theme/apply_plotly_theme،
+    حتى تعمل بغض النظر عن الشكل الذي تُستدعى به في كل صفحة (بعض
+    الصفحات تمرر settings كاملة، وبعضها يمرر settings.get("theme")
+    مباشرة).
 
     ملاحظة تقنية مهمة: الألوان "الرسمية" لـ Streamlit (primaryColor،
     backgroundColor...) تُقرأ من config.toml مرة واحدة فقط عند إقلاع
     السيرفر، ولا توجد طريقة رسمية لتغييرها ديناميكياً لكل مستخدم أثناء
     التشغيل. الحل العملي هنا: نُطبّق نفس الألوان مباشرة عبر CSS على
-    أهم العناصر المرئية (خلفية التطبيق، الأزرار، الحاويات ذات الحدود،
-    العناوين، الروابط، الشريط الجانبي) — يُغطي عملياً أغلب ما يراه
-    المستخدم دون الحاجة لإعادة تشغيل السيرفر لكل تغيير.
+    أهم العناصر المرئية.
     """
-    if isinstance(theme_key_or_settings, dict):
-        colors = get_theme_colors(theme_key_or_settings)
-    else:
-        colors = dict(THEME_COLORS.get(theme_key_or_settings, THEME_COLORS["ocean_dark"]))
-
+    colors = _resolve_theme_colors(theme_key_or_settings)
     primary = colors["primary"]
     accent = colors["accent"]
     bg = colors["bg"]
@@ -177,55 +157,100 @@ def apply_theme_css(theme_key_or_settings):
             color: {text} !important;
             opacity: 0.75;
         }}
+
+        /* ─────────────────────────────────────────────────────
+           شفافية الجداول (st.dataframe) داخل خلايا اللوحات
+           والتقارير — الخلفية البيضاء الافتراضية لعنصر الجدول
+           (المبني عبر glide-data-grid) تكسر التناسق مع الثيمات
+           الداكنة. نجعل الحاوية والخلفية شفافة، مع إبقاء حدود
+           خفيفة بلون التمييز حتى يبقى الجدول مقروءاً بصرياً.
+           ───────────────────────────────────────────────────── */
+        [data-testid="stDataFrame"],
+        [data-testid="stDataFrame"] > div,
+        [data-testid="stElementContainer"] [data-testid="stDataFrame"] {{
+            background-color: transparent !important;
+        }}
+        [data-testid="stDataFrame"] [data-testid="stDataFrameResizable"] {{
+            background-color: transparent !important;
+        }}
+        [data-testid="stDataFrame"] {{
+            border: 1px solid {accent}40 !important;
+            border-radius: 6px;
+        }}
+
+        /* ─────────────────────────────────────────────────────
+           خلفية شفافة لعناصر Plotly (الرسوم/المقاييس) — طبقة CSS
+           احتياطية بالإضافة إلى ضبط paper_bgcolor/plot_bgcolor
+           برمجياً عبر apply_plotly_theme() في كل رسم (الطبقة
+           الأهم فعلياً، لأن Plotly يرسم داخل SVG/Canvas خاص به).
+           ───────────────────────────────────────────────────── */
+        [data-testid="stPlotlyChart"] {{
+            background-color: transparent !important;
+        }}
     </style>
     """
     st.markdown(css, unsafe_allow_html=True)
 
 
-def apply_page_style(settings: dict = None):
+def apply_page_style(theme_key: str = None):
     """
     اختصار موحّد لبداية أي صفحة: يُطبّق RTL دائماً، ثم يُطبّق ألوان
-    الثيم (بما فيها لون النص المخصص إن وُجد) لو تم تمرير settings.
+    الثيم فعلياً لو تم تمرير theme_key (عادة settings.get("theme")).
+    الصفحات التي لا يوجد فيها مشروع مفتوح بعد (تسجيل الدخول، معرض
+    المشاريع) تستدعيها بدون theme_key فتحصل على RTL فقط.
     """
     apply_rtl()
-    if settings:
-        apply_theme_css(settings)
+    if theme_key:
+        apply_theme_css(theme_key)
 
 
-def apply_plotly_theme(fig, settings: dict):
+def _resolve_theme_colors(settings_or_theme) -> dict:
     """
-    توحيد مظهر أي رسم Plotly (gauge أو chart) مع ثيم الصفحة الحالي:
-    - خلفية الرسم بالكامل شفافة (paper_bgcolor/plot_bgcolor) بدل الأبيض
-      الافتراضي من Plotly، حتى تندمج بصرياً مع بطاقة/خلفية الصفحة أياً
-      كان الثيم المختار، بدل تكرار لون الثيم يدوياً (وهو ما قد يتغيّر
-      مستقبلاً مع كل ثيم جديد بينما الشفافية تعمل تلقائياً مع أي ثيم).
-    - لون كل النصوص داخل الرسم (الأرقام، التسميات، المحاور) يُطابق لون
-      النص المختار في الثيم — بما فيه لون النص المخصص الذي يختاره
-      المستخدم بحرية من صفحة الإعدادات — حتى لا تبقى الكتابة سوداء
-      افتراضياً على خلفية شفافة قد تكون داكنة (مشكلة قراءة).
-
-    يُستدعى دائماً بعد بناء أي fig وقبل st.plotly_chart(fig, ...).
-    يُعدّل الـ fig في مكانه ويُرجعه أيضاً لسهولة الاستخدام المتسلسل.
+    قبول إما dict إعدادات مشروع كامل (settings.get("theme")) أو اسم
+    ثيم كنص مباشرة — يُستخدم داخلياً من get_chart_theme/apply_plotly_theme
+    حتى تعمل الدالتان بنفس المرونة بغض النظر عمّا يُمرَّر لهما.
     """
-    colors = get_theme_colors(settings)
-    text_color = colors["text"]
-    fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color=text_color),
-    )
-    # عناصر الـ gauge (go.Indicator) لا تتبع دائماً font العام أعلاه
-    # بنفس القوة لبعض إصدارات Plotly، فنضبطها صراحة لو كانت موجودة.
-    try:
-        for trace in fig.data:
-            if getattr(trace, "type", None) == "indicator":
-                trace.update(number=dict(font=dict(color=text_color)))
-                if getattr(trace, "gauge", None) is not None:
-                    trace.gauge.update(
-                        axis=dict(tickfont=dict(color=text_color)),
-                    )
-    except Exception:
-        pass
+    if isinstance(settings_or_theme, dict):
+        theme_key = settings_or_theme.get("theme", "ocean_dark")
+    else:
+        theme_key = settings_or_theme or "ocean_dark"
+    return THEME_COLORS.get(theme_key, THEME_COLORS["ocean_dark"])
+
+
+def get_chart_theme(settings_or_theme="ocean_dark") -> dict:
+    """
+    إرجاع إعدادات ثيم جاهزة للتطبيق مباشرة على أي Plotly figure عبر
+    fig.update_layout(**get_chart_theme(settings)) — تجعل خلفية الرسم
+    شفافة تماماً (تتناسب مع أي خلفية خلفها) ولون النص متوافقاً مع لون
+    نص الثيم الحالي، بدل الخلفية البيضاء الافتراضية لـ Plotly.
+
+    يقبل إما dict إعدادات المشروع كاملاً أو اسم ثيم كنص مباشرة.
+    """
+    colors = _resolve_theme_colors(settings_or_theme)
+    return {
+        "paper_bgcolor": "rgba(0,0,0,0)",
+        "plot_bgcolor": "rgba(0,0,0,0)",
+        "font_color": colors["text"],
+        "legend": {"font": {"color": colors["text"]}},
+    }
+
+
+def apply_plotly_theme(fig, settings_or_theme="ocean_dark"):
+    """
+    تطبيق ثيم شفاف متوافق مع لون نص الثيم الحالي مباشرة على كائن
+    Plotly figure، وإرجاعه (لتسلسل الاستدعاءات إن رغبت).
+
+    الاستخدام:
+        fig = px.bar(df, x="x", y="y")
+        fig = apply_plotly_theme(fig, settings)
+        st.plotly_chart(fig, width='stretch')
+
+    يقبل إما dict إعدادات المشروع كاملاً (settings) أو اسم ثيم كنص
+    مباشرة (مثل "ocean_dark") — نفس مرونة get_chart_theme أعلاه، وهما
+    في جوهرهما نفس المنطق: get_chart_theme تُرجع dict للدمج اليدوي،
+    وapply_plotly_theme تطبّقه مباشرة على fig كاختصار.
+    """
+    fig.update_layout(**get_chart_theme(settings_or_theme))
     return fig
 
 
@@ -271,8 +296,48 @@ def sidebar_header():
 
 
 # ══════════════════════════════════════════════════════════════
+#  إشعارات موحّدة (Toast) — بديل الرسائل التوضيحية الثابتة
+# ══════════════════════════════════════════════════════════════
+#
+# بدل st.info/st.success/st.warning/st.caption الثابتة المنتشرة في
+# الصفحات (تشغل مساحة دائمة وتتراكم بصرياً)، تُستخدم هذه الدالة الواحدة
+# لعرض أي حدث (نجاح عملية، فشلها، تنبيه بسيط) كـ toast عابر يظهر
+# ويختفي تلقائياً — قناة إشعار واحدة موحّدة لكل أحداث التطبيق.
+
+_KIND_ICONS = {
+    "success": "✅",
+    "error"  : "❌",
+    "warning": "⚠️",
+    "info"   : "ℹ️",
+}
+
+
+def notify(message: str, kind: str = "info", icon: str = None) -> None:
+    """
+    عرض إشعار عابر (toast) موحّد لأي حدث في التطبيق.
+
+    kind: "success" | "error" | "warning" | "info" — يحدد الأيقونة
+          الافتراضية فقط؛ Streamlit toast لا يملك تلوينات مختلفة حسب
+          النوع، لذا الأيقونة هي وسيلة التمييز البصري الوحيدة المتاحة.
+    icon: أيقونة مخصّصة تتجاوز الافتراضية المرتبطة بـ kind.
+    """
+    final_icon = icon or _KIND_ICONS.get(kind, "ℹ️")
+    try:
+        st.toast(message, icon=final_icon)
+    except Exception:
+        # fallback نادر جداً (نسخات Streamlit قديمة لا تدعم toast) —
+        # لا نكسر الصفحة، فقط نسجّل الحدث في اللوج بدل عرضه
+        logger.info("notify (no toast support): [%s] %s", kind, message)
+
+
+# ══════════════════════════════════════════════════════════════
 #  التواريخ والمنطقة الزمنية
 # ══════════════════════════════════════════════════════════════
+#
+# كل التواريخ تُخزَّن داخلياً بصيغة ISO بتوقيت UTC (راجع
+# core/project_db.py::_now()). طبقة العرض فقط هي المسؤولة عن التحويل
+# للمنطقة الزمنية المفضّلة للمستخدم (محفوظة في project settings تحت
+# مفتاح "timezone")، حتى لا نُغيّر أي شيء في طريقة التخزين نفسها.
 
 def format_local_dt(iso_str, settings: dict, fmt: str = "%Y-%m-%d %H:%M") -> str:
     """
@@ -287,6 +352,7 @@ def format_local_dt(iso_str, settings: dict, fmt: str = "%Y-%m-%d %H:%M") -> str
     try:
         dt = datetime.fromisoformat(str(iso_str))
         if dt.tzinfo is None:
+            # كل الأوقات المخزَّنة عبر project_db._now() هي UTC ضمنياً
             dt = dt.replace(tzinfo=_dt_timezone.utc)
 
         tz_name = (settings or {}).get("timezone", "Asia/Riyadh")
