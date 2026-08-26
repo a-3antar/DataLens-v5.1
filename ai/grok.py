@@ -10,7 +10,7 @@ from ai.base_engine import BaseEngine
 
 logger = logging.getLogger(__name__)
 
-GROK_BASE   = "https://api.x.ai/v1"
+GROK_BASE   = "https://api.groq.com/openai/v1"# "https://api.x.ai/v1"
 GROK_MODELS = f"{GROK_BASE}/models"
 GROK_CHAT   = f"{GROK_BASE}/chat/completions"
 
@@ -18,7 +18,7 @@ GROK_CHAT   = f"{GROK_BASE}/chat/completions"
 class GrokEngine(BaseEngine):
     """محرك xAI Grok."""
 
-    def __init__(self, api_key: str, model: str = "grok-beta", timeout: int = 30):
+    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile", timeout: int = 30):
         super().__init__(api_key, model, timeout)
 
     def get_models(self) -> dict:
