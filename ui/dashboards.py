@@ -3,18 +3,37 @@ ui/dashboards.py
 ==================
 صفحة لوحات المعلومات: معرض اللوحات، إنشاء لوحة يدوياً من أحد ٦ قوالب
 أو تلقائياً بالذكاء الاصطناعي، بناء الخلايا (سؤال طبيعي + نوع عرض)
-مع إمكانية اختبارها قبل الحفظ، شريط Slicers قابل للطي (مع تحميل قيم
-عند الطلب فقط)، وتحديث كل البيانات بضغطة زر واحدة — متوازٍ عبر
-Threads عند استخدام محرك سحابي.
+مع إمكانية اختبارها قبل الحفظ، شريط Slicers قابل للطي أعلى الصفحة،
+وتحديث كل البيانات بضغطة زر واحدة — متوازٍ عبر Threads عند استخدام
+محرك سحابي.
 
 مفتاح API يُقرأ من إعدادات المشروع (project.db) كما كان دائماً.
 
-مظهر الرسوم البيانية:
-------------------------
-كل رسوم Plotly (Gauges والمخططات) تُمرَّر عبر apply_plotly_theme()
-(ui/common.py) قبل عرضها — تُصبح خلفيتها شفافة (تندمج مع خلفية/بطاقة
-الثيم الحالي بدل الأبيض الافتراضي)، وتُصبح كل نصوصها (الأرقام،
-التسميات، المحاور) بنفس لون النص الذي يختاره المستخدم من الإعدادات.
+🆕 التصميم البصري:
+---------------------
+- خلفية الرسوم البيانية (Plotly) والمقاييس (Gauge) شفافة تماماً وتتبع
+  لون نص الثيم الحالي عبر ui.common.get_chart_theme().
+- خلفية الجداول (st.dataframe) شفافة أيضاً عبر CSS في apply_theme_css.
+- النص داخل خلايا Story Telling يتبع لون نص الثيم تلقائياً مع اتجاه
+  RTL صريح.
+
+🆕 الإشعارات:
+----------------
+كل الرسائل التوضيحية الثابتة حُذفت نهائياً. أي حدث فعلي (نجاح حفظ،
+فشل تحديث، تحذير) يُعرض عبر إشعار toast عابر واحد موحّد
+(ui.common.notify).
+
+🆕 تخطيط الصفحة:
+-------------------
+- الـ Slicers انتقلت من عمود جانبي ثابت (يأخذ مساحة دائمة) إلى قائمة
+  مطوية (expander) واحدة أعلى الصفحة، أسفل العنوان مباشرة — مما يوفر
+  كامل عرض الصفحة لعرض الخلايا نفسها.
+- كل خلية أصبح لها زر "⁝" في أعلاها (بجانب عنوانها) بدل زر "⚙️ خيارات"
+  الذي كان يظهر أسفل نتيجة الخلية — يفتح نفس القائمة (تحديث الخلية،
+  تعديل السؤال، إفراغ الخلية) لكن بموضع أقرب لعنوان الخلية وأكثر إحكاماً.
+- بعد حفظ تعديل على سؤال خلية، يُنفَّذ تحديث فوري لتلك الخلية تحديداً
+  (AI أو سريع حسب الحالة) بدل ترك الخلية فارغة بانتظار ضغطة يدوية
+  إضافية على "تحديث البيانات" أو "تحديث هذه الخلية".
 
 تحديث الخلايا:
 ----------------
@@ -23,11 +42,8 @@ Threads عند استخدام محرك سحابي.
   تُعاد فقط بتطبيق الفلاتر على SQL محفوظ مسبقاً — أسرع وبدون تكلفة AI.
 - خلايا Story Telling تُنفَّذ دائماً بالتوازي (الأبطأ). بقية الخلايا
   تتوازى فقط عند استخدام محرك سحابي (وليس Ollama المحلي).
-- أثناء التحديث الكامل، يظهر مؤشر بصري بسيط (نص متحرك) بدل شريط تقدم
-  دقيق — أبسط وأخف على الأداء. مؤشر التقدم يُحدَّث فقط من الـ main
-  thread (بعد استلام كل نتيجة عبر as_completed في core/dashboard_manager.py)
-  حتى لا تُستدعى أي دالة Streamlit من داخل worker thread (وهو ما كان
-  يُصدر تحذير "missing ScriptRunContext").
+- مرحلة توليد نص السرد تستخدم مهلة اتصال مستقلة (story_timeout) عن
+  مهلة توليد SQL العادية.
 
 إنشاء لوحة تلقائياً بالذكاء الاصطناعي:
 ------------------------------------------
@@ -46,7 +62,7 @@ import plotly.graph_objects as go
 
 from ui.common import (
     apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
-    format_local_dt, apply_plotly_theme,
+    format_local_dt, notify, get_chart_theme,
 )
 from core.dashboard_templates import DASHBOARD_TEMPLATES, get_template
 from core.dashboard_manager import DashboardManager
@@ -71,7 +87,7 @@ def show_dashboards():
     require_login()
     db = require_project()
     settings = db.get_settings()
-    apply_theme_css(settings)
+    apply_theme_css(settings.get("theme", "ocean_dark"))
     sidebar_header()
 
     if st.session_state.get("current_dashboard_id"):
@@ -94,7 +110,7 @@ def _show_dashboard_gallery(db):
             with c2:
                 if st.button("اختيار", key=f"pick_tmpl_{key}", width='stretch'):
                     if not title.strip():
-                        st.error("الرجاء إدخال عنوان اللوحة أولاً")
+                        notify("الرجاء إدخال عنوان اللوحة أولاً", kind="warning")
                     else:
                         dash_id = str(uuid.uuid4())
                         db.create_dashboard(dash_id, title.strip(), key)
@@ -103,11 +119,6 @@ def _show_dashboard_gallery(db):
             st.divider()
 
     with st.expander("🤖 إنشاء لوحة تلقائياً بالذكاء الاصطناعي"):
-        st.caption(
-            "اكتب وصفاً لما تريد متابعته، وسيختار الذكاء الاصطناعي أحد القوالب "
-            "الستة الجاهزة ويقترح أسئلة الخلايا تلقائياً. اللوحة الناتجة قابلة "
-            "للتعديل لاحقاً تماماً كأي لوحة أنشأتها يدوياً — لا فرق سوى لحظة الإنشاء."
-        )
         auto_title = st.text_input("عنوان اللوحة", key="auto_dash_title")
         auto_desc = st.text_area(
             "صف ما تريد متابعته", key="auto_dash_desc", height=90,
@@ -115,16 +126,16 @@ def _show_dashboard_gallery(db):
         )
         if st.button("🤖 إنشاء الخطة", key="auto_dash_generate"):
             if not auto_title.strip() or not auto_desc.strip():
-                st.error("الرجاء إدخال العنوان والوصف")
+                notify("الرجاء إدخال العنوان والوصف", kind="warning")
             elif not db.get_files():
-                st.error("ارفع ملفاً واحداً على الأقل قبل استخدام الإنشاء التلقائي")
+                notify("ارفع ملفاً واحداً على الأقل قبل استخدام الإنشاء التلقائي", kind="warning")
             else:
                 ai, settings = _build_ai_manager(db)
                 dm = DashboardManager(db, ai)
                 with st.spinner("⏳ جاري تحليل بياناتك وبناء خطة اللوحة..."):
                     plan = dm.generate_dashboard_plan(auto_desc.strip(), ai_rules=settings.get("ai_rules"))
                 if not plan["ok"]:
-                    st.error(plan["error"])
+                    notify(plan["error"], kind="error")
                 else:
                     dash_id = str(uuid.uuid4())
                     db.create_dashboard(dash_id, auto_title.strip(), plan["template_id"])
@@ -138,13 +149,13 @@ def _show_dashboard_gallery(db):
                                 dash_id, base + i, c.get("display_type") or "table",
                                 c.get("title") or None, c["question"], c.get("chart_type"),
                             )
-                    st.success("✅ تم إنشاء اللوحة — راجعها وعدّلها الآن كأي لوحة عادية إن أردت")
+                    notify("تم إنشاء اللوحة بنجاح", kind="success")
                     st.session_state.current_dashboard_id = dash_id
                     st.rerun()
 
     dashboards = db.get_dashboards()
     if not dashboards:
-        st.info("لا توجد لوحات بعد. أنشئ لوحتك الأولى أعلاه.")
+        st.caption("لا توجد لوحات بعد. أنشئ لوحتك الأولى أعلاه.")
         return
 
     settings = db.get_settings()
@@ -197,6 +208,7 @@ def _build_ai_manager(db):
         retry_delay=settings.get("retry_delay", 10),
         max_total_wait_seconds=settings.get("max_total_wait_seconds", 0),
         story_max_total_wait_seconds=settings.get("story_max_total_wait_seconds", 0),
+        story_timeout=settings.get("story_timeout", 45),
     )
     return ai, settings
 
@@ -226,15 +238,12 @@ def _show_dashboard_detail(db):
         refresh_clicked = st.button("🔄 تحديث البيانات", type="primary", width='stretch')
 
     if refresh_clicked:
-        # مؤشر بصري بسيط بدل progress bar دقيق. يتحدث فقط من الـ main
-        # thread (راجع core/dashboard_manager.py::refresh_dashboard —
-        # on_progress يُستدعى بعد as_completed، وليس داخل worker thread).
-        progress_placeholder = st.empty()
-        progress_placeholder.markdown("⏳ جاري تحديث خلايا اللوحة...")
+        status_placeholder = st.empty()
+        status_placeholder.markdown("⏳ جاري تحديث خلايا اللوحة...")
 
         def on_progress(done, total):
             frame = _BUSY_FRAMES[done % len(_BUSY_FRAMES)]
-            progress_placeholder.markdown(f"{frame} جاري التحديث... تم {done} من {total}")
+            status_placeholder.markdown(f"{frame} جاري التحديث... تم {done} من {total}")
 
         result = dm.refresh_dashboard(
             dashboard_id,
@@ -242,82 +251,79 @@ def _show_dashboard_detail(db):
             on_progress=on_progress,
             engine_name=engine_name,
         )
-        progress_placeholder.empty()
+        status_placeholder.empty()
 
         if not result["ok"]:
-            st.error(result.get("error", "فشل التحديث"))
+            notify(result.get("error", "فشل التحديث"), kind="error")
         elif result["errors"] == 0:
-            st.success(
-                f"✅ تم تحديث {result['total']} خلية بنجاح "
-                f"(⚡ {result['fast_updates']} سريع بدون AI، 🤖 {result['ai_calls']} عبر AI)"
+            notify(
+                f"تم تحديث {result['total']} خلية بنجاح "
+                f"(⚡ {result['fast_updates']} سريع، 🤖 {result['ai_calls']} عبر AI)",
+                kind="success",
             )
         else:
-            st.warning(
-                f"⚠️ تم التحديث: {result['total'] - result['errors']} نجحت، "
-                f"{result['errors']} فشلت "
-                f"(⚡ {result['fast_updates']} سريع، 🤖 {result['ai_calls']} عبر AI)"
+            notify(
+                f"تم التحديث: {result['total'] - result['errors']} نجحت، "
+                f"{result['errors']} فشلت",
+                kind="warning",
             )
         st.rerun()
+
+    # 🆕 الـ Slicers أعلى الصفحة أسفل العنوان مباشرة، داخل قائمة مطوية
+    # واحدة مطوية افتراضياً — توفّر كامل عرض الصفحة لعرض الخلايا نفسها
+    # بدل عمود جانبي ثابت كان يحجز مساحة دائمة.
+    slicers = {s["position"]: s for s in db.get_dashboard_slicers(dashboard_id)}
+    active_count = sum(1 for s in slicers.values() if s.get("table_name") and s.get("column_name") and s.get("selected_values"))
+    slicer_label = f"🔍 عوامل التصفية (Slicers)" + (f" — {active_count} مُفعَّل" if active_count else "")
+    with st.expander(slicer_label, expanded=False):
+        _render_slicer_panel(db, dm, dashboard_id, slicers)
 
     st.divider()
 
     template = get_template(dashboard["template_id"])
     cells = {c["position"]: c for c in db.get_dashboard_cells(dashboard_id)}
-    slicers = {s["position"]: s for s in db.get_dashboard_slicers(dashboard_id)}
 
-    main_col, slicer_col = st.columns([5, 1.4])
+    st.markdown("##### 🎯 المؤشرات الرئيسية")
+    gauge_cols = st.columns(DASHBOARD_GAUGE_COUNT)
+    for i in range(DASHBOARD_GAUGE_COUNT):
+        with gauge_cols[i]:
+            _render_dashboard_cell(db, dm, settings, dashboard_id, i, cells.get(i))
 
-    with main_col:
-        st.markdown("##### 🎯 المؤشرات الرئيسية")
-        gauge_cols = st.columns(DASHBOARD_GAUGE_COUNT)
-        for i in range(DASHBOARD_GAUGE_COUNT):
-            with gauge_cols[i]:
-                _render_dashboard_cell(db, dm, settings, dashboard_id, i, cells.get(i))
+    st.divider()
 
-        st.divider()
+    layout_fn = LAYOUT_REGISTRY[template["layout_fn"]]
+    base = DASHBOARD_GAUGE_COUNT
 
-        layout_fn = LAYOUT_REGISTRY[template["layout_fn"]]
-        base = DASHBOARD_GAUGE_COUNT
+    def render_cell(idx_in_template):
+        position = base + idx_in_template
+        _render_dashboard_cell(db, dm, settings, dashboard_id, position, cells.get(position))
 
-        def render_cell(idx_in_template):
-            position = base + idx_in_template
-            _render_dashboard_cell(db, dm, settings, dashboard_id, position, cells.get(position))
-
-        layout_fn(render_cell)
-
-    with slicer_col:
-        _render_slicer_panel(db, dm, dashboard_id, slicers)
+    layout_fn(render_cell)
 
 
 def _render_slicer_panel(db, dm, dashboard_id, slicers):
-    header_col, reset_col = st.columns([3, 1.6])
-    with header_col:
-        st.markdown("##### 🔍 عوامل التصفية (Slicers)")
+    reset_col, _spacer = st.columns([1.4, 4])
     with reset_col:
         if st.button("↺ مسح الكل", key=f"reset_slicers_{dashboard_id}", width='stretch'):
             dm.reset_slicers(dashboard_id)
             for i in range(DASHBOARD_SLICER_COUNT):
                 for prefix in ("slicer_table_", "slicer_col_", "slicer_vals_",
-                               "slicer_values_loaded_", "slicer_values_cache_"):
+                               "slicer_values_cache_"):
                     st.session_state.pop(f"{prefix}{dashboard_id}_{i}", None)
-            st.success("تم مسح كل الفلاتر — اضغط «🔄 تحديث البيانات» لتطبيق ذلك")
+            notify("تم مسح كل الفلاتر", kind="success")
             st.rerun()
 
     tables = dm.get_available_tables()
+    slicer_cols = st.columns(DASHBOARD_SLICER_COUNT)
 
     for i in range(DASHBOARD_SLICER_COUNT):
         existing = slicers.get(i, {})
-        active_label = (
-            f"{existing['table_name']}.{existing['column_name']}"
-            if existing.get("table_name") and existing.get("column_name")
-            else "غير مُفعّل"
-        )
-        with st.expander(f"Slicer {i + 1} — {active_label}", expanded=False):
+        with slicer_cols[i]:
             table_options = ["(بدون)"] + tables
             cur_table = existing.get("table_name")
             table_idx = table_options.index(cur_table) if cur_table in table_options else 0
             sel_table = st.selectbox(
-                "الجدول", table_options, index=table_idx,
+                f"الجدول (فلتر {i + 1})", table_options, index=table_idx,
                 key=f"slicer_table_{dashboard_id}_{i}",
             )
 
@@ -334,31 +340,30 @@ def _render_slicer_panel(db, dm, dashboard_id, slicers):
                 )
 
                 if sel_column != "(بدون)":
-                    loaded_key = f"slicer_values_loaded_{dashboard_id}_{i}"
+                    # 🆕 عرض قيم العمود فوراً بمجرد اختياره — بدون زر
+                    # "تحميل القيم" أو "إعادة تحميل القيم". يُخزَّن الجلب
+                    # في session_state باسم يشمل (الجدول, العمود) بحيث
+                    # يُعاد الجلب تلقائياً فقط عند تغيّر الاختيار فعلياً.
                     values_key = f"slicer_values_cache_{dashboard_id}_{i}"
-                    already_loaded = st.session_state.get(loaded_key) == (sel_table, sel_column)
+                    cache_sig_key = f"{values_key}_sig"
+                    current_sig = (sel_table, sel_column)
 
-                    if not already_loaded:
-                        st.caption("لم تُحمَّل القيم بعد.")
-                        if st.button("📥 تحميل القيم", key=f"slicer_load_{dashboard_id}_{i}"):
-                            dv = dm.get_distinct_values(sel_table, sel_column, limit=DASHBOARD_SLICER_VALUES_LIMIT)
-                            if dv["ok"]:
-                                st.session_state[values_key] = dv["values"]
-                                st.session_state[loaded_key] = (sel_table, sel_column)
-                                st.rerun()
-                            else:
-                                st.error(dv["error"])
-                    else:
-                        available_values = st.session_state.get(values_key, [])
-                        existing_vals = [v for v in (existing.get("selected_values") or []) if v in available_values]
-                        sel_values = st.multiselect(
-                            "القيم", available_values, default=existing_vals,
-                            key=f"slicer_vals_{dashboard_id}_{i}",
-                        )
-                        if st.button("🔄 إعادة تحميل القيم", key=f"slicer_reload_{dashboard_id}_{i}"):
-                            st.session_state.pop(loaded_key, None)
-                            st.session_state.pop(values_key, None)
-                            st.rerun()
+                    if st.session_state.get(cache_sig_key) != current_sig:
+                        dv = dm.get_distinct_values(sel_table, sel_column, limit=DASHBOARD_SLICER_VALUES_LIMIT)
+                        if dv["ok"]:
+                            st.session_state[values_key] = dv["values"]
+                            st.session_state[cache_sig_key] = current_sig
+                        else:
+                            notify(dv["error"], kind="error")
+                            st.session_state[values_key] = []
+                            st.session_state[cache_sig_key] = current_sig
+
+                    available_values = st.session_state.get(values_key, [])
+                    existing_vals = [v for v in (existing.get("selected_values") or []) if v in available_values]
+                    sel_values = st.multiselect(
+                        "القيم", available_values, default=existing_vals,
+                        key=f"slicer_vals_{dashboard_id}_{i}",
+                    )
 
             if st.button("💾 حفظ", key=f"slicer_save_{dashboard_id}_{i}", width='stretch'):
                 final_table = sel_table if sel_table != "(بدون)" else None
@@ -369,8 +374,6 @@ def _render_slicer_panel(db, dm, dashboard_id, slicers):
                 )
                 st.rerun()
 
-    st.caption("💡 التغييرات تُطبَّق فقط بعد الضغط على «🔄 تحديث البيانات» أعلى الصفحة.")
-
 
 def _render_dashboard_cell(db, dm, settings, dashboard_id, position, cell):
     edit_key = f"editing_cell_{dashboard_id}_{position}"
@@ -378,34 +381,34 @@ def _render_dashboard_cell(db, dm, settings, dashboard_id, position, cell):
 
     with st.container(border=True):
         if cell and cell.get("question") and not st.session_state.get(edit_key):
-            _render_cell_result(db, dashboard_id, position, cell, settings)
+            # 🆕 زر "⁝" أعلى الخلية (بجانب عنوانها) بدل ظهوره أسفل
+            # النتيجة — أقرب لعنوان الخلية وأكثر إحكاماً بصرياً.
+            title_col, menu_col = st.columns([5, 1])
+            with title_col:
+                title = cell.get("title") or DISPLAY_TYPE_LABELS.get(cell.get("display_type"), "")
+                st.markdown(f"**{title}**")
+            with menu_col:
+                _render_cell_actions_menu(db, dm, settings, dashboard_id, position, edit_key)
 
-            if cell.get("display_type") == "story":
-                st.caption("🤖 يحتاج AI عند كل تحديث (تحليل نصي)")
-            elif cell.get("base_sql"):
-                st.caption("⚡ تحديث سريع (بدون AI)")
-            else:
-                st.caption("🤖 يحتاج AI (لم يُولَّد SQL بعد)")
-
-            _render_cell_actions_menu(db, dm, settings, dashboard_id, position, edit_key)
+            _render_cell_result(db, dashboard_id, position, cell, settings, show_title=False)
         else:
             _render_cell_editor(db, dm, settings, dashboard_id, position, cell, is_gauge_row, edit_key)
 
 
 def _render_cell_actions_menu(db, dm, settings, dashboard_id, position, edit_key):
     if _HAS_POPOVER:
-        menu_ctx = st.popover("⚙️ خيارات")
+        menu_ctx = st.popover("⁝", use_container_width=True)
     else:
-        menu_ctx = st.expander("⚙️ خيارات", expanded=False)
+        menu_ctx = st.expander("⁝", expanded=False)
 
     with menu_ctx:
         if st.button("🔄 تحديث هذه الخلية", key=f"refresh_one_{dashboard_id}_{position}", width='stretch'):
             with st.spinner("⏳ جاري التحديث..."):
                 r = dm.refresh_single_cell(dashboard_id, position, ai_rules=settings.get("ai_rules"))
             if r["ok"]:
-                st.success("✅ تم" + (" (عبر AI)" if r["used_ai"] else " (سريع بدون AI)"))
+                notify("تم التحديث" + (" (عبر AI)" if r["used_ai"] else ""), kind="success")
             else:
-                st.error(r.get("error", "فشل التحديث"))
+                notify(r.get("error", "فشل التحديث"), kind="error")
             st.rerun()
 
         if st.button("✏️ تعديل السؤال", key=f"edit_{dashboard_id}_{position}", width='stretch'):
@@ -453,17 +456,18 @@ def _render_cell_editor(db, dm, settings, dashboard_id, position, cell, is_gauge
                 key=f"ctype_{dashboard_id}_{position}",
             )
 
-    if display_type == "story":
-        st.caption("🤖 هذا النوع يحتاج استدعاء AI عند كل تحديث دائماً (تحليل نصي فعلي).")
+    # 🆕 زر "اختبار" أصبح داخل نفس قائمة الخيارات المنسدلة بدل ظهوره
+    # كزر منفصل دائماً — يظهر فقط أثناء التعديل (منطقياً يفيد فقط هنا).
+    if _HAS_POPOVER:
+        test_menu_ctx = st.popover("⁝ خيارات الاختبار")
     else:
-        st.caption("ℹ️ عند الحفظ سيُستدعى AI مرة واحدة لتوليد SQL؛ التحديثات اللاحقة (بفلاتر مختلفة) ستكون سريعة بدون AI طالما لم يتغيّر نص السؤال.")
+        test_menu_ctx = st.expander("⁝ خيارات الاختبار", expanded=False)
 
     test_key = f"cell_test_result_{dashboard_id}_{position}"
-    tc1, _tc2 = st.columns([1, 2])
-    with tc1:
-        if st.button("🔍 اختبار", key=f"test_cell_{dashboard_id}_{position}"):
+    with test_menu_ctx:
+        if st.button("🔍 اختبار", key=f"test_cell_{dashboard_id}_{position}", width='stretch'):
             if not question.strip():
-                st.error("الرجاء كتابة سؤال أولاً")
+                notify("الرجاء كتابة سؤال أولاً", kind="warning")
             else:
                 ai, _ = _build_ai_manager(db)
                 filters = dm._build_active_filters(dashboard_id)
@@ -480,7 +484,6 @@ def _render_cell_editor(db, dm, settings, dashboard_id, position, cell, is_gauge
     if st.session_state.get(test_key):
         r = st.session_state[test_key]
         if r.get("ok"):
-            st.success("✅ نجح الاختبار — لم يُحفظ شيء بعد")
             if r.get("sql"):
                 with st.expander("SQL", expanded=False):
                     st.code(r["sql"], language="sql")
@@ -495,7 +498,7 @@ def _render_cell_editor(db, dm, settings, dashboard_id, position, cell, is_gauge
     with bc1:
         if st.button("💾 حفظ", key=f"save_cell_{dashboard_id}_{position}", width='stretch', type="primary"):
             if not question.strip():
-                st.error("الرجاء كتابة سؤال")
+                notify("الرجاء كتابة سؤال", kind="warning")
             else:
                 db.save_dashboard_cell(
                     dashboard_id, position, display_type,
@@ -503,7 +506,16 @@ def _render_cell_editor(db, dm, settings, dashboard_id, position, cell, is_gauge
                 )
                 st.session_state.pop(edit_key, None)
                 st.session_state.pop(test_key, None)
-                st.info("تم الحفظ. اضغط «🔄 تحديث البيانات» أعلى الصفحة أو «⚙️ خيارات → تحديث هذه الخلية» لعرض النتيجة.")
+
+                # 🆕 تحديث فوري لهذه الخلية تحديداً بعد الحفظ — بدل
+                # تركها فارغة بانتظار ضغطة يدوية إضافية على "تحديث
+                # البيانات" أو "⁝ → تحديث هذه الخلية".
+                with st.spinner("⏳ جاري تحديث الخلية..."):
+                    r = dm.refresh_single_cell(dashboard_id, position, ai_rules=settings.get("ai_rules"))
+                if r["ok"]:
+                    notify("تم الحفظ والتحديث" + (" (عبر AI)" if r["used_ai"] else ""), kind="success")
+                else:
+                    notify(f"تم الحفظ لكن فشل التحديث: {r.get('error')}", kind="warning")
                 st.rerun()
     with bc2:
         if cell and st.button("إلغاء", key=f"cancel_cell_{dashboard_id}_{position}", width='stretch'):
@@ -512,9 +524,10 @@ def _render_cell_editor(db, dm, settings, dashboard_id, position, cell, is_gauge
             st.rerun()
 
 
-def _render_cell_result(db, dashboard_id, position, cell, settings):
-    title = cell.get("title") or DISPLAY_TYPE_LABELS.get(cell.get("display_type"), "")
-    st.markdown(f"**{title}**")
+def _render_cell_result(db, dashboard_id, position, cell, settings, show_title: bool = True):
+    if show_title:
+        title = cell.get("title") or DISPLAY_TYPE_LABELS.get(cell.get("display_type"), "")
+        st.markdown(f"**{title}**")
 
     if cell.get("last_error"):
         st.error(f"فشل آخر تحديث: {cell['last_error']}")
@@ -522,18 +535,19 @@ def _render_cell_result(db, dashboard_id, position, cell, settings):
 
     stored = cell.get("last_result")
     if not stored:
-        st.info("لم يُحدَّث بعد. اضغط «🔄 تحديث البيانات» أعلى الصفحة أو «⚙️ خيارات» أدناه.")
+        st.caption("لم يُحدَّث بعد")
         return
 
     display_type = cell.get("display_type")
     df = pd.DataFrame(stored.get("rows", []))
+    chart_theme = get_chart_theme(settings)
 
     if display_type == "table":
         st.dataframe(df, width='stretch', hide_index=True)
 
     elif display_type == "chart":
         if df.empty or df.shape[1] < 2:
-            st.warning("لا توجد بيانات كافية للرسم")
+            st.caption("لا توجد بيانات كافية للرسم")
         else:
             ctype = stored.get("chart_type", "bar")
             x_col = df.columns[0]
@@ -549,8 +563,7 @@ def _render_cell_result(db, dashboard_id, position, cell, settings):
                     fig = px.scatter(df, x=x_col, y=y_cols[0])
                 else:
                     fig = px.bar(df, x=x_col, y=y_cols, barmode="group", text_auto=True)
-                fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=280)
-                apply_plotly_theme(fig, settings)
+                fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=280, **chart_theme)
                 st.plotly_chart(fig, width='stretch', key=f"chart_{dashboard_id}_{position}")
             except Exception as e:
                 st.error(f"تعذر رسم البيانات: {e}")
@@ -560,9 +573,15 @@ def _render_cell_result(db, dashboard_id, position, cell, settings):
         current = row.get("current_value", 0)
         mn = row.get("min_value", 0)
         mx = row.get("max_value", 100)
-        fig = go.Figure(go.Indicator(mode="gauge+number", value=current, gauge={"axis": {"range": [mn, mx]}}))
-        fig.update_layout(height=180, margin=dict(l=10, r=10, t=10, b=10))
-        apply_plotly_theme(fig, settings)
+        fig = go.Figure(go.Indicator(
+            mode="gauge+number", value=current,
+            number={"font": {"color": chart_theme["font_color"]}},
+            gauge={
+                "axis": {"range": [mn, mx], "tickfont": {"color": chart_theme["font_color"]}},
+                "bar": {"color": chart_theme["font_color"]},
+            },
+        ))
+        fig.update_layout(height=180, margin=dict(l=10, r=10, t=10, b=10), **chart_theme)
         st.plotly_chart(fig, width='stretch', key=f"gauge_{dashboard_id}_{position}")
 
     elif display_type == "kpi":
@@ -575,7 +594,10 @@ def _render_cell_result(db, dashboard_id, position, cell, settings):
 
     elif display_type == "story":
         story_text = stored.get("story", "")
-        st.markdown(story_text)
+        st.markdown(
+            f'<div dir="rtl" style="text-align:right">{story_text}</div>',
+            unsafe_allow_html=True,
+        )
         with st.expander("📊 البيانات المستخدمة"):
             st.dataframe(df, width='stretch', hide_index=True)
 
