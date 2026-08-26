@@ -1,0 +1,356 @@
+📁 datalens/
+│
+├── 📄 config.py
+│   ├── BASE_DIR, DATA_DIR, PROJECTS_DIR, USERS_DB
+│   ├── APP_NAME, APP_ICON, APP_VERSION, APP_HOST, APP_PORT
+│   ├── SESSION_EXPIRE_HOURS, BCRYPT_ROUNDS
+│   ├── AI_RETRY_DELAY_SECONDS, STORY_TIMEOUT_SECONDS
+│   ├── DEFAULT_SETTINGS (dict)
+│   ├── AI_ENGINES (list), OLLAMA_DEFAULT_URL
+│   ├── ALLOWED_EXTENSIONS, RESULT_TYPES, CHART_TYPES (dict)
+│   ├── STORY_MAX_ROWS, STORY_SAMPLE_ROWS_IN_PROMPT
+│   ├── THEMES (dict), SQL_FORBIDDEN (list), SAMPLE_ROWS
+│   ├── DASHBOARD_GAUGE_COUNT, DASHBOARD_SLICER_COUNT, DASHBOARD_SLICER_VALUES_LIMIT
+│   └── COMMON_TIMEZONES (list)
+│
+├── 📄 main.py
+│   └── PAGES (dict) → map page names to show_* functions
+│
+├── 📁 ai/
+│   ├── 📄 base_engine.py
+│   │   └── BaseEngine (ABC)
+│   │       ├── __init__(api_key, model, timeout)
+│   │       ├── get_models() -> dict
+│   │       ├── send(prompt, temperature, timeout_override) -> dict
+│   │       ├── status() -> dict
+│   │       ├── extract_sql(text) -> dict
+│   │       └── clean_response(text) -> str
+│   │
+│   ├── 📄 engine_registry.py
+│   │   ├── OPENAI_COMPATIBLE_ENGINES (dict)
+│   │   ├── get_registry_entry(engine_name) -> dict
+│   │   └── all_openai_compatible_names() -> list[str]
+│   │
+│   ├── 📄 openai_compatible_engine.py
+│   │   └── OpenAICompatibleEngine (BaseEngine)
+│   │       ├── __init__(base_url, api_key, model, timeout, display_name)
+│   │       ├── models_url (property)
+│   │       ├── chat_url (property)
+│   │       ├── get_models() -> dict
+│   │       ├── send(prompt, temperature, timeout_override) -> dict
+│   │       └── status() -> dict
+│   │
+│   ├── 📄 gemini.py
+│   │   ├── GEMINI_API_BASE, GEMINI_LIST_URL, GEMINI_GEN_URL
+│   │   └── GeminiEngine (BaseEngine)
+│   │       ├── __init__(api_key, model, timeout)
+│   │       ├── get_models() -> dict
+│   │       ├── send(prompt, temperature, timeout_override) -> dict
+│   │       └── status() -> dict
+│   │
+│   ├── 📄 ollama.py
+│   │   └── OllamaEngine (BaseEngine)
+│   │       ├── __init__(base_url, model, timeout, api_key)
+│   │       ├── models_url (property)
+│   │       ├── generate_url (property)
+│   │       ├── get_models() -> dict
+│   │       ├── send(prompt, temperature, timeout_override) -> dict
+│   │       └── status() -> dict
+│   │
+│   ├── 📄 grok.py
+│   │   ├── GROK_BASE, GROK_MODELS, GROK_CHAT
+│   │   └── GrokEngine (BaseEngine)
+│   │       ├── __init__(api_key, model, timeout)
+│   │       ├── get_models() -> dict
+│   │       ├── send(prompt, temperature) -> dict
+│   │       └── status() -> dict
+│   │
+│   ├── 📄 openrouter.py
+│   │   ├── OPENROUTER_BASE, OPENROUTER_MODELS, OPENROUTER_CHAT
+│   │   └── OpenRouterEngine (BaseEngine)
+│   │       ├── __init__(api_key, model, timeout)
+│   │       ├── get_models() -> dict
+│   │       ├── send(prompt, temperature) -> dict
+│   │       └── status() -> dict
+│   │
+│   ├── 📄 ai_manager.py
+│   │   ├── get_engine(engine_name, api_key, model, timeout, ollama_url) -> Optional[BaseEngine]
+│   │   └── AIManager
+│   │       ├── __init__(db, engine, temperature, max_tries, retry_delay, max_total_wait_seconds, story_max_total_wait_seconds, story_timeout)
+│   │       ├── ask(question, result_type, ai_rules, filters) -> dict
+│   │       ├── tell_story(question, ai_rules, filters) -> dict
+│   │       ├── get_models() -> dict
+│   │       ├── engine_status() -> dict
+│   │       └── _budget_exceeded(start_time, budget) -> bool
+│   │
+│   └── 📄 prompt_builder.py
+│       └── PromptBuilder
+│           ├── __init__(schema, relations, ai_rules)
+│           ├── build(question, result_type, filters) -> str
+│           ├── build_error_retry(original_prompt, failed_sql, error_message) -> str
+│           ├── build_story(question, df, max_rows) -> str
+│           ├── _build_schema() -> str
+│           ├── _build_relations() -> str
+│           ├── _build_samples() -> str
+│           ├── _build_result_hint(result_type) -> str
+│           ├── _build_filters(filters) -> str
+│           └── _section(title, content) -> str
+│
+├── 📁 core/
+│   ├── 📄 auth.py
+│   │   └── AuthManager
+│   │       ├── __init__()
+│   │       ├── register(username, password) -> dict
+│   │       ├── login(username, password) -> dict
+│   │       ├── get_user_by_token(token) -> Optional[dict]
+│   │       ├── logout(token) -> None
+│   │       ├── get_all_users() -> list[dict]
+│   │       ├── user_exists(username) -> bool
+│   │       ├── clean_expired_sessions() -> int
+│   │       ├── save_api_key(user_id, engine_name, api_key, model) -> None
+│   │       ├── get_api_key(user_id, engine_name) -> dict
+│   │       ├── get_last_used_engine(user_id) -> Optional[dict]
+│   │       └── _delete_session(token) -> None
+│   │
+│   ├── 📄 project_db.py
+│   │   └── ProjectDB
+│   │       ├── __init__(user_id, project_id)
+│   │       ├── _init_schema() -> None
+│   │       ├── get_settings() -> dict
+│   │       ├── save_settings(updates) -> None
+│   │       ├── add_file(file_id, original_name, table_alias, selected_sheet, selected_columns) -> None
+│   │       ├── get_files() -> list[dict]
+│   │       ├── remove_file(file_id) -> None
+│   │       ├── save_clean_data(table_alias, df) -> None
+│   │       ├── get_clean_data(table_alias) -> Optional[pd.DataFrame]
+│   │       ├── get_schema() -> dict
+│   │       ├── add_relation(from_table, from_col, to_table, to_col) -> None
+│   │       ├── get_relations() -> list[dict]
+│   │       ├── remove_relation(relation_id) -> None
+│   │       ├── save_chat_result(chat_id, question, sql_query, result_type, result_data, error) -> None
+│   │       ├── get_chat_history(limit) -> list[dict]
+│   │       ├── create_report(report_id, title) -> None
+│   │       ├── get_reports() -> list[dict]
+│   │       ├── save_report_block(report_id, position, block_type, content) -> None
+│   │       ├── get_report_blocks(report_id) -> list[dict]
+│   │       ├── delete_report(report_id) -> None
+│   │       ├── create_dashboard(dashboard_id, title, template_id) -> None
+│   │       ├── get_dashboards() -> list[dict]
+│   │       ├── get_dashboard(dashboard_id) -> Optional[dict]
+│   │       ├── rename_dashboard(dashboard_id, new_title) -> None
+│   │       ├── touch_dashboard(dashboard_id) -> None
+│   │       ├── delete_dashboard(dashboard_id) -> None
+│   │       ├── duplicate_dashboard(dashboard_id, new_id, new_title) -> None
+│   │       ├── save_dashboard_cell(dashboard_id, position, display_type, title, question, chart_type) -> None
+│   │       ├── save_dashboard_cell_base_sql(dashboard_id, position, base_sql) -> None
+│   │       ├── save_dashboard_cell_result(dashboard_id, position, result, sql, error) -> None
+│   │       ├── get_dashboard_cells(dashboard_id) -> list[dict]
+│   │       ├── clear_dashboard_cell(dashboard_id, position) -> None
+│   │       ├── save_dashboard_slicer(dashboard_id, position, table_name, column_name, selected_values) -> None
+│   │       ├── get_dashboard_slicers(dashboard_id) -> list[dict]
+│   │       ├── reset_dashboard_slicers(dashboard_id) -> None
+│   │       ├── backup() -> Path
+│   │       └── get_info() -> dict
+│   │
+│   ├── 📄 project_manager.py
+│   │   └── ProjectManager
+│   │       ├── __init__(user_id)
+│   │       ├── create(name) -> dict
+│   │       ├── list_projects() -> list[dict]
+│   │       ├── open(project_id) -> Optional[ProjectDB]
+│   │       ├── rename(project_id, new_name) -> dict
+│   │       ├── delete(project_id) -> dict
+│   │       ├── export(project_id, export_path) -> dict
+│   │       ├── import_project(db_file) -> dict
+│   │       └── _close_db_connections(project_dir) -> None
+│   │
+│   ├── 📄 file_manager.py
+│   │   └── FileManager
+│   │       ├── __init__(user_id, project_id)
+│   │       ├── inspect(file_bytes, original_name) -> dict
+│   │       ├── read_bytes(file_bytes, extension, sheet, columns) -> dict
+│   │       ├── get_columns_from_bytes(file_bytes, extension, sheet) -> dict
+│   │       └── _read_csv_bytes(file_bytes) -> pd.DataFrame
+│   │
+│   ├── 📄 data_manager.py
+│   │   └── DataManager
+│   │       ├── __init__(db, fm)
+│   │       ├── load_file(file_bytes, extension, table_alias, sheet, columns, original_name, file_id) -> dict
+│   │       ├── refresh_from_bytes(file_id, file_bytes, extension, table_alias, original_name, sheet, columns) -> dict
+│   │       ├── change_dtype(table_alias, column, new_type) -> dict
+│   │       ├── filter_rows(table_alias, column, operator, value) -> dict
+│   │       ├── strip_text(table_alias, column) -> dict
+│   │       ├── capitalize_text(table_alias, column) -> dict
+│   │       ├── uppercase_text(table_alias, column) -> dict
+│   │       ├── lowercase_text(table_alias, column) -> dict
+│   │       ├── fill_nulls(table_alias, column, strategy, value) -> dict
+│   │       ├── get_preview(table_alias, rows) -> dict
+│   │       ├── get_stats(table_alias, column) -> dict
+│   │       ├── _basic_clean(df) -> pd.DataFrame
+│   │       └── _text_op(table_alias, column, op) -> dict
+│   │
+│   ├── 📄 query_engine.py
+│   │   └── QueryEngine
+│   │       ├── __init__(db)
+│   │       ├── validate(sql) -> dict
+│   │       ├── run(sql) -> dict
+│   │       ├── run_with_filters(base_sql, filters) -> dict
+│   │       ├── get_table_names() -> list[str]
+│   │       ├── preview_table(table_alias, limit) -> dict
+│   │       ├── _load_tables(conn) -> list[str]
+│   │       ├── _try_auto_fix_column(sql, error_msg) -> Optional[tuple]
+│   │       └── _execute_once(sql) -> dict
+│   │
+│   ├── 📄 dashboard_manager.py
+│   │   └── DashboardManager
+│   │       ├── __init__(db, ai, qe)
+│   │       ├── get_available_tables() -> list[str]
+│   │       ├── get_available_columns(table_name) -> list[str]
+│   │       ├── get_distinct_values(table_name, column_name, limit) -> dict
+│   │       ├── reset_slicers(dashboard_id) -> None
+│   │       ├── refresh_dashboard(dashboard_id, ai_rules, on_progress, engine_name, max_workers) -> dict
+│   │       ├── refresh_single_cell(dashboard_id, position, ai_rules) -> dict
+│   │       ├── generate_dashboard_plan(description, ai_rules) -> dict
+│   │       ├── _run_fast(base_sql, filters) -> dict
+│   │       ├── _build_active_filters(dashboard_id) -> list
+│   │       ├── _process_cell(cell, filters, ai_rules) -> dict
+│   │       ├── _serialize_result(display_type, r, chart_type) -> dict
+│   │       ├── _json_safe(value)
+│   │       └── _sanitize_rows(rows) -> list
+│   │
+│   └── 📄 dashboard_templates.py
+│       ├── DASHBOARD_TEMPLATES (dict)
+│       └── get_template(template_id) -> dict
+│
+├── 📁 exporters/
+│   ├── 📄 report_manager.py
+│   │   └── ReportManager
+│   │       ├── __init__(db)
+│   │       ├── create(title) -> dict
+│   │       ├── delete(report_id) -> dict
+│   │       ├── rename(report_id, new_title) -> dict
+│   │       ├── list_reports() -> list[dict]
+│   │       ├── get_blocks(report_id) -> list[dict]
+│   │       ├── add_paragraph(report_id, text) -> dict
+│   │       ├── add_table(report_id, result_id, data, columns) -> dict
+│   │       ├── add_chart(report_id, result_id, chart_type, data, x_col, y_cols, title) -> dict
+│   │       ├── add_gauge(report_id, result_id, current_value, min_value, max_value, label) -> dict
+│   │       ├── add_kpi(report_id, result_id, actual_value, target_value, label, unit) -> dict
+│   │       ├── delete_block(report_id, block_id) -> dict
+│   │       ├── _add_block(report_id, block_type, content) -> dict
+│   │       └── _next_position(report_id) -> int
+│   │
+│   ├── 📄 pdf_exporter.py
+│   │   └── PDFExporter
+│   │       ├── __init__(report_manager)
+│   │       ├── export(report_id, output_path) -> dict
+│   │       ├── _setup_font() -> None
+│   │       ├── _build_styles() -> dict
+│   │       ├── _build_story(title, blocks) -> list
+│   │       ├── _render_paragraph(content) -> list
+│   │       ├── _render_table(content) -> list
+│   │       ├── _render_kpi(content) -> list
+│   │       ├── _render_gauge(content) -> list
+│   │       └── _render_chart(content) -> list
+│   │
+│   ├── 📄 excel_exporter.py
+│   │   └── ExcelExporter
+│   │       ├── __init__(report_manager)
+│   │       ├── export(report_id, output_path) -> dict
+│   │       ├── _build_summary_sheet(wb, title, blocks) -> None
+│   │       ├── _build_table_sheet(wb, sheet_name, content) -> None
+│   │       ├── _build_chart_sheet(wb, sheet_name, content) -> None
+│   │       ├── _build_gauge_sheet(wb, sheet_name, content) -> None
+│   │       ├── _build_kpi_sheet(wb, kpi_blocks) -> None
+│   │       └── _auto_width(ws) -> None
+│   │
+│   ├── 📄 markdown_exporter.py
+│   │   └── MarkdownExporter
+│   │       ├── __init__(report_manager)
+│   │       ├── export(report_id, output_path) -> dict
+│   │       ├── to_string(report_id) -> dict
+│   │       ├── _build_markdown(title, blocks) -> list[str]
+│   │       ├── _render_paragraph(content) -> list[str]
+│   │       ├── _render_table(content) -> list[str]
+│   │       ├── _render_kpi(content) -> list[str]
+│   │       ├── _render_gauge(content) -> list[str]
+│   │       ├── _render_chart(content) -> list[str]
+│   │       └── _progress_bar(pct, width) -> str
+│   │
+│   └── 📄 chart_renderer.py
+│       ├── PALETTE, COLOR_TEXT, COLOR_TITLE, COLOR_GRID, FONT_CANDIDATES
+│       ├── render_chart(data, x_col, y_cols, chart_type, title, width, height, scale) -> BytesIO
+│       ├── render_gauge(current_value, min_value, max_value, label, width, height, scale) -> BytesIO
+│       ├── prep_text(text) -> str
+│       ├── _is_arabic(text) -> bool
+│       ├── _draw_text(draw, xy, text, font, fill, anchor, rtl) -> None
+│       ├── _text_size(draw, text, font, rtl) -> tuple
+│       ├── _hex_to_rgb(h) -> tuple
+│       ├── _draw_rotated_label(img, draw, cx, top_y, text, font, color) -> None
+│       ├── _render_pie(draw, data, y_col, categories, W, H, margin_top, label_font) -> None
+│       └── _format_number(v) -> str
+│
+└── 📁 ui/
+    ├── 📄 common.py
+    │   ├── RTL_CSS, THEME_COLORS, _KIND_ICONS, _TEMP_PREFIX
+    │   ├── apply_rtl() -> None
+    │   ├── apply_theme_css(theme_key_or_settings) -> None
+    │   ├── apply_page_style(theme_key) -> None
+    │   ├── get_chart_theme(settings_or_theme) -> dict
+    │   ├── apply_plotly_theme(fig, settings_or_theme) -> Figure
+    │   ├── require_login() -> None
+    │   ├── require_project() -> ProjectDB
+    │   ├── get_project_manager() -> ProjectManager
+    │   ├── sidebar_header() -> None
+    │   ├── notify(message, kind, icon) -> None
+    │   ├── format_local_dt(iso_str, settings, fmt) -> str
+    │   ├── temp_export_dir() -> Iterator[Path]
+    │   ├── offer_download(path, label, file_name, key, mime) -> None
+    │   ├── cleanup_stale_temp_dirs(max_age_hours) -> int
+    │   └── _resolve_theme_colors(settings_or_theme) -> dict
+    │
+    ├── 📄 login.py
+    │   └── show_login() -> None
+    │
+    ├── 📄 projects.py
+    │   └── show_projects() -> None
+    │
+    ├── 📄 files.py
+    │   ├── show_files() -> None
+    │   └── _render_refresh_widget(dm, f) -> None
+    │
+    ├── 📄 data.py
+    │   ├── show_data() -> None
+    │   ├── _render_relations_tab(db, dm, aliases) -> None
+    │   └── _report(r, extra) -> None
+    │
+    ├── 📄 chat.py
+    │   ├── show_chat() -> None
+    │   ├── _render_result(db, settings, result, result_type, chart_type) -> None
+    │   └── _add_block_for_type(rm, report_id, result_id, result_type, df, label, story_text, include_data_table, chart_type) -> dict
+    │
+    ├── 📄 dashboards.py
+    │   ├── DISPLAY_TYPE_LABELS, CHART_TYPE_LABELS, _HAS_POPOVER, _BUSY_FRAMES
+    │   ├── show_dashboards() -> None
+    │   ├── _show_dashboard_gallery(db) -> None
+    │   ├── _show_dashboard_detail(db) -> None
+    │   ├── _build_ai_manager(db) -> tuple[AIManager, dict]
+    │   ├── _render_slicer_panel(db, dm, dashboard_id, slicers) -> None
+    │   ├── _render_dashboard_cell(db, dm, settings, dashboard_id, position, cell) -> None
+    │   ├── _render_cell_actions_menu(db, dm, settings, dashboard_id, position, edit_key) -> None
+    │   ├── _render_cell_editor(db, dm, settings, dashboard_id, position, cell, is_gauge_row, edit_key) -> None
+    │   ├── _render_cell_result(db, dashboard_id, position, cell, settings, show_title) -> None
+    │   ├── layout_2x2(render_cell) -> None
+    │   ├── layout_main_and_split(render_cell) -> None
+    │   ├── layout_3col(render_cell) -> None
+    │   ├── layout_full(render_cell) -> None
+    │   ├── layout_2x3(render_cell) -> None
+    │   └── layout_2col_big(render_cell) -> None
+    │
+    ├── 📄 reports.py
+    │   ├── show_reports() -> None
+    │   ├── _export_and_offer(exporter, report_id, ext, title) -> None
+    │   └── _render_block(block, settings) -> None
+    │
+    └── 📄 settings.py
+        └── show_settings() -> None
