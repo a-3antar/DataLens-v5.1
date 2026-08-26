@@ -2,8 +2,8 @@
 ui/settings.py
 ==============
 إعدادات المشروع: محرك AI، النموذج، مفتاح API، الثيم، auto-run،
-عدد المحاولات، مهلة الاتصال، مدة الانتظار، المنطقة الزمنية،
-والحد الزمني الشامل الاختياري.
+عدد المحاولات، مهلة الاتصال (عامة + مستقلة لـ Story Telling)،
+مدة الانتظار، المنطقة الزمنية، والحد الزمني الشامل الاختياري.
 
 مفتاح API:
 ------------
@@ -14,21 +14,17 @@ users.db (عبر core.auth.AuthManager) — تُستخدم فقط كقيمة ا�
 تُقترح تلقائياً عند إنشاء مشروع جديد (راجع ui/projects.py)، ولا تحل
 محل مفتاح المشروع أو تفرض عليه أي شيء.
 
-لون النص:
+محركات AI:
 -----------
-لون النص الأساسي كان قبل هذا التعديل ثابتاً حسب الثيم المختار فقط
-(color_picker معطّل للعرض فقط). الآن المستخدم يستطيع اختيار لون نص
-مخصص بحرية عبر color_picker فعلي — يُحفظ في project settings تحت
-"custom_text_color" ويُطبَّق في كل الواجهة (عبر apply_theme_css)
-وفي نصوص الرسوم البيانية (عبر apply_plotly_theme في ui/common.py).
+"gemini" و"ollama" لهما معالجة خاصة (بروتوكول مختلف). أي محرك آخر في
+config.AI_ENGINES (حالياً "groq" و"openrouter") يُبنى تلقائياً عبر
+ai.engine_registry + OpenAICompatibleEngine — لا حاجة لأي كود إضافي
+هنا عند إضافة محرك جديد للسجل مستقبلاً.
 """
 
 import streamlit as st
 
-from ui.common import (
-    apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
-    THEME_COLORS, get_theme_colors,
-)
+from ui.common import apply_rtl, apply_theme_css, require_login, require_project, sidebar_header, THEME_COLORS
 from ai.ai_manager import get_engine
 from core.auth import AuthManager
 from config import AI_ENGINES, THEMES, COMMON_TIMEZONES
@@ -39,7 +35,7 @@ def show_settings():
     require_login()
     db = require_project()
     settings = db.get_settings()
-    apply_theme_css(settings)
+    apply_theme_css(settings.get("theme", "ocean_dark"))
     sidebar_header()
 
     st.title("⚙️ الإعدادات")
@@ -51,7 +47,7 @@ def show_settings():
     with tab_ai:
         engine_name = st.selectbox(
             "محرك AI", AI_ENGINES,
-            index=AI_ENGINES.index(settings.get("ai_engine", "gemini")),
+            index=AI_ENGINES.index(settings.get("ai_engine", "gemini")) if settings.get("ai_engine", "gemini") in AI_ENGINES else 0,
         )
 
         if engine_name == "ollama":
@@ -118,8 +114,8 @@ def show_settings():
                 updates[f"api_key_{engine_name}"] = api_key
             db.save_settings(updates)
 
-            # مزامنة نسخة "آخر مفتاح استُخدم" في users.db — فقط كاقتراح
-            # افتراضي لمشاريع جديدة مستقبلاً، لا يمس هذا المشروع
+            # مزامنة نسخة "آخر مفتاح استُخدم" في users.db — فقط
+            # كاقتراح افتراضي لمشاريع جديدة مستقبلاً، لا يمس هذا المشروع
             if engine_name != "ollama" and api_key:
                 auth.save_api_key(user_id, engine_name, api_key, model)
 
@@ -128,12 +124,28 @@ def show_settings():
     with tab_general:
         auto_run = st.toggle("تشغيل الكود تلقائياً (Auto Run)", value=bool(settings.get("auto_run", True)))
         max_tries = st.number_input("عدد المحاولات عند الخطأ", 1, 10, int(settings.get("max_tries", 3)))
-        timeout = st.number_input("مهلة الاتصال (ثانية)", 5, 300, int(settings.get("timeout", 30)))
+        timeout = st.number_input("مهلة الاتصال لتوليد SQL (ثانية)", 5, 300, int(settings.get("timeout", 30)))
+
+        # 🆕 مهلة منفصلة لمرحلة السرد — مستقلة تماماً عن مهلة SQL أعلاه.
+        # الافتراضي أقل عمداً حتى يفشل الاستدعاء الأول بسرعة ويُعاد
+        # المحاولة، بدل انتظار طويل قبل الفشل ثم النجاح في المحاولة
+        # الثانية (وهو ما كان يجعل Story Telling يبدو معطّلاً عملياً).
+        story_timeout = st.number_input(
+            "مهلة الاتصال لمرحلة التحليل النصي — Story Telling (ثانية)",
+            5, 300, int(settings.get("story_timeout", 45)),
+            help="مستقلة تماماً عن مهلة توليد SQL أعلاه. لو كانت مهلة SQL "
+                 "مضبوطة على قيمة كبيرة (مثلاً 100 ثانية)، فإن استخدام نفس "
+                 "القيمة لمرحلة السرد يجعل أي استدعاء بطيء يبدو متجمداً "
+                 "لفترة طويلة قبل إعادة المحاولة تلقائياً. قيمة أصغر هنا "
+                 "(30-45 ثانية) تجعل الفشل والمحاولة التالية أسرع بكثير.",
+        )
+
         retry_delay = st.number_input(
             "مدة الانتظار قبل إعادة المحاولة عند فشل الاتصال (ثانية)",
             0, 120, int(settings.get("retry_delay", 10)),
             help="يُستخدم فقط عند فشل الاتصال بمحرك AI نفسه (وليس عند خطأ SQL). "
-                 "مع كل محاولة فاشلة يُنتظر هذا القدر من الوقت قبل إعادة المحاولة.",
+                 "مع كل محاولة فاشلة يُنتظر هذا القدر من الوقت قبل إعادة المحاولة. "
+                 "يُطبَّق على مرحلتي SQL والسرد معاً.",
         )
 
         st.markdown("**⏱️ حد زمني إجمالي (اختياري)**")
@@ -168,6 +180,7 @@ def show_settings():
                 "auto_run": auto_run,
                 "max_tries": max_tries,
                 "timeout": timeout,
+                "story_timeout": story_timeout,
                 "retry_delay": retry_delay,
                 "max_total_wait_seconds": max_total_wait,
                 "story_max_total_wait_seconds": story_max_total_wait,
@@ -182,37 +195,16 @@ def show_settings():
             format_func=lambda k: THEMES[k],
             index=list(THEMES.keys()).index(settings.get("theme", "ocean_dark")),
         )
-        default_colors = THEME_COLORS.get(theme_key, {})
+        colors = THEME_COLORS.get(theme_key, {})
+        c1, c2, c3 = st.columns(3)
+        c1.color_picker("اللون الأساسي", colors.get("primary", "#1E3A5F"), disabled=True)
+        c2.color_picker("لون التمييز", colors.get("accent", "#2563EB"), disabled=True)
+        c3.color_picker("لون الخلفية", colors.get("bg", "#0F172A"), disabled=True)
 
-        c1, c2 = st.columns(2)
-        c1.color_picker("اللون الأساسي (ثابت حسب الثيم)", default_colors.get("primary", "#1E3A5F"), disabled=True)
-        c2.color_picker("لون التمييز (ثابت حسب الثيم)", default_colors.get("accent", "#2563EB"), disabled=True)
-
-        st.markdown("**🖋️ لون النص**")
-        st.caption(
-            "لون النص الافتراضي يتبع الثيم المختار، لكن يمكنك اختيار لون "
-            "مخصص خاص بك بدلاً منه. هذا اللون يُطبَّق أيضاً على نصوص "
-            "الرسوم البيانية (Gauges والمخططات) لتبقى متناسقة ومقروءة."
-        )
-        current_custom = settings.get("custom_text_color") or default_colors.get("text", "#F8FAFC")
-        custom_text_color = st.color_picker("لون النص", current_custom)
-
-        use_default_text = st.checkbox(
-            "استخدام لون النص الافتراضي للثيم (تجاهل اختياري أعلاه)",
-            value=not bool(settings.get("custom_text_color")),
-        )
-
-        st.caption("👀 معاينة فورية قبل الحفظ:")
-        preview_settings = {
-            "theme": theme_key,
-            "custom_text_color": None if use_default_text else custom_text_color,
-        }
-        apply_theme_css(preview_settings)
+        st.caption("👀 معاينة فورية للثيم المختار قبل الحفظ:")
+        apply_theme_css(theme_key)
 
         if st.button("💾 حفظ الثيم"):
-            db.save_settings({
-                "theme": theme_key,
-                "custom_text_color": None if use_default_text else custom_text_color,
-            })
-            st.success("تم الحفظ وتطبيقه على كل صفحات التطبيق فوراً (بما فيها الرسوم البيانية)")
+            db.save_settings({"theme": theme_key})
+            st.success("تم الحفظ وتطبيقه على كل صفحات التطبيق فوراً")
             st.rerun()
