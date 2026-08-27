@@ -3,6 +3,16 @@ core/project_db.py
 ==================
 المسؤول الوحيد عن التعامل مع ملف project.db.
 كل module آخر يستخدم هذا الملف فقط ولا يلمس الـ db مباشرة.
+
+🆕 تشفير مفاتيح API المخزَّنة ضمن جدول settings:
+------------------------------------------------------
+كل إعداد بمفتاح يبدأ بـ "api_key_" (مثل "api_key_groq",
+"api_key_openrouter") يُشفَّر عبر core.crypto قبل الكتابة في
+settings، ويُفَكّ تشفيره تلقائياً عند القراءة عبر get_settings —
+بدون أي تغيير مطلوب في أي كود آخر يستخدم db.get_settings()/
+save_settings() (ui/settings.py، ui/dashboards.py، ui/chat.py...).
+القيم القديمة غير المُشفَّرة (قبل هذا التحديث) تستمر بالعمل تلقائياً
+(راجع core/crypto.decrypt_value)، وتُشفَّر عند أول حفظ جديد لها.
 """
 
 import sqlite3
@@ -16,8 +26,13 @@ from typing   import Optional
 import pandas as pd
 
 from config import PROJECTS_DIR, DEFAULT_SETTINGS
+from core.crypto import encrypt_value, decrypt_value
 
 logger = logging.getLogger(__name__)
+
+# بادئة مفاتيح الإعدادات التي تحتوي مفاتيح API فعلية ويجب تشفيرها
+# قبل الكتابة في settings (مثل "api_key_groq"، "api_key_openrouter"...)
+_API_KEY_SETTING_PREFIX = "api_key_"
 
 
 # ══════════════════════════════════════════════════════════════
@@ -208,23 +223,42 @@ class ProjectDB:
     # ──────────────────────────────────────────────────────────
 
     def get_settings(self) -> dict:
-        """إرجاع كل الإعدادات كـ dict."""
+        """
+        إرجاع كل الإعدادات كـ dict. أي مفتاح يبدأ بـ "api_key_" يُفَكّ
+        تشفيره تلقائياً قبل الإرجاع (القيمة المخزَّنة فعلياً في
+        settings مُشفَّرة — راجع save_settings أدناه).
+        """
         try:
             with _connect(self.db_path) as conn:
                 rows = conn.execute("SELECT key, value FROM settings").fetchall()
-            return {row["key"]: json.loads(row["value"]) for row in rows}
+            result = {}
+            for row in rows:
+                key = row["key"]
+                value = json.loads(row["value"])
+                if key.startswith(_API_KEY_SETTING_PREFIX) and isinstance(value, str):
+                    value = decrypt_value(value)
+                result[key] = value
+            return result
         except sqlite3.Error as e:
             logger.error("get_settings error: %s", e)
             return dict(DEFAULT_SETTINGS)
 
     def save_settings(self, updates: dict) -> None:
-        """تحديث إعدادات محددة (لا يحذف الباقي)."""
+        """
+        تحديث إعدادات محددة (لا يحذف الباقي). أي مفتاح يبدأ بـ
+        "api_key_" يُشفَّر عبر core.crypto قبل الكتابة في قاعدة
+        البيانات — القيمة الأصلية (الصريحة) الممرَّرة هنا لا تُلمس،
+        فقط النسخة المخزَّنة على القرص هي المُشفَّرة.
+        """
         try:
             with _connect(self.db_path) as conn:
                 for key, value in updates.items():
+                    stored_value = value
+                    if key.startswith(_API_KEY_SETTING_PREFIX) and isinstance(value, str):
+                        stored_value = encrypt_value(value)
                     conn.execute(
                         "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-                        (key, json.dumps(value))
+                        (key, json.dumps(stored_value))
                     )
                 conn.commit()
             logger.info("Settings updated: %s", list(updates.keys()))
