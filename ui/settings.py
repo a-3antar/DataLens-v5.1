@@ -20,14 +20,26 @@ users.db (عبر core.auth.AuthManager) — تُستخدم فقط كقيمة ا�
 config.AI_ENGINES (حالياً "groq" و"openrouter") يُبنى تلقائياً عبر
 ai.engine_registry + OpenAICompatibleEngine — لا حاجة لأي كود إضافي
 هنا عند إضافة محرك جديد للسجل مستقبلاً.
+
+🆕 الثيم المخصص (custom):
+----------------------------
+بالإضافة إلى الثيمات الجاهزة، يمكن للمستخدم الآن اختيار "🎨 مخصص"
+وتحديد الألوان الخمسة بحرّية كاملة عبر color_picker (أساسي، تمييز،
+خلفية، نص، بطاقة) — تُحفظ في project settings تحت مفتاح
+"custom_theme_colors" وتُستخدم تلقائياً في كل الصفحات (الجداول،
+الرسوم البيانية، عناصر الإدخال...) بمجرد اختيار "مخصص" كثيم نشط،
+عبر ui.common._resolve_theme_colors التي تقرأ هذا المفتاح مباشرة.
 """
 
 import streamlit as st
 
-from ui.common import apply_rtl, apply_theme_css, require_login, require_project, sidebar_header, THEME_COLORS
+from ui.common import (
+    apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
+    THEME_COLORS, get_chart_theme,
+)
 from ai.ai_manager import get_engine
 from core.auth import AuthManager
-from config import AI_ENGINES, THEMES, COMMON_TIMEZONES
+from config import AI_ENGINES, THEMES, COMMON_TIMEZONES, DEFAULT_SETTINGS
 
 
 def show_settings():
@@ -35,7 +47,7 @@ def show_settings():
     require_login()
     db = require_project()
     settings = db.get_settings()
-    apply_theme_css(settings.get("theme", "ocean_dark"))
+    apply_theme_css(settings)
     sidebar_header()
 
     st.title("⚙️ الإعدادات")
@@ -189,22 +201,124 @@ def show_settings():
             st.success("تم الحفظ")
 
     with tab_theme:
-        theme_key = st.radio(
-            "اختر الثيم",
-            list(THEMES.keys()),
-            format_func=lambda k: THEMES[k],
-            index=list(THEMES.keys()).index(settings.get("theme", "ocean_dark")),
-        )
-        colors = THEME_COLORS.get(theme_key, {})
-        c1, c2, c3 = st.columns(3)
-        c1.color_picker("اللون الأساسي", colors.get("primary", "#1E3A5F"), disabled=True)
-        c2.color_picker("لون التمييز", colors.get("accent", "#2563EB"), disabled=True)
-        c3.color_picker("لون الخلفية", colors.get("bg", "#0F172A"), disabled=True)
+        _render_theme_tab(db, settings)
 
-        st.caption("👀 معاينة فورية للثيم المختار قبل الحفظ:")
-        apply_theme_css(theme_key)
 
-        if st.button("💾 حفظ الثيم"):
-            db.save_settings({"theme": theme_key})
-            st.success("تم الحفظ وتطبيقه على كل صفحات التطبيق فوراً")
+# ──────────────────────────────────────────────────────────────
+#  تبويب الثيم — ثيمات جاهزة + ثيم مخصص بالكامل
+# ──────────────────────────────────────────────────────────────
+
+_COLOR_FIELDS = [
+    ("primary", "اللون الأساسي (العناوين والأزرار الرئيسية)"),
+    ("accent", "لون التمييز (الأزرار، الروابط، الرسوم البيانية)"),
+    ("bg", "لون الخلفية"),
+    ("text", "لون النص"),
+    ("card", "لون البطاقات والشريط الجانبي"),
+]
+
+
+def _render_theme_tab(db, settings: dict):
+    current_theme = settings.get("theme", "ocean_dark")
+    theme_key = st.radio(
+        "اختر الثيم",
+        list(THEMES.keys()),
+        format_func=lambda k: THEMES[k],
+        index=list(THEMES.keys()).index(current_theme) if current_theme in THEMES else 0,
+    )
+
+    if theme_key == "custom":
+        _render_custom_theme_editor(db, settings)
+    else:
+        _render_preset_theme_preview(db, theme_key)
+
+
+def _render_preset_theme_preview(db, theme_key: str):
+    """معاينة ثيم جاهز (ألوانه ثابتة — للعرض فقط، غير قابلة للتعديل)."""
+    colors = THEME_COLORS.get(theme_key, {})
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.color_picker("الأساسي", colors.get("primary", "#1E3A5F"), disabled=True)
+    c2.color_picker("التمييز", colors.get("accent", "#2563EB"), disabled=True)
+    c3.color_picker("الخلفية", colors.get("bg", "#0F172A"), disabled=True)
+    c4.color_picker("النص", colors.get("text", "#F8FAFC"), disabled=True)
+    c5.color_picker("البطاقة", colors.get("card", "#FFFFFF"), disabled=True)
+
+    st.caption("👀 معاينة فورية للثيم المختار قبل الحفظ:")
+    apply_theme_css(theme_key)
+    _render_theme_preview_sample({"theme": theme_key})
+
+    if st.button("💾 حفظ الثيم"):
+        db.save_settings({"theme": theme_key})
+        st.success("تم الحفظ وتطبيقه على كل صفحات التطبيق فوراً")
+        st.rerun()
+
+
+def _render_custom_theme_editor(db, settings: dict):
+    """محرر الثيم المخصص — المستخدم يختار كل الألوان الخمسة بحرّية."""
+    st.caption(
+        "اختر الألوان الخمسة بحرّية كاملة. تُطبَّق فوراً على كل عناصر "
+        "الواجهة (العناوين، الأزرار، الجداول، عناصر الإدخال) وعلى لوحة "
+        "ألوان الرسوم البيانية ونص التحليل (Story Telling) في كل صفحات "
+        "المشروع بمجرد الحفظ."
+    )
+
+    saved_custom = settings.get("custom_theme_colors") or DEFAULT_SETTINGS["custom_theme_colors"]
+
+    cols = st.columns(5)
+    picked = {}
+    for (key, label), col in zip(_COLOR_FIELDS, cols):
+        with col:
+            picked[key] = st.color_picker(
+                label, value=saved_custom.get(key, DEFAULT_SETTINGS["custom_theme_colors"][key]),
+                key=f"custom_theme_{key}",
+            )
+
+    # معاينة حية بالألوان المختارة الآن (حتى قبل الضغط على "حفظ")
+    preview_settings = {"theme": "custom", "custom_theme_colors": picked}
+    st.caption("👀 معاينة فورية للثيم المخصص بالألوان المختارة أعلاه:")
+    apply_theme_css(preview_settings)
+    _render_theme_preview_sample(preview_settings)
+
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        if st.button("💾 حفظ الثيم المخصص", type="primary", width='stretch'):
+            db.save_settings({
+                "theme": "custom",
+                "custom_theme_colors": picked,
+            })
+            st.success("تم حفظ الثيم المخصص وتطبيقه على كل صفحات التطبيق فوراً")
             st.rerun()
+    with c2:
+        if st.button("↺ إعادة تعيين للافتراضي (Ocean Dark)", width='stretch'):
+            db.save_settings({
+                "custom_theme_colors": dict(DEFAULT_SETTINGS["custom_theme_colors"]),
+            })
+            st.rerun()
+
+
+def _render_theme_preview_sample(preview_settings: dict):
+    """
+    عيّنة معاينة مصغّرة تشمل: نص عادي، جدول، رسم بياني، ومربع نص
+    (textarea) — حتى يرى المستخدم فوراً أثر الثيم على كل هذه العناصر
+    معاً (بما فيها الرسم البياني الذي يتبع لوحة ألوان الثيم تلقائياً)
+    قبل حفظ أي تعديل.
+    """
+    import pandas as pd
+    import plotly.express as px
+
+    sample_df = pd.DataFrame({
+        "الفئة": ["أ", "ب", "ج", "د"],
+        "القيمة": [40, 65, 30, 80],
+    })
+
+    p1, p2 = st.columns([1, 1])
+    with p1:
+        st.text_area(
+            "مثال مربع نص (Story Telling / أسئلة)",
+            value="هذا نص تجريبي لمعاينة لون الكتابة داخل مربعات النص.",
+            height=90, key="_theme_preview_textarea", disabled=True,
+        )
+        st.dataframe(sample_df, width='stretch', hide_index=True)
+    with p2:
+        fig = px.bar(sample_df, x="الفئة", y="القيمة", text_auto=True)
+        fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=260, **get_chart_theme(preview_settings))
+        st.plotly_chart(fig, width='stretch', key="_theme_preview_chart")
