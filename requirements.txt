@@ -5,6 +5,7 @@ httpx
 bcrypt
 openpyxl
 reportlab
+cryptography
 arabic-reshaper>=3.0.0
 python-bidi>=0.6.6
 plotly
