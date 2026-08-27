@@ -5,8 +5,27 @@ ui/common.py
 التأكد من وجود مشروع مفتوح، تحويل التواريخ للمنطقة الزمنية المحلية،
 وإشعارات موحّدة عبر Toast بدل الرسائل التوضيحية الثابتة المنتشرة في
 الصفحات.
+
+🆕 الثيمات:
+------------
+بالإضافة إلى الثيمات الجاهزة (THEME_COLORS)، يدعم التطبيق الآن ثيماً
+"مخصصاً" (custom) يختار فيه المستخدم الألوان الخمسة بحرّية كاملة من
+صفحة الإعدادات — تُخزَّن في project settings تحت مفتاح
+"custom_theme_colors" ولا تُستخدم إلا لو settings["theme"] == "custom"
+(راجع _resolve_theme_colors أدناه).
+
+كل الدوال التي تستهلك الثيم (apply_theme_css، get_chart_theme،
+apply_plotly_theme) تمر عبر _resolve_theme_colors كنقطة مركزية
+واحدة، لذا أي صفحة تستدعيها تستفيد تلقائياً من الثيم المخصص بدون أي
+تعديل إضافي فيها.
+
+كما تُطبَّق ألوان الثيم الآن على عناصر الإدخال (st.text_area/
+st.text_input/st.number_input) وقوائم الاختيار، وعلى لوحة ألوان
+الرسوم البيانية (Plotly colorway) — بدل الاعتماد على ألوان Plotly
+الافتراضية التي لا تمت بصلة لثيم المشروع.
 """
 
+import colorsys
 import shutil
 import tempfile
 import logging
@@ -20,7 +39,7 @@ import streamlit as st
 from core.project_manager import ProjectManager
 from core.project_db import ProjectDB
 
-from config import APP_NAME
+from config import APP_NAME, DEFAULT_SETTINGS
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +59,7 @@ RTL_CSS = """
        عند الطي عبر transform: translateX(-100%) — وهذا لا ينعكس
        تلقائياً بمجرد ضبط direction:rtl على الحاوية، فيظهر شريط
        الطي عالقاً في المنتصف. نُثبّت الموضع والانزلاق يدوياً هنا.
-       ───────────────────────────────────────────────────────── */
+       ───────────────────────────────────────────────────── */
     [data-testid="stSidebar"] {
         direction: rtl;
         text-align: right;
@@ -65,9 +84,11 @@ RTL_CSS = """
 </style>
 """
 
-# ألوان كل ثيم — تُستخدم لعرض color_picker في صفحة الإعدادات، وأيضاً
-# لتطبيق الثيم فعلياً على الواجهة عبر apply_theme_css() أدناه، ولتلوين
-# الرسوم البيانية (Plotly) بما يطابق الثيم الحالي عبر apply_plotly_theme().
+# ألوان كل ثيم جاهز — تُستخدم لعرض color_picker في صفحة الإعدادات،
+# وأيضاً لتطبيق الثيم فعلياً على الواجهة عبر apply_theme_css() أدناه،
+# ولتلوين الرسوم البيانية (Plotly) بما يطابق الثيم الحالي عبر
+# apply_plotly_theme(). الثيم "custom" ليس له إدخال هنا عمداً — ألوانه
+# تُقرأ ديناميكياً من project settings (راجع _resolve_theme_colors).
 THEME_COLORS = {
     "ocean_dark":     {"primary": "#1E3A5F", "accent": "#2563EB", "bg": "#0F172A", "text": "#F8FAFC", "card": "#1E293B"},
     "arctic_light":   {"primary": "#0EA5E9", "accent": "#38BDF8", "bg": "#F8FAFC", "text": "#0F172A", "card": "#FFFFFF"},
@@ -75,6 +96,12 @@ THEME_COLORS = {
     "forest_green":   {"primary": "#065F46", "accent": "#10B981", "bg": "#F0FDF4", "text": "#052E16", "card": "#FFFFFF"},
     "corporate_gray": {"primary": "#374151", "accent": "#6B7280", "bg": "#F9FAFB", "text": "#111827", "card": "#FFFFFF"},
 }
+
+# نسخة افتراضية من ألوان الثيم المخصص — تُستخدم فقط لو لم يوجد شيء
+# محفوظ بعد في project settings (أول استخدام لـ "custom" قبل أي حفظ).
+_DEFAULT_CUSTOM_COLORS = dict(DEFAULT_SETTINGS["custom_theme_colors"])
+
+_REQUIRED_COLOR_KEYS = ("primary", "accent", "bg", "text", "card")
 
 
 def apply_rtl():
@@ -84,15 +111,18 @@ def apply_rtl():
 def apply_theme_css(theme_key_or_settings="ocean_dark"):
     """
     تطبيق ألوان الثيم فعلياً على الواجهة (خلفية، أزرار، عناوين، بطاقات،
-    تبويبات، روابط، جداول)، بما يشمل جعل خلفية الجداول (st.dataframe)
-    شفافة ومتوافقة مع لون نص الثيم بدل الخلفية البيضاء الافتراضية التي
-    تكسر التناسق البصري في الثيمات الداكنة.
+    تبويبات، روابط، جداول، عناصر الإدخال)، بما يشمل جعل خلفية الجداول
+    (st.dataframe) شفافة ومتوافقة مع لون نص الثيم بدل الخلفية البيضاء
+    الافتراضية التي تكسر التناسق البصري في الثيمات الداكنة.
 
     تقبل إما اسم ثيم كنص مباشرة ("ocean_dark") أو dict إعدادات مشروع
     كامل (settings) — نفس مرونة get_chart_theme/apply_plotly_theme،
     حتى تعمل بغض النظر عن الشكل الذي تُستدعى به في كل صفحة (بعض
     الصفحات تمرر settings كاملة، وبعضها يمرر settings.get("theme")
-    مباشرة).
+    مباشرة). تمرير settings كاملة هو الشكل الوحيد الذي يسمح بتفعيل
+    الثيم "المخصص" (custom) فعلياً — لأن ألوانه مخزَّنة داخل settings
+    نفسها؛ تمرير اسم الثيم كنص فقط لا يكفي لثيم custom (راجع
+    _resolve_theme_colors أدناه لتفاصيل التعامل مع هذه الحالة).
 
     ملاحظة تقنية مهمة: الألوان "الرسمية" لـ Streamlit (primaryColor،
     backgroundColor...) تُقرأ من config.toml مرة واحدة فقط عند إقلاع
@@ -159,6 +189,40 @@ def apply_theme_css(theme_key_or_settings="ocean_dark"):
         }}
 
         /* ─────────────────────────────────────────────────────
+           عناصر الإدخال (نص/فقرة/رقم) وقوائم الاختيار — خلفية
+           بطاقة الثيم ولون نص الثيم بدل الخلفية البيضاء/الرمادية
+           الافتراضية لـ Streamlit، مع حدود بلون التمييز لإبقائها
+           مقروءة بصرياً على أي خلفية.
+           ───────────────────────────────────────────────────── */
+        .stTextInput input,
+        .stTextArea textarea,
+        .stNumberInput input {{
+            background-color: {card} !important;
+            color: {text} !important;
+            border: 1px solid {accent}55 !important;
+        }}
+        .stTextInput input::placeholder,
+        .stTextArea textarea::placeholder {{
+            color: {text} !important;
+            opacity: 0.5;
+        }}
+        .stSelectbox div[data-baseweb="select"] > div,
+        .stMultiSelect div[data-baseweb="select"] > div {{
+            background-color: {card} !important;
+            color: {text} !important;
+            border-color: {accent}55 !important;
+        }}
+        [data-baseweb="popover"] li,
+        [data-baseweb="menu"] li {{
+            background-color: {card} !important;
+            color: {text} !important;
+        }}
+        .stMultiSelect span[data-baseweb="tag"] {{
+            background-color: {accent} !important;
+            color: #FFFFFF !important;
+        }}
+
+        /* ─────────────────────────────────────────────────────
            شفافية الجداول (st.dataframe) داخل خلايا اللوحات
            والتقارير — الخلفية البيضاء الافتراضية لعنصر الجدول
            (المبني عبر glide-data-grid) تكسر التناسق مع الثيمات
@@ -198,31 +262,111 @@ def apply_page_style(theme_key: str = None):
     الثيم فعلياً لو تم تمرير theme_key (عادة settings.get("theme")).
     الصفحات التي لا يوجد فيها مشروع مفتوح بعد (تسجيل الدخول، معرض
     المشاريع) تستدعيها بدون theme_key فتحصل على RTL فقط.
+
+    ملاحظة: تمرير theme_key كنص فقط (وليس settings كاملة) لا يفعّل
+    الثيم المخصص (custom) لأن ألوانه مخزَّنة داخل settings — الصفحات
+    التي تحتاج دعم custom بالكامل يجب أن تستدعي apply_theme_css
+    مباشرة وتمرر settings الكاملة (وهو ما تفعله كل صفحات المشروع
+    الحالية فعلياً).
     """
     apply_rtl()
     if theme_key:
         apply_theme_css(theme_key)
 
 
+def _normalize_custom_colors(raw: dict) -> dict:
+    """
+    ضمان وجود كل مفاتيح الألوان الخمسة المطلوبة بقيمة نصية صالحة،
+    حتى لو كانت settings["custom_theme_colors"] محفوظة جزئياً (مثلاً
+    من إصدار قديم أضاف بعض المفاتيح فقط) أو غير موجودة إطلاقاً بعد.
+    القيم الناقصة تُستكمل من ثيم ocean_dark كافتراضي معقول.
+    """
+    raw = raw or {}
+    return {
+        key: raw.get(key) or _DEFAULT_CUSTOM_COLORS[key]
+        for key in _REQUIRED_COLOR_KEYS
+    }
+
+
 def _resolve_theme_colors(settings_or_theme) -> dict:
     """
-    قبول إما dict إعدادات مشروع كامل (settings.get("theme")) أو اسم
-    ثيم كنص مباشرة — يُستخدم داخلياً من get_chart_theme/apply_plotly_theme
-    حتى تعمل الدالتان بنفس المرونة بغض النظر عمّا يُمرَّر لهما.
+    قبول إما dict إعدادات مشروع كامل (settings) أو اسم ثيم كنص مباشرة
+    — يُستخدم داخلياً من apply_theme_css/get_chart_theme/
+    apply_plotly_theme حتى تعمل الدوال الثلاث بنفس المرونة بغض النظر
+    عمّا يُمرَّر لها.
+
+    حالة الثيم "المخصص" (custom):
+    - لو مُرِّر settings كاملة وكان settings["theme"] == "custom"،
+      تُقرأ الألوان الفعلية من settings["custom_theme_colors"].
+    - لو مُرِّر اسم الثيم كنص فقط ("custom") بدون settings كاملة، لا
+      توجد طريقة لمعرفة الألوان المخصصة الفعلية — نُرجع ألوان
+      ocean_dark كافتراضي آمن بدل الفشل.
     """
     if isinstance(settings_or_theme, dict):
         theme_key = settings_or_theme.get("theme", "ocean_dark")
-    else:
-        theme_key = settings_or_theme or "ocean_dark"
+        if theme_key == "custom":
+            return _normalize_custom_colors(settings_or_theme.get("custom_theme_colors"))
+        return THEME_COLORS.get(theme_key, THEME_COLORS["ocean_dark"])
+
+    theme_key = settings_or_theme or "ocean_dark"
+    if theme_key == "custom":
+        return dict(_DEFAULT_CUSTOM_COLORS)
     return THEME_COLORS.get(theme_key, THEME_COLORS["ocean_dark"])
+
+
+# ══════════════════════════════════════════════════════════════
+#  توليد لوحة ألوان (colorway) للرسوم البيانية من ألوان الثيم
+# ══════════════════════════════════════════════════════════════
+
+def _hex_to_rgb01(h: str) -> tuple[float, float, float]:
+    h = h.lstrip("#")
+    if len(h) != 6:
+        h = "2563EB"   # احتياط لو جاء لون غير صالح من إدخال المستخدم
+    return tuple(int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+
+
+def _rgb01_to_hex(rgb: tuple[float, float, float]) -> str:
+    r, g, b = (max(0.0, min(1.0, c)) for c in rgb)
+    return "#{:02X}{:02X}{:02X}".format(int(r * 255), int(g * 255), int(b * 255))
+
+
+def _generate_chart_colorway(colors: dict, n: int = 6) -> list[str]:
+    """
+    بناء لوحة ألوان متناسقة للرسوم البيانية (Plotly) انطلاقاً من لون
+    "accent" في الثيم الحالي، عبر تدوير Hue بمقادير متساوية — بدل
+    الاعتماد على ألوان Plotly الافتراضية العشوائية التي لا تمت بصلة
+    لثيم المشروع. النتيجة: أول لون في اللوحة يطابق دائماً لون
+    التمييز (accent) نفسه، وبقية الألوان متناسقة معه ومتمايزة بصرياً
+    بما يكفي للتفريق بين السلاسل.
+    """
+    base_hex = colors.get("accent", "#2563EB")
+    r, g, b = _hex_to_rgb01(base_hex)
+    h, l, s = colorsys.rgb_to_hls(r, g, b)
+
+    # نضمن تشبعاً وإضاءة معقولين حتى لو كان لون accent المُدخَل من
+    # المستخدم شديد الفتوح أو شديد الإعتام (مما قد يُنتج ألواناً غير
+    # مقروءة عند تدوير الـ Hue فقط بدون تعديل هذين المكوّنين).
+    s = max(s, 0.45)
+    l = min(max(l, 0.35), 0.65)
+
+    palette = []
+    for i in range(n):
+        nh = (h + i * (1.0 / n)) % 1.0
+        nr, ng, nb = colorsys.hls_to_rgb(nh, l, s)
+        palette.append(_rgb01_to_hex((nr, ng, nb)))
+    return palette
 
 
 def get_chart_theme(settings_or_theme="ocean_dark") -> dict:
     """
     إرجاع إعدادات ثيم جاهزة للتطبيق مباشرة على أي Plotly figure عبر
     fig.update_layout(**get_chart_theme(settings)) — تجعل خلفية الرسم
-    شفافة تماماً (تتناسب مع أي خلفية خلفها) ولون النص متوافقاً مع لون
-    نص الثيم الحالي، بدل الخلفية البيضاء الافتراضية لـ Plotly.
+    شفافة تماماً (تتناسب مع أي خلفية خلفها)، لون النص متوافقاً مع لون
+    نص الثيم الحالي، ولوحة ألوان السلاسل (colorway) مبنية من لون
+    التمييز (accent) في نفس الثيم بدل ألوان Plotly الافتراضية — بما
+    يضمن أن شكل كل الرسوم (Bar/Line/Pie/Scatter...) متناسق بصرياً مع
+    باقي عناصر الواجهة (الأزرار، العناوين...) في أي ثيم، بما فيها
+    الثيم المخصص.
 
     يقبل إما dict إعدادات المشروع كاملاً أو اسم ثيم كنص مباشرة.
     """
@@ -231,14 +375,16 @@ def get_chart_theme(settings_or_theme="ocean_dark") -> dict:
         "paper_bgcolor": "rgba(0,0,0,0)",
         "plot_bgcolor": "rgba(0,0,0,0)",
         "font_color": colors["text"],
+        "colorway": _generate_chart_colorway(colors),
         "legend": {"font": {"color": colors["text"]}},
     }
 
 
 def apply_plotly_theme(fig, settings_or_theme="ocean_dark"):
     """
-    تطبيق ثيم شفاف متوافق مع لون نص الثيم الحالي مباشرة على كائن
-    Plotly figure، وإرجاعه (لتسلسل الاستدعاءات إن رغبت).
+    تطبيق ثيم شفاف متوافق مع لون نص الثيم الحالي ولوحة ألوان الثيم
+    (بما فيها الثيم المخصص) مباشرة على كائن Plotly figure، وإرجاعه
+    (لتسلسل الاستدعاءات إن رغبت).
 
     الاستخدام:
         fig = px.bar(df, x="x", y="y")
