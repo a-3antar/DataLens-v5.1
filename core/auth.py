@@ -6,10 +6,14 @@ core/auth.py
 
 مفاتيح API:
 ------------
-تُخزَّن هنا (وليس في project.db) لكل مستخدم لكل محرك على حدة، بدون
-تشفير (قرار صريح). هذا يمنع تسرّب المفاتيح عند تصدير/استيراد/مشاركة
-ملف مشروع، ويسمح بتعبئة إعدادات AI تلقائياً بآخر محرك/مفتاح استخدمه
-المستخدم عند إنشاء مشروع جديد.
+تُخزَّن هنا (وليس في project.db) لكل مستخدم لكل محرك على حدة.
+
+🆕 تشفير: القيمة المخزَّنة في عمود api_key مُشفَّرة عبر core.crypto
+(Fernet) بدل نص صريح — راجع core/crypto.py لتفاصيل مصدر مفتاح
+التشفير والتوافق مع مفاتيح قديمة غير مُشفَّرة محفوظة قبل هذا
+التحديث. هذا يمنع تسرّب المفاتيح كنص صريح عند تصفح/نسخ ملف
+users.db مباشرة، بينما يبقى المفتاح المُستخدَم فعلياً في الطلبات
+(get_api_key) نصاً صريحاً كما هو متوقَّع من أي محرك AI.
 """
 
 import sqlite3
@@ -22,6 +26,7 @@ from typing   import Optional
 import bcrypt
 
 from config import USERS_DB, SESSION_EXPIRE_HOURS, BCRYPT_ROUNDS
+from core.crypto import encrypt_value, decrypt_value
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +66,8 @@ def _init_users_db() -> None:
 
             -- مفاتيح API لكل مستخدم، مفصولة حسب محرك AI. تُخزَّن هنا
             -- (وليس في project.db) حتى لا تظهر المفاتيح داخل ملفات
-            -- المشاريع القابلة للتصدير/الاستيراد أو المشاركة. غير
-            -- مُشفَّرة حالياً بناءً على قرار صريح.
+            -- المشاريع القابلة للتصدير/الاستيراد أو المشاركة.
+            -- العمود api_key يحتوي القيمة مُشفَّرة (راجع core/crypto.py).
             CREATE TABLE IF NOT EXISTS user_api_keys (
                 user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 engine_name TEXT NOT NULL,
@@ -91,7 +96,7 @@ class AuthManager:
         user  = auth.get_user_by_token(token)
 
         auth.save_api_key(user_id, "gemini", "AIza...", "gemini-2.0-flash")
-        saved = auth.get_api_key(user_id, "gemini")
+        saved = auth.get_api_key(user_id, "gemini")   # مفتاح صريح جاهز للاستخدام
     """
 
     def __init__(self):
@@ -289,14 +294,16 @@ class AuthManager:
             return 0
 
     # ──────────────────────────────────────────────────────────
-    #  مفاتيح API لكل مستخدم (جديد)
+    #  مفاتيح API لكل مستخدم — مُشفَّرة في التخزين (core.crypto)
     # ──────────────────────────────────────────────────────────
 
     def save_api_key(self, user_id: str, engine_name: str, api_key: str, model: str = "") -> None:
         """
         حفظ/تحديث مفتاح API لمحرك معيّن لهذا المستخدم.
-        غير مُشفَّر (قرار صريح). لا يُستخدم لمحرك "ollama" (لا مفتاح له).
+        يُشفَّر api_key قبل الكتابة في العمود (core.crypto.encrypt_value)
+        — لا يُستخدم لمحرك "ollama" (لا مفتاح له).
         """
+        encrypted_key = encrypt_value(api_key)
         try:
             with _connect() as conn:
                 conn.execute(
@@ -308,17 +315,18 @@ class AuthManager:
                         model      = excluded.model,
                         updated_at = excluded.updated_at
                     """,
-                    (user_id, engine_name, api_key, model, _now_str())
+                    (user_id, engine_name, encrypted_key, model, _now_str())
                 )
                 conn.commit()
-            logger.info("API key saved for user %s, engine %s", user_id, engine_name)
+            logger.info("API key saved (encrypted) for user %s, engine %s", user_id, engine_name)
         except sqlite3.Error as e:
             logger.error("save_api_key error: %s", e)
             raise
 
     def get_api_key(self, user_id: str, engine_name: str) -> dict:
         """
-        إرجاع {"api_key": "...", "model": "..."} لمحرك معيّن، أو
+        إرجاع {"api_key": "...", "model": "..."} لمحرك معيّن — api_key
+        مُعاد كنص صريح جاهز للاستخدام مباشرة (بعد فك التشفير)، أو
         {"api_key": "", "model": ""} لو لم يُحفظ شيء بعد لهذا المستخدم
         على هذا المحرك تحديداً.
         """
@@ -329,7 +337,7 @@ class AuthManager:
                     (user_id, engine_name)
                 ).fetchone()
             if row:
-                return {"api_key": row["api_key"], "model": row["model"]}
+                return {"api_key": decrypt_value(row["api_key"]), "model": row["model"]}
             return {"api_key": "", "model": ""}
         except sqlite3.Error as e:
             logger.error("get_api_key error: %s", e)
@@ -340,6 +348,7 @@ class AuthManager:
         آخر محرك+مفتاح استخدمه المستخدم (بناءً على أحدث updated_at) —
         يُستخدم لتعبئة إعدادات AI تلقائياً عند إنشاء مشروع جديد بدل
         ترك المستخدم يُعيد إدخال نفس البيانات من جديد لكل مشروع.
+        api_key المُعاد هنا نص صريح (بعد فك التشفير).
 
         يرجع {"engine_name": ..., "api_key": ..., "model": ...} أو None
         لو لم يستخدم المستخدم أي محرك بعد.
@@ -353,7 +362,11 @@ class AuthManager:
                     """,
                     (user_id,)
                 ).fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+            result = dict(row)
+            result["api_key"] = decrypt_value(result["api_key"])
+            return result
         except sqlite3.Error as e:
             logger.error("get_last_used_engine error: %s", e)
             return None
