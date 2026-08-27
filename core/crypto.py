@@ -38,7 +38,8 @@ from config import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
-_KEY_FILE = DATA_DIR / "secret.key"
+# _KEY_FILE = DATA_DIR / "secret.key"
+_KEY_FILE = r"E:\Work\Data Analysis\secret.key"
 _fernet: Fernet = None
 
 
