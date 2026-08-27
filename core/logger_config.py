@@ -23,6 +23,7 @@ import logging.handlers
 from pathlib import Path
 
 from config import DATA_DIR
+from warnings import filterwarnings
 
 # ─── إعدادات ملف الـ log ───────────────────────────────────
 LOG_DIR        = DATA_DIR / "logs"
@@ -65,6 +66,10 @@ def setup_logging(level: int = logging.INFO) -> None:
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
     root_logger.addHandler(file_handler)
+
+    filterwarnings("ignore", message="Unknown extension is not supported")
+    logging.captureWarnings(True)
+    logging.getLogger("py.warnings").setLevel(level)
 
     # تقليل ضجيج المكتبات الخارجية الثرثارة (لا تفيد في تشخيص أخطاء
     # التطبيق نفسه، وتُضخّم حجم الملف بسرعة بلا داعٍ)
