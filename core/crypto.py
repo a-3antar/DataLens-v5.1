@@ -15,7 +15,16 @@ Streamlit Community Cloud) — يُضبط مرة واحدة عبر "Secrets" ف�
 المشفَّرة سابقاً غير قابلة لفك التشفير.
 
 لو لم يوجد المتغير (تشغيل محلي عادةً)، يُنشأ مفتاح عشوائي مرة
-واحدة ويُحفظ في data/secret.key ويُعاد استخدامه في كل تشغيل لاحق.
+واحدة ويُحفظ في data/secret.key (تحت DATA_DIR — نفس مجلد بيانات
+التطبيق القابل للتخصيص عبر DATALENS_DATA_DIR في config.py) ويُعاد
+استخدامه في كل تشغيل لاحق.
+
+🛠️ إصلاح: كان _KEY_FILE مضبوطاً سابقاً كنص (str) لمسار Windows ثابت
+مكتوب يدوياً (على قرص E مباشرة) — هذا لا يعمل
+إطلاقاً خارج ذلك الجهاز تحديداً، وحتى عليه كان يرمي AttributeError
+عند أول استخدام فعلي لأن str لا يملك .exists()/.parent/.read_bytes()
+(كلها دوال pathlib.Path فقط). أُعيد الآن لاستخدام DATA_DIR / "secret.key"
+كـ Path فعلي، ديناميكي ومتوافق مع أي بيئة تشغيل.
 
 توليد المفتاح:
     python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
@@ -38,8 +47,9 @@ from config import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
-# _KEY_FILE = DATA_DIR / "secret.key"
-_KEY_FILE = r"E:\Work\Data Analysis\secret.key"
+# ✅ مسار ديناميكي فعلي (Path) تحت مجلد بيانات التطبيق — يعمل على أي
+# جهاز/بيئة (محلي أو سحابي) بدل مسار Windows ثابت مكتوب يدوياً.
+_KEY_FILE = DATA_DIR / "secret.key"
 _fernet: Fernet = None
 
 
