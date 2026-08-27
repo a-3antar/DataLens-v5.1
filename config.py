@@ -94,6 +94,17 @@ DEFAULT_SETTINGS = {
     # "timeout" العام أعلاه المستخدم في توليد SQL). راجع
     # STORY_TIMEOUT_SECONDS أعلاه للتفاصيل الكاملة.
     "story_timeout": STORY_TIMEOUT_SECONDS,
+    # 🆕 ألوان الثيم "المخصص" (custom) — تُستخدم فقط لو
+    # settings["theme"] == "custom". القيم الافتراضية هنا مطابقة
+    # لثيم "ocean_dark" كنقطة انطلاق معقولة عند أول استخدام لهذا
+    # الخيار، وقابلة للتعديل الكامل من تبويب الثيم في الإعدادات.
+    "custom_theme_colors": {
+        "primary": "#1E3A5F",
+        "accent" : "#2563EB",
+        "bg"     : "#0F172A",
+        "text"   : "#F8FAFC",
+        "card"   : "#1E293B",
+    },
 }
 
 # ─── محركات الـ AI ─────────────────────────────────────────
@@ -134,12 +145,17 @@ STORY_MAX_ROWS = 200      # أقصى عدد صفوف تُرسل للـ AI كسي
 STORY_SAMPLE_ROWS_IN_PROMPT = 30  # عدد الصفوف الفعلي المضمّن نصياً في الـ prompt
 
 # ─── الثيمات ───────────────────────────────────────────────
+# "custom" يُضاف دائماً كخيار أخير في الواجهة (ui/settings.py) — ليس
+# له إدخال هنا لأنه لا يملك ألواناً ثابتة؛ ألوانه الفعلية تُقرأ من
+# settings["custom_theme_colors"] (راجع DEFAULT_SETTINGS أعلاه و
+# ui/common.py::_resolve_theme_colors).
 THEMES = {
     "ocean_dark"    : "Ocean Dark",
     "arctic_light"  : "Arctic Light",
     "desert_warm"   : "Desert Warm",
     "forest_green"  : "Forest Green",
     "corporate_gray": "Corporate Gray",
+    "custom"        : "🎨 مخصص",
 }
 
 # ─── SQL — كلمات محظورة للأمان ────────────────────────────
