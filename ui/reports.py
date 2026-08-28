@@ -3,15 +3,20 @@ ui/reports.py
 =============
 إنشاء وإدارة التقارير: عنوان، فقرات Markdown، عرض البلوكات
 (جداول/رسوم/gauges/KPI)، وتصدير PDF / Excel / Markdown.
+
+🆕 بلوك الجدول يُعرض الآن عبر ui.common.render_themed_table (جدول
+HTML مُنسَّق يدوياً بألوان الثيم) بدل st.dataframe التفاعلي — الأخير
+يُرسم على <canvas> ولا يلتزم بشكل موثوق بألوان الثيم الحالي.
 """
 
 import streamlit as st
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
 from ui.common import (
     apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
-    temp_export_dir, offer_download, apply_plotly_theme,
+    temp_export_dir, offer_download, apply_plotly_theme, render_themed_table,
 )
 from exporters.report_manager import ReportManager
 from exporters.pdf_exporter import PDFExporter
@@ -124,14 +129,17 @@ def _render_block(block: dict, settings: dict = None):
         st.markdown(content.get("text", ""))
 
     elif btype == "table":
-        st.dataframe(content.get("data", []), width='stretch', hide_index=True)
+        data = content.get("data", [])
+        if data:
+            render_themed_table(pd.DataFrame(data), settings or "ocean_dark")
+        else:
+            st.caption("لا توجد بيانات")
 
     elif btype == "chart":
         data = content.get("data", [])
         x_col = content.get("x_col")
         y_cols = content.get("y_cols", [])
         if data and x_col and y_cols:
-            import pandas as pd
             df = pd.DataFrame(data)
             fig = px.bar(df, x=x_col, y=y_cols, barmode="group", text_auto=True,
                          title=content.get("title", ""))
