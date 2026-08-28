@@ -11,11 +11,15 @@ ui/dashboards.py
 
 🆕 التصميم البصري:
 ---------------------
-- خلفية الرسوم البيانية (Plotly) والمقاييس (Gauge) شفافة تماماً وتتبع
-  لون نص الثيم الحالي عبر ui.common.get_chart_theme().
-- خلفية الجداول (st.dataframe) شفافة أيضاً عبر CSS في apply_theme_css.
-- النص داخل خلايا Story Telling يتبع لون نص الثيم تلقائياً مع اتجاه
-  RTL صريح.
+- خلفية الرسوم البيانية (Plotly) والمقاييس (Gauge) شفافة تماماً، وألوان
+  الأعمدة/الخطوط/الشرائح/شريط الـ Gauge نفسها تُفرض فعلياً من ألوان
+  الثيم الحالي عبر ui.common.apply_plotly_theme() — وليس فقط الخلفية
+  والنص كما كان سابقاً (راجع توثيق تلك الدالة في ui/common.py).
+- خلفية الجداول (st.dataframe) ورأسها تتبعان الثيم عبر متغيرات CSS
+  الداخلية لجدول Streamlit (--gdg-*)، المُعرَّفة مركزياً في
+  ui.common.apply_theme_css.
+- النص داخل خلايا Story Telling يأخذ لون نص الثيم الحالي صراحةً عبر
+  ui.common.get_theme_colors() بدل الاعتماد فقط على وراثة CSS العامة.
 
 🆕 الإشعارات:
 ----------------
@@ -62,7 +66,8 @@ import plotly.graph_objects as go
 
 from ui.common import (
     apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
-    format_local_dt, notify, get_chart_theme,
+    format_local_dt, notify, get_chart_theme, apply_plotly_theme, get_theme_colors,
+    render_themed_table,
 )
 from core.dashboard_templates import DASHBOARD_TEMPLATES, get_template
 from core.dashboard_manager import DashboardManager
@@ -488,9 +493,13 @@ def _render_cell_editor(db, dm, settings, dashboard_id, position, cell, is_gauge
                 with st.expander("SQL", expanded=False):
                     st.code(r["sql"], language="sql")
             if r.get("df") is not None:
-                st.dataframe(r["df"], width='stretch', hide_index=True)
+                render_themed_table(r["df"], settings)
             if r.get("story"):
-                st.markdown(r["story"])
+                text_color = get_theme_colors(settings)["text"]
+                st.markdown(
+                    f'<div dir="rtl" style="text-align:right; color:{text_color};">{r["story"]}</div>',
+                    unsafe_allow_html=True,
+                )
         else:
             st.error(f"فشل الاختبار: {r.get('error')}")
 
@@ -543,7 +552,7 @@ def _render_cell_result(db, dashboard_id, position, cell, settings, show_title: 
     chart_theme = get_chart_theme(settings)
 
     if display_type == "table":
-        st.dataframe(df, width='stretch', hide_index=True)
+        render_themed_table(df, settings)
 
     elif display_type == "chart":
         if df.empty or df.shape[1] < 2:
@@ -563,7 +572,9 @@ def _render_cell_result(db, dashboard_id, position, cell, settings, show_title: 
                     fig = px.scatter(df, x=x_col, y=y_cols[0])
                 else:
                     fig = px.bar(df, x=x_col, y=y_cols, barmode="group", text_auto=True)
-                fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=280, **chart_theme)
+                fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=280)
+                # 🆕 يفرض ألوان الثيم فعلياً على الأعمدة/الخطوط/الشرائح
+                apply_plotly_theme(fig, settings)
                 st.plotly_chart(fig, width='stretch', key=f"chart_{dashboard_id}_{position}")
             except Exception as e:
                 st.error(f"تعذر رسم البيانات: {e}")
@@ -578,10 +589,11 @@ def _render_cell_result(db, dashboard_id, position, cell, settings, show_title: 
             number={"font": {"color": chart_theme["font_color"]}},
             gauge={
                 "axis": {"range": [mn, mx], "tickfont": {"color": chart_theme["font_color"]}},
-                "bar": {"color": chart_theme["font_color"]},
             },
         ))
-        fig.update_layout(height=180, margin=dict(l=10, r=10, t=10, b=10), **chart_theme)
+        fig.update_layout(height=180, margin=dict(l=10, r=10, t=10, b=10))
+        # 🆕 شريط الـ Gauge نفسه يأخذ لون التمييز (accent) الخاص بالثيم
+        apply_plotly_theme(fig, settings)
         st.plotly_chart(fig, width='stretch', key=f"gauge_{dashboard_id}_{position}")
 
     elif display_type == "kpi":
@@ -594,12 +606,15 @@ def _render_cell_result(db, dashboard_id, position, cell, settings, show_title: 
 
     elif display_type == "story":
         story_text = stored.get("story", "")
+        # 🆕 لون النص يُحدَّد صراحة من ألوان الثيم الحالي بدل الاعتماد
+        # فقط على وراثة CSS العامة — يستجيب فوراً لتغيير "لون النص".
+        text_color = get_theme_colors(settings)["text"]
         st.markdown(
-            f'<div dir="rtl" style="text-align:right">{story_text}</div>',
+            f'<div dir="rtl" style="text-align:right; color:{text_color};">{story_text}</div>',
             unsafe_allow_html=True,
         )
         with st.expander("📊 البيانات المستخدمة"):
-            st.dataframe(df, width='stretch', hide_index=True)
+            render_themed_table(df, settings)
 
     updated = cell.get("last_updated_at")
     if updated:
