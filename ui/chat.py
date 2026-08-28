@@ -7,9 +7,13 @@ ui/chat.py
 مفتاح API يُقرأ من إعدادات المشروع (project.db) كما كان دائماً — كل
 مشروع له مفتاحه الخاص.
 
-🆕 خلفية الرسوم البيانية شفافة ومتوافقة مع لون نص الثيم الحالي (نفس
-مبدأ ui/dashboards.py عبر ui.common.get_chart_theme()). الرسائل
-التوضيحية الثابتة استُبدلت بإشعارات toast عابرة عبر ui.common.notify.
+🆕 خلفية الرسوم البيانية شفافة ومتوافقة مع لون نص الثيم الحالي، وألوان
+الأعمدة/الخطوط/شريط الـ Gauge نفسها تُفرض فعلياً من ألوان الثيم عبر
+ui.common.apply_plotly_theme() (وليس فقط الخلفية والنص كما كان سابقاً
+— راجع توثيق apply_plotly_theme في ui/common.py للتفاصيل). نص صندوق
+Story Telling يأخذ الآن لون نص الثيم الحالي صراحةً عبر get_theme_colors()
+بدل الاعتماد فقط على وراثة CSS العامة. الرسائل التوضيحية الثابتة
+استُبدلت بإشعارات toast عابرة عبر ui.common.notify.
 """
 
 import uuid
@@ -21,7 +25,8 @@ import plotly.graph_objects as go
 
 from ui.common import (
     apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
-    format_local_dt, notify, get_chart_theme,
+    format_local_dt, notify, get_chart_theme, apply_plotly_theme, get_theme_colors,
+    render_themed_table,
 )
 from ai.ai_manager import AIManager, get_engine
 from core.query_engine import QueryEngine
@@ -153,12 +158,12 @@ def _render_result(db, settings, result: dict, result_type: str, chart_type: str
     chart_theme = get_chart_theme(settings)
 
     if result_type == "table":
-        st.dataframe(df, width='stretch', hide_index=True)
+        render_themed_table(df, settings)
 
     elif result_type == "chart":
         if df.shape[1] < 2:
             st.caption("النتيجة لا تحتوي أعمدة كافية لرسم بياني")
-            st.dataframe(df, width='stretch', hide_index=True)
+            render_themed_table(df, settings)
         else:
             x_col = df.columns[0]
             y_cols = list(df.columns[1:3])
@@ -173,7 +178,10 @@ def _render_result(db, settings, result: dict, result_type: str, chart_type: str
                     fig = px.scatter(df, x=x_col, y=y_cols[0])
                 else:
                     fig = px.bar(df, x=x_col, y=y_cols, barmode="group", text_auto=True)
-                fig.update_layout(margin=dict(l=10, r=10, t=30, b=10), **chart_theme)
+                fig.update_layout(margin=dict(l=10, r=10, t=30, b=10))
+                # 🆕 يفرض ألوان الثيم فعلياً على الأعمدة/الخطوط/الشرائح
+                # (وليس فقط الخلفية والنص) — راجع ui/common.py للتفاصيل.
+                apply_plotly_theme(fig, settings)
                 st.plotly_chart(fig, width='stretch')
             except Exception as e:
                 st.error(f"تعذر رسم البيانات بنوع «{chart_type}»: {e}")
@@ -189,10 +197,11 @@ def _render_result(db, settings, result: dict, result_type: str, chart_type: str
             number={"font": {"color": chart_theme["font_color"]}},
             gauge={
                 "axis": {"range": [mn, mx], "tickfont": {"color": chart_theme["font_color"]}},
-                "bar": {"color": chart_theme["font_color"]},
             },
         ))
-        fig.update_layout(**chart_theme)
+        # 🆕 apply_plotly_theme تضبط شريط الـ Gauge نفسه بلون التمييز
+        # (accent) الخاص بالثيم الحالي بدل تركه بلون افتراضي ثابت.
+        apply_plotly_theme(fig, settings)
         st.plotly_chart(fig, width='stretch')
 
     elif result_type == "kpi":
@@ -205,12 +214,16 @@ def _render_result(db, settings, result: dict, result_type: str, chart_type: str
 
     elif result_type == "story":
         story_text = result.get("story", "")
+        # 🆕 لون النص يُحدَّد صراحة من ألوان الثيم الحالي (بما فيها
+        # الثيم المخصص) بدل الاعتماد فقط على وراثة CSS العامة، حتى
+        # يستجيب فوراً لأي تغيير في "لون النص" من صفحة الإعدادات.
+        text_color = get_theme_colors(settings)["text"]
         st.markdown(
-            f'<div dir="rtl" style="text-align:right">{story_text}</div>',
+            f'<div dir="rtl" style="text-align:right; color:{text_color};">{story_text}</div>',
             unsafe_allow_html=True,
         )
         with st.expander("📊 البيانات المستخدمة في التحليل"):
-            st.dataframe(df, width='stretch', hide_index=True)
+            render_themed_table(df, settings)
 
     st.divider()
     with st.form("send_to_report_form"):
