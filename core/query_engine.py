@@ -2,7 +2,8 @@
 core/query_engine.py
 ====================
 تنفيذ SQL على البيانات النظيفة عبر DuckDB.
-لا يكتب في قاعدة البيانات — يقرأ فقط.
+لا يكتب في قاعدة البيانات — يقرأ فقط، ولا يُعدّل أي بيانات دائمة على
+الإطلاق (project.db لا يُلمس هنا إطلاقاً في أي مسار).
 
 تصحيح تلقائي لأسماء الأعمدة:
 ------------------------------
@@ -12,11 +13,32 @@ core/query_engine.py
 المعلومة لتصحيح الاستعلام تلقائياً وإعادة تنفيذه — بدل استهلاك محاولة
 كاملة من محاولات الذكاء الاصطناعي على خطأ يمكن حله فوراً بدون استدعاء AI.
 
-تطبيق فلاتر (Slicers) بدون AI:
---------------------------------
-run_with_filters() تسمح بتنفيذ SQL أساسي (وُلِّد سابقاً عبر AI مرة
-واحدة ومُخزَّن كـ base_sql لكل خلية لوحة معلومات) مع تطبيق قيود فلترة
-إضافية — كل ذلك في طبقة بايثون/DuckDB مباشرة، بدون أي استدعاء AI جديد.
+🆕 Views مفلترة حقيقية لكل جدول (لوحات المعلومات فقط):
+-----------------------------------------------------------
+كل استدعاء لـ run()/run_with_filters() يفتح اتصال DuckDB جديد تماماً
+(في الذاكرة، يُغلق فور الانتهاء) — هذا الاتصال منفصل تماماً عن أي
+استدعاء آخر (محادثة، تقارير، خلية لوحة أخرى)، ولا علاقة له بـ
+project.db على الإطلاق. البيانات الخام تُقرأ في كل مرة طازجة عبر
+db.get_clean_data() كما كانت دائماً (بدون أي تعديل عليها هنا أو حفظ
+أي نسخة معدَّلة).
+
+لما تُمرَّر filters (من Slicers لوحة معلومات):
+  1. يُسجَّل الجدول الخام كما هو تحت اسم داخلي "{alias}__raw".
+  2. يُبنى شرط WHERE من الفلاتر النشطة على هذا الجدول تحديداً.
+  3. يُنشأ view حقيقي عبر "CREATE OR REPLACE VIEW {alias} AS SELECT *
+     FROM {alias}__raw WHERE ..." — هذا الـ view (وليس الجدول الخام)
+     هو ما يُستعلَم عنه فعلياً باسم الجدول العادي (alias) في أي SQL
+     لاحق، سواء كُتب يدوياً، وُلِّد عبر AI للتو، أو كان base_sql
+     محفوظاً مسبقاً — بدون أي حاجة لتعديل نص الـ SQL نفسه أو schema
+     المُرسَل إلى AI (نفس اسم الجدول تماماً).
+  4. الـ view يُعاد بناؤه من الصفر مع كل استدعاء (كل تحميل لصفحة
+     Dashboard، أو كل تغيير في الفلاتر يُشغّل تحديثاً جديداً) لأن
+     الاتصال بالكامل مؤقت وجديد في كل مرة — لا حاجة لأي منطق "تحديث"
+     إضافي، فالبناء من الصفر مضمون دائماً.
+
+لما لا تُمرَّر filters (استخدام عادي من المحادثة/التقارير/أي مكان
+آخر): يُسجَّل الجدول الخام مباشرة تحت اسمه العادي بدون أي view إضافي
+— تماماً كالسلوك القديم، بلا أي فرق في الأداء أو النتيجة.
 """
 
 import re
@@ -45,6 +67,11 @@ _MAX_AUTO_FIX_ATTEMPTS = 3
 # بصمت أخطر بكثير من فشل واضح يُعاد للـ AI ليصححه).
 _MIN_SIMILARITY = 0.5
 
+# لاحقة الجدول الخام الداخلي المستخدَم فقط أثناء بناء الـ view المفلترة
+# (لا علاقة له بأي شيء مخزَّن على القرص — موجود فقط داخل اتصال DuckDB
+# المؤقت طوال مدة هذا الاستدعاء).
+_RAW_SUFFIX = "__raw"
+
 
 def _is_confident_match(wrong: str, candidate: str) -> bool:
     """هل نثق بأن candidate هو المقصود الفعلي بدل wrong؟"""
@@ -64,11 +91,15 @@ class QueryEngine:
     """
     تنفيذ SQL على جداول المشروع عبر DuckDB.
 
-    الاستخدام:
+    الاستخدام العادي (بدون فلاتر — محادثة/تقارير/أي مكان آخر):
         qe = QueryEngine(db)
         result = qe.run("SELECT SUM(amount) FROM sales")
-        if result["ok"]:
-            df = result["df"]
+
+    الاستخدام مع فلاتر لوحة معلومات (يبني view مفلترة حقيقية لكل جدول
+    له فلتر نشط، دون أي تعديل على project.db):
+        result = qe.run("SELECT ...", filters=[
+            {"table": "sales", "column": "المنطقة", "values": ["الرياض"]},
+        ])
     """
 
     def __init__(self, db: ProjectDB):
@@ -93,26 +124,106 @@ class QueryEngine:
         return {"ok": True}
 
     # ──────────────────────────────────────────────────────────
-    #  تحميل الجداول في DuckDB
+    #  بناء شرط WHERE من فلاتر جدول واحد
     # ──────────────────────────────────────────────────────────
 
-    def _load_tables(self, conn: duckdb.DuckDBPyConnection) -> list[str]:
+    @staticmethod
+    def _build_where_clause(filters: list, available_columns) -> tuple[str, list]:
         """
-        تحميل كل الجداول النظيفة من project.db إلى DuckDB كـ views.
-        يرجع قائمة بأسماء الجداول المحملة.
+        بناء شرط WHERE من فلاتر جدول واحد (AND فيما بينها). يرجع
+        (نص_الشرط, قائمة_أعمدة_الفلاتر_المتجاهَلة).
+
+        نستخدم CAST(... AS VARCHAR) على كل من العمود والقيم حتى يعمل
+        الفلتر بشكل موثوق بغض النظر عن نوع العمود الفعلي (رقمي/نصي/
+        تاريخ)، بدل الاعتماد على تطابق أنواع ضمني قد يفشل صامتاً في
+        DuckDB بين VARCHAR وINTEGER مثلاً.
+        """
+        clauses = []
+        skipped = []
+        for f in filters:
+            column = f.get("column")
+            values = f.get("values") or []
+            if not column or not values:
+                continue
+            if column not in available_columns:
+                skipped.append(column)
+                logger.info("Filter skipped: column '%s' not present in table", column)
+                continue
+            escaped_values = ", ".join(
+                "'" + str(v).replace("'", "''") + "'" for v in values
+            )
+            clauses.append(f'CAST("{column}" AS VARCHAR) IN ({escaped_values})')
+
+        return " AND ".join(clauses), skipped
+
+    # ──────────────────────────────────────────────────────────
+    #  تحميل الجداول في DuckDB (مع بناء views مفلترة عند وجود فلاتر)
+    # ──────────────────────────────────────────────────────────
+
+    def _load_tables(self, conn: duckdb.DuckDBPyConnection, filters: Optional[list] = None) -> list[str]:
+        """
+        تحميل كل الجداول النظيفة من project.db إلى DuckDB.
+
+        - جدول بلا فلتر نشط: يُسجَّل مباشرة تحت اسمه (alias) كما كان
+          دائماً — لا فرق عن السلوك السابق.
+        - جدول له فلتر نشط واحد أو أكثر: يُسجَّل الجدول الخام تحت اسم
+          داخلي "{alias}__raw"، ثم يُبنى فوقه "CREATE OR REPLACE VIEW
+          {alias} AS SELECT * FROM {alias}__raw WHERE ..." — بحيث أي
+          استعلام لاحق يستخدم اسم الجدول العادي (alias) يصل فعلياً
+          إلى الـ view المفلترة تلقائياً، بدون أي تعديل على نص الـ
+          SQL أو على البيانات الأصلية في project.db.
+
+        كل هذا يحدث داخل هذا الاتصال المؤقت فقط (يُغلق فور انتهاء
+        الاستعلام) — لا يمس project.db بأي شكل، وبيانات المحادثة/
+        التقارير/أي استخدام آخر لا يمر عبر filters فتبقى كما هي تماماً.
+
+        يرجع قائمة بأسماء الجداول/الـ views المحملة.
         """
         loaded = []
         files  = self.db.get_files()
 
+        filters_by_table: dict[str, list] = {}
+        for f in (filters or []):
+            table = f.get("table")
+            if table:
+                filters_by_table.setdefault(table, []).append(f)
+
         for f in files:
             alias = f["table_alias"]
             df    = self.db.get_clean_data(alias)
-            if df is not None and not df.empty:
+            if df is None or df.empty:
+                logger.warning("Table '%s' is empty or missing — skipped", alias)
+                continue
+
+            table_filters = filters_by_table.get(alias)
+            if not table_filters:
+                # لا فلتر نشط على هذا الجدول — تسجيل مباشر كما كان دائماً
                 conn.register(alias, df)
                 loaded.append(alias)
                 logger.debug("Table loaded into DuckDB: '%s' (%d rows)", alias, len(df))
+                continue
+
+            # ── بناء view مفلترة حقيقية فوق الجدول الخام ──
+            raw_name = f"{alias}{_RAW_SUFFIX}"
+            conn.register(raw_name, df)
+
+            where_clause, skipped_cols = self._build_where_clause(table_filters, set(df.columns))
+            if where_clause:
+                conn.execute(
+                    f'CREATE OR REPLACE VIEW "{alias}" AS '
+                    f'SELECT * FROM "{raw_name}" WHERE {where_clause}'
+                )
+                logger.debug(
+                    "Filtered view built for '%s' (%d filter(s) applied%s)",
+                    alias, len(table_filters),
+                    f", {len(skipped_cols)} skipped" if skipped_cols else "",
+                )
             else:
-                logger.warning("Table '%s' is empty or missing — skipped", alias)
+                # كل فلاتر هذا الجدول غير قابلة للتطبيق (أعمدة غير
+                # موجودة) — نُبقي الـ view مطابقة تماماً للجدول الخام
+                conn.execute(f'CREATE OR REPLACE VIEW "{alias}" AS SELECT * FROM "{raw_name}"')
+
+            loaded.append(alias)
 
         return loaded
 
@@ -167,9 +278,16 @@ class QueryEngine:
     #  تنفيذ الاستعلام
     # ──────────────────────────────────────────────────────────
 
-    def run(self, sql: str) -> dict:
+    def run(self, sql: str, filters: Optional[list] = None) -> dict:
         """
         تنفيذ SQL وإرجاع النتيجة كـ DataFrame.
+
+        filters (اختياري): [{"table": "sales", "column": "المنطقة",
+        "values": ["الرياض", "جدة"]}, ...] — يبني view مفلترة حقيقية
+        لكل جدول له فلتر نشط (راجع _load_tables)، بحيث sql يُنفَّذ
+        فعلياً على البيانات المفلترة بغض النظر عن أعمدة الإخراج
+        النهائية أو عمّا إذا كان sql يحتوي WHERE يدوي لنفس الشرط.
+        البيانات الأصلية في project.db لا تُلمس مطلقاً.
 
         يرجع:
             {"ok": True,  "df": DataFrame, "rows": N, "auto_fixes": [...]}
@@ -191,7 +309,7 @@ class QueryEngine:
         current_sql = sql
 
         for attempt in range(_MAX_AUTO_FIX_ATTEMPTS + 1):
-            result = self._execute_once(current_sql)
+            result = self._execute_once(current_sql, filters=filters)
 
             if result["ok"]:
                 if auto_fixes:
@@ -216,23 +334,22 @@ class QueryEngine:
         return result
 
     # ──────────────────────────────────────────────────────────
-    #  تطبيق فلاتر (Slicers) على SQL جاهز — بدون AI
+    #  تطبيق فلاتر (Slicers) على SQL جاهز (base_sql) — بدون AI
     # ──────────────────────────────────────────────────────────
 
     def run_with_filters(self, base_sql: str, filters: Optional[list] = None) -> dict:
         """
-        تنفيذ SQL أساسي (تم توليده سابقاً عبر AI مرة واحدة) مع تطبيق
-        قيود فلترة إضافية (Slicers) — بدون أي استدعاء AI جديد.
+        تنفيذ SQL أساسي (تم توليده سابقاً عبر AI مرة واحدة، ومحفوظ
+        كـ base_sql لخلية لوحة معلومات) مع تطبيق فلاتر (Slicers).
 
-        نلف الـ SQL الأصلي كـ subquery ونضيف شروط WHERE على النتيجة
-        النهائية بدل محاولة التلاعب بشرط WHERE الموجود داخل الاستعلام
-        الأصلي (أكثر أماناً وموثوقية، ويعمل حتى لو كان الاستعلام
-        الأصلي يحتوي GROUP BY / JOIN معقدة).
-
-        ملاحظة: الفلتر يُطبَّق على أعمدة الإخراج النهائي لـ base_sql،
-        وليس على الجداول الخام مباشرة. لو كان اسم العمود المطلوب
-        فلترته غير موجود ضمن أعمدة نتيجة الاستعلام الأساسي، يُتجاهل
-        هذا الفلتر بصمت (مع تسجيله في السجل) بدل فشل الاستعلام بالكامل.
+        🆕 بما أن الفلاتر أصبحت views حقيقية تُبنى فوق الجداول الخام
+        لحظة تحميلها (راجع _load_tables)، لم تعد هناك حاجة لتنفيذ
+        الاستعلام مرتين (تجربة أولى بدون فلاتر لمعرفة الأعمدة، ثم لفّ
+        النتيجة كـ subquery وإضافة WHERE على الإخراج النهائي) — فقط
+        ننفّذ base_sql عبر run() مع تمرير الفلاتر، وهي نفسها الدالة
+        التي تضمن أن أي إشارة لاسم الجدول داخل base_sql تصل فعلياً
+        إلى الـ view المفلترة (تعمل حتى مع GROUP BY/JOIN معقدة، لأن
+        الفلترة تحدث قبل التجميع لا بعده).
 
         يرجع نفس بنية run(): {"ok": True, "df": ..., "rows": N}
                               أو {"ok": False, "error": "..."}
@@ -241,61 +358,14 @@ class QueryEngine:
         if not base_sql:
             return {"ok": False, "error": "لا يوجد SQL أساسي محفوظ لهذه الخلية"}
 
-        check = self.validate(base_sql)
-        if not check["ok"]:
-            return check
+        return self.run(base_sql, filters=filters)
 
-        if not filters:
-            return self._execute_once(base_sql)
-
-        # أولاً: ننفذ الاستعلام الأساسي بدون فلاتر لمعرفة أعمدة الإخراج
-        # الفعلية (حتى نتجاهل بأمان أي فلتر على عمود غير موجود في النتيجة)
-        probe = self._execute_once(base_sql)
-        if not probe["ok"]:
-            return probe
-
-        available_cols = set(probe["df"].columns)
-        where_clauses = []
-        skipped_filters = []
-        for f in filters:
-            column = f.get("column")
-            values = f.get("values") or []
-            if not column or not values:
-                continue
-            if column not in available_cols:
-                skipped_filters.append(column)
-                logger.info(
-                    "Filter skipped: column '%s' not present in base query output", column
-                )
-                continue
-            escaped_values = ", ".join(
-                "'" + str(v).replace("'", "''") + "'" for v in values
-            )
-            where_clauses.append(f'"{column}" IN ({escaped_values})')
-
-        if not where_clauses:
-            # لا فلاتر قابلة للتطبيق فعلياً على هذا الإخراج — نرجع النتيجة كما هي
-            if skipped_filters:
-                probe["skipped_filters"] = skipped_filters
-            return probe
-
-        wrapped_sql = (
-            f'SELECT * FROM ({base_sql}) AS __base__ '
-            f'WHERE {" AND ".join(where_clauses)}'
-        )
-        result = self._execute_once(wrapped_sql)
-        if result["ok"]:
-            result["sql"] = wrapped_sql
-            if skipped_filters:
-                result["skipped_filters"] = skipped_filters
-        return result
-
-    def _execute_once(self, sql: str) -> dict:
+    def _execute_once(self, sql: str, filters: Optional[list] = None) -> dict:
         """تنفيذ استعلام واحد فعلياً (بدون منطق التصحيح التلقائي)."""
         conn = None
         try:
             conn   = duckdb.connect()
-            loaded = self._load_tables(conn)
+            loaded = self._load_tables(conn, filters=filters)
 
             if not loaded:
                 return {"ok": False, "error": "لا توجد جداول محملة في المشروع"}
@@ -346,3 +416,4 @@ class QueryEngine:
     def preview_table(self, table_alias: str, limit: int = 5) -> dict:
         """معاينة سريعة لجدول بدون كتابة SQL يدوي."""
         return self.run(f'SELECT * FROM "{table_alias}" LIMIT {limit}')
+

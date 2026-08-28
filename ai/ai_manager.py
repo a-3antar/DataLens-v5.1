@@ -39,6 +39,18 @@ ai/ai_manager.py
 مشكلة انتظار مهلة طويلة (مثلاً 100 ثانية) على استدعاء أول فاشل قبل
 إعادة المحاولة، رغم أن المحاولة الثانية عادة تنجح بسرعة معقولة.
 
+🆕 تطبيق فعلي (وليس نصي فقط) لفلاتر لوحات المعلومات على SQL المولَّد
+من AI:
+--------------------------------------------------------------------
+سابقاً كانت filters تُمرَّر فقط لبناء نص توجيهي داخل الـ prompt يطلب
+من AI أن يضيف WHERE بنفسه (PromptBuilder._build_filters) — بدون أي
+ضمان فعلي أن AI سيلتزم بذلك عند تنفيذ SQL الناتج (self.qe.run(...)
+كانت تُستدعى بدون تمرير filters إطلاقاً). الآن تُمرَّر نفس filters
+أيضاً إلى self.qe.run(last_sql, filters=filters) — والتي (راجع
+core/query_engine.py) تبني view مفلترة حقيقية فوق كل جدول له فلتر
+نشط قبل تنفيذ أي SQL عليه، بغض النظر عمّا كتبه AI. نص الـ prompt يبقى
+كسياق توضيحي مفيد لـ AI فقط، والتطبيق الفعلي مضمون من طبقة البيانات.
+
 توحيد محركات AI:
 -------------------
 "gemini" و"ollama" يبقيان بكلاس منفصل خاص بكل منهما (بروتوكول مختلف).
@@ -175,6 +187,13 @@ class AIManager:
 
         filters: قيود إضافية (من Slicers لوحة معلومات)، بصيغة
                  [{"table": "sales", "column": "المنطقة", "values": [...]}]
+                 تُستخدم في مكانين معاً:
+                 (١) كسياق توضيحي في الـ prompt المُرسَل إلى AI (عبر
+                     PromptBuilder._build_filters) — مفيد لكن غير مُلزم.
+                 (٢) 🆕 تُمرَّر فعلياً إلى self.qe.run() عند تنفيذ الـ
+                     SQL الناتج — وهي الضمانة الحقيقية: QueryEngine
+                     يبني view مفلترة فوق كل جدول له فلتر نشط قبل
+                     التنفيذ، بغض النظر عمّا كتبه AI بالضبط.
 
         يرجع:
         {
@@ -263,7 +282,9 @@ class AIManager:
             last_sql = extract_result["sql"]
             logger.info("SQL extracted (attempt %d): %s...", attempt, last_sql[:60])
 
-            run_result = self.qe.run(last_sql)
+            # 🆕 filters تُمرَّر هنا فعلياً — QueryEngine يبني الـ views
+            # المفلترة قبل تنفيذ last_sql، بغض النظر عن محتواه.
+            run_result = self.qe.run(last_sql, filters=filters)
             if run_result["ok"]:
                 logger.info(
                     "Query succeeded on attempt %d: %d rows",
@@ -328,7 +349,9 @@ class AIManager:
         الفعلية الناتجة، بدل عرضها كجدول/رسم فقط.
 
         المرحلة الأولى (توليد SQL عبر ask()) تستخدم "timeout" العادي
-        كما هو. المرحلة الثانية (توليد نص السرد) تستخدم self.story_timeout
+        كما هو، وتُطبَّق فيها filters فعلياً (راجع ask() أعلاه) — لذا
+        البيانات التي يُبنى عليها السرد نفسه مفلترة مسبقاً بشكل مضمون.
+        المرحلة الثانية (توليد نص السرد) تستخدم self.story_timeout
         المستقل تماماً — يُمرَّر إلى engine.send() عبر timeout_override
         بدل تعديل self.timeout الدائم للمحرك، حتى لا يتأثر أي استدعاء
         آخر (مثل ask() لخلايا أخرى تستخدم نفس instance المحرك).
@@ -350,6 +373,7 @@ class AIManager:
         story_start = time.monotonic()
 
         # المرحلة ١: نحصل على البيانات الفعلية بنفس آلية ask() المعتادة
+        # (بما في ذلك تطبيق filters فعلياً على التنفيذ)
         data_result = self.ask(question, result_type="story", ai_rules=ai_rules, filters=filters)
         if not data_result["ok"]:
             return data_result
@@ -361,7 +385,8 @@ class AIManager:
             return data_result
 
         # المرحلة ٢: نطلب من AI كتابة سرد نصي بناءً على البيانات الفعلية
-        # — بمهلة اتصال مستقلة (story_timeout) عن مرحلة SQL أعلاه.
+        # (المفلترة مسبقاً) — بمهلة اتصال مستقلة (story_timeout) عن
+        # مرحلة SQL أعلاه.
         story_builder = PromptBuilder(schema={}, relations=[], ai_rules=ai_rules)
         story_prompt = story_builder.build_story(question, df, max_rows=STORY_SAMPLE_ROWS_IN_PROMPT)
 
