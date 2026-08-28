@@ -8,7 +8,7 @@ ui/common.py
 
 🆕 الثيمات:
 ------------
-بالإضافة إلى الثيمات الجاهزة (THEME_COLORS)، يدعم التطبيق الآن ثيماً
+بالإضافة إلى الثيمات الجاهزة (THEME_COLORS)، يدعم التطبيق ثيماً
 "مخصصاً" (custom) يختار فيه المستخدم الألوان الخمسة بحرّية كاملة من
 صفحة الإعدادات — تُخزَّن في project settings تحت مفتاح
 "custom_theme_colors" ولا تُستخدم إلا لو settings["theme"] == "custom"
@@ -19,15 +19,32 @@ apply_plotly_theme) تمر عبر _resolve_theme_colors كنقطة مركزية
 واحدة، لذا أي صفحة تستدعيها تستفيد تلقائياً من الثيم المخصص بدون أي
 تعديل إضافي فيها.
 
-كما تُطبَّق ألوان الثيم الآن على عناصر الإدخال (st.text_area/
-st.text_input/st.number_input) وقوائم الاختيار، وعلى لوحة ألوان
-الرسوم البيانية (Plotly colorway) — بدل الاعتماد على ألوان Plotly
-الافتراضية التي لا تمت بصلة لثيم المشروع.
+🆕 تلوين فعلي (وليس فقط شكلي) للرسوم البيانية والـ Gauge:
+--------------------------------------------------------------
+تمرير colorway إلى fig.update_layout() وحده لا يكفي: Plotly Express
+"يخبز" لون كل عنصر (عمود/خط/شريحة) داخل الـ trace نفسه لحظة الإنشاء
+اعتماداً على القالب الافتراضي، ولا يُعاد حساب هذا اللون تلقائياً عند
+تغيير colorway لاحقاً. لذلك apply_plotly_theme() هنا تفرض اللون
+صراحةً على كل trace (bar/line/area/scatter/pie/indicator) بعد
+الإنشاء — وهي الطريقة الوحيدة الفعلية لجعل الرسوم متوافقة بصرياً مع
+الثيم الحالي (بما فيها الثيم المخصص).
+
+🆕 تخصيص جدول Streamlit (st.dataframe):
+-------------------------------------------
+الجدول التفاعلي في Streamlit يُرسم فعلياً على <canvas> عبر مكتبة
+glide-data-grid الداخلية، وليس عناصر HTML عادية — فلا يتأثر بقواعد
+CSS التقليدية (لون خلفية/نص/حدود). المكتبة تقرأ عوضاً عن ذلك مجموعة
+متغيرات CSS مخصصة (--gdg-*) عند كل رسم، فنُعيد تعريف هذه المتغيرات
+هنا لتطابق ألوان الثيم الحالي (رأس الجدول، الخلفية، النص، الحدود).
+ملاحظة: أسماء هذه المتغيرات داخلية وغير موثّقة رسمياً من Streamlit
+وقد تتغيّر بين الإصدارات المستقبلية — هذا أفضل حل عملي متاح حالياً.
 """
 
 import colorsys
+import html as _html
 import shutil
 import tempfile
+import uuid as _uuid_module
 import logging
 from pathlib import Path
 from datetime import datetime, timezone as _dt_timezone
@@ -35,6 +52,7 @@ from contextlib import contextmanager
 from zoneinfo import ZoneInfo
 
 import streamlit as st
+import pandas as pd
 
 from core.project_manager import ProjectManager
 from core.project_db import ProjectDB
@@ -111,24 +129,23 @@ def apply_rtl():
 def apply_theme_css(theme_key_or_settings="ocean_dark"):
     """
     تطبيق ألوان الثيم فعلياً على الواجهة (خلفية، أزرار، عناوين، بطاقات،
-    تبويبات، روابط، جداول، عناصر الإدخال)، بما يشمل جعل خلفية الجداول
-    (st.dataframe) شفافة ومتوافقة مع لون نص الثيم بدل الخلفية البيضاء
-    الافتراضية التي تكسر التناسق البصري في الثيمات الداكنة.
+    تبويبات، روابط، جداول، عناصر الإدخال، أشرطة الأدوات)، بما يشمل
+    جعل خلفية الجداول (st.dataframe) شفافة ومتوافقة مع لون نص الثيم
+    بدل الخلفية البيضاء الافتراضية التي تكسر التناسق البصري في
+    الثيمات الداكنة.
 
     تقبل إما اسم ثيم كنص مباشرة ("ocean_dark") أو dict إعدادات مشروع
     كامل (settings) — نفس مرونة get_chart_theme/apply_plotly_theme،
-    حتى تعمل بغض النظر عن الشكل الذي تُستدعى به في كل صفحة (بعض
-    الصفحات تمرر settings كاملة، وبعضها يمرر settings.get("theme")
-    مباشرة). تمرير settings كاملة هو الشكل الوحيد الذي يسمح بتفعيل
-    الثيم "المخصص" (custom) فعلياً — لأن ألوانه مخزَّنة داخل settings
-    نفسها؛ تمرير اسم الثيم كنص فقط لا يكفي لثيم custom (راجع
-    _resolve_theme_colors أدناه لتفاصيل التعامل مع هذه الحالة).
+    حتى تعمل بغض النظر عن الشكل الذي تُستدعى به في كل صفحة. تمرير
+    settings كاملة هو الشكل الوحيد الذي يسمح بتفعيل الثيم "المخصص"
+    (custom) فعلياً — لأن ألوانه مخزَّنة داخل settings نفسها.
 
     ملاحظة تقنية مهمة: الألوان "الرسمية" لـ Streamlit (primaryColor،
     backgroundColor...) تُقرأ من config.toml مرة واحدة فقط عند إقلاع
     السيرفر، ولا توجد طريقة رسمية لتغييرها ديناميكياً لكل مستخدم أثناء
     التشغيل. الحل العملي هنا: نُطبّق نفس الألوان مباشرة عبر CSS على
-    أهم العناصر المرئية.
+    أهم العناصر المرئية، وعبر متغيرات CSS داخلية لجدول Streamlit
+    التفاعلي (راجع توثيق الوحدة أعلاه).
     """
     colors = _resolve_theme_colors(theme_key_or_settings)
     primary = colors["primary"]
@@ -141,6 +158,27 @@ def apply_theme_css(theme_key_or_settings="ocean_dark"):
     <style>
         .stApp {{
             background-color: {bg} !important;
+            /* ─────────────────────────────────────────────────
+               متغيرات جدول Streamlit الداخلية (glide-data-grid).
+               st.dataframe يُرسم على <canvas> ولا يتأثر بـ CSS
+               التقليدي — لكن المكتبة تقرأ هذه المتغيرات عند كل
+               رسم لتحديد ألوان رأس الجدول، الخلفية، النص، والحدود.
+               ───────────────────────────────────────────────── */
+            --gdg-bg-cell: {card};
+            --gdg-bg-cell-medium: {card};
+            --gdg-bg-header: {primary};
+            --gdg-bg-header-has-focus: {primary};
+            --gdg-bg-header-hovered: {accent};
+            --gdg-text-dark: {text};
+            --gdg-text-light: {text};
+            --gdg-text-medium: {text};
+            --gdg-text-header: #FFFFFF;
+            --gdg-border-color: {accent}66;
+            --gdg-horizontal-border-color: {accent}33;
+            --gdg-accent-color: {accent};
+            --gdg-accent-light: {accent}33;
+            --gdg-bg-bubble: {card};
+            --gdg-bg-bubble-selected: {accent};
         }}
         .stApp, .stApp p, .stApp span, .stApp label, .stApp li, .stMarkdown {{
             color: {text} !important;
@@ -223,11 +261,51 @@ def apply_theme_css(theme_key_or_settings="ocean_dark"):
         }}
 
         /* ─────────────────────────────────────────────────────
+           🆕 إصلاح: عناصر الإدخال المعطّلة (disabled) — مثل صناديق
+           المعاينة — تتجاهل لون النص العادي في بعض المتصفحات لأن
+           الخاصية الداخلية -webkit-text-fill-color على الحقول
+           المعطّلة لها أولوية أعلى من color، فيبقى النص بلون باهت
+           غير مقروء رغم ضبط اللون أعلاه. نفرضها صراحة هنا.
+           ───────────────────────────────────────────────────── */
+        .stTextArea textarea:disabled,
+        .stTextInput input:disabled,
+        .stTextArea textarea[disabled],
+        .stTextInput input[disabled] {{
+            color: {text} !important;
+            -webkit-text-fill-color: {text} !important;
+            opacity: 1 !important;
+        }}
+
+        /* ─────────────────────────────────────────────────────
+           🆕 أزرار القوائم المنبثقة (⁝ خيارات الخلية) وأشرطة أدوات
+           الجداول/الرسوم (تحميل CSV، بحث، ملء الشاشة) — نفس مبدأ
+           الأزرار العادية أعلاه، حتى لا تبقى بألوان Streamlit
+           الافتراضية الرمادية غير المتناسقة مع الثيم.
+           ───────────────────────────────────────────────────── */
+        [data-testid="stPopover"] > button {{
+            background-color: {accent} !important;
+            color: #FFFFFF !important;
+            border: 1px solid {accent} !important;
+        }}
+        [data-testid="stPopover"] > button:hover {{
+            background-color: {primary} !important;
+            border-color: {primary} !important;
+        }}
+        [data-testid="stElementToolbar"] {{
+            background-color: {card}CC !important;
+            border-radius: 6px;
+        }}
+        [data-testid="stElementToolbarButton"] {{
+            color: {text} !important;
+        }}
+        [data-testid="stElementToolbarButton"]:hover {{
+            background-color: {accent}33 !important;
+        }}
+
+        /* ─────────────────────────────────────────────────────
            شفافية الجداول (st.dataframe) داخل خلايا اللوحات
-           والتقارير — الخلفية البيضاء الافتراضية لعنصر الجدول
-           (المبني عبر glide-data-grid) تكسر التناسق مع الثيمات
-           الداكنة. نجعل الحاوية والخلفية شفافة، مع إبقاء حدود
-           خفيفة بلون التمييز حتى يبقى الجدول مقروءاً بصرياً.
+           والتقارير — طبقة احتياطية بالإضافة لمتغيرات --gdg-*
+           أعلاه؛ نُبقي الحاوية شفافة مع حدود خفيفة بلون التمييز.
            ───────────────────────────────────────────────────── */
         [data-testid="stDataFrame"],
         [data-testid="stDataFrame"] > div,
@@ -245,7 +323,7 @@ def apply_theme_css(theme_key_or_settings="ocean_dark"):
         /* ─────────────────────────────────────────────────────
            خلفية شفافة لعناصر Plotly (الرسوم/المقاييس) — طبقة CSS
            احتياطية بالإضافة إلى ضبط paper_bgcolor/plot_bgcolor
-           برمجياً عبر apply_plotly_theme() في كل رسم (الطبقة
+           وألوان كل trace برمجياً عبر apply_plotly_theme() (الطبقة
            الأهم فعلياً، لأن Plotly يرسم داخل SVG/Canvas خاص به).
            ───────────────────────────────────────────────────── */
         [data-testid="stPlotlyChart"] {{
@@ -314,14 +392,25 @@ def _resolve_theme_colors(settings_or_theme) -> dict:
     return THEME_COLORS.get(theme_key, THEME_COLORS["ocean_dark"])
 
 
+def get_theme_colors(settings_or_theme="ocean_dark") -> dict:
+    """
+    واجهة عامة (public) لقراءة ألوان الثيم الخام الخمسة
+    (primary/accent/bg/text/card) — مفيدة لأي كود يحتاج لوناً محدداً
+    مباشرة (مثل تلوين نص Story Telling أو عنصر Gauge يُبنى يدوياً)
+    بدل الاعتماد فقط على get_chart_theme (التي تُرجع قاموساً مخصصاً
+    لـ Plotly Layout فقط ولا يجوز إضافة مفاتيح أخرى له).
+    """
+    return _resolve_theme_colors(settings_or_theme)
+
+
 # ══════════════════════════════════════════════════════════════
 #  توليد لوحة ألوان (colorway) للرسوم البيانية من ألوان الثيم
 # ══════════════════════════════════════════════════════════════
 
 def _hex_to_rgb01(h: str) -> tuple[float, float, float]:
-    h = h.lstrip("#")
+    h = (h or "").lstrip("#")
     if len(h) != 6:
-        h = "2563EB"   # احتياط لو جاء لون غير صالح من إدخال المستخدم
+        h = "2563EB"   # احتياط لو جاء لون غير صالح
     return tuple(int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
 
 
@@ -335,10 +424,11 @@ def _generate_chart_colorway(colors: dict, n: int = 6) -> list[str]:
     بناء لوحة ألوان متناسقة للرسوم البيانية (Plotly) انطلاقاً من لون
     "accent" في الثيم الحالي، عبر تدوير Hue بمقادير متساوية — بدل
     الاعتماد على ألوان Plotly الافتراضية العشوائية التي لا تمت بصلة
-    لثيم المشروع. النتيجة: أول لون في اللوحة يطابق دائماً لون
-    التمييز (accent) نفسه، وبقية الألوان متناسقة معه ومتمايزة بصرياً
-    بما يكفي للتفريق بين السلاسل.
+    لثيم المشروع. أول لون في اللوحة يطابق دائماً لون التمييز (accent)
+    نفسه تقريباً، وبقية الألوان متناسقة معه ومتمايزة بصرياً بما يكفي
+    للتفريق بين السلاسل. n قابلة للتحديد (مثلاً لعدد شرائح Pie).
     """
+    n = max(1, n)
     base_hex = colors.get("accent", "#2563EB")
     r, g, b = _hex_to_rgb01(base_hex)
     h, l, s = colorsys.rgb_to_hls(r, g, b)
@@ -357,16 +447,82 @@ def _generate_chart_colorway(colors: dict, n: int = 6) -> list[str]:
     return palette
 
 
+def _apply_chart_colors(fig, colors: dict) -> None:
+    """
+    🆕 فرض ألوان الثيم صراحةً على كل trace في الرسم، بعد إنشائه.
+
+    السبب: Plotly Express يُحدّد لون كل عمود/خط/شريحة لحظة إنشاء الرسم
+    اعتماداً على القالب الافتراضي (وليس ديناميكياً من layout.colorway
+    لاحقاً) — فتمرير colorway وحده عبر update_layout لا يُغيّر شكل
+    رسم بمصفوفة ألوان مختلفة، خصوصاً في الحالة الشائعة لعمود واحد
+    (trace واحد) حيث يبقى بلون Plotly الأزرق الافتراضي دائماً. هذه
+    الدالة تتجاوز المشكلة بضبط marker/line/fillcolor لكل trace يدوياً.
+
+    تغطي: bar (بما فيها الأعمدة المجمّعة)، line/scatter/area (جميعها
+    من نوع "scatter" داخلياً في Plotly)، pie (لون مستقل لكل شريحة)،
+    وindicator (شريط الـ Gauge نفسه يأخذ لون accent).
+    """
+    base_colorway = _generate_chart_colorway(colors, n=6)
+    accent = colors.get("accent", base_colorway[0])
+    trace_idx = 0
+
+    for trace in fig.data:
+        ttype = getattr(trace, "type", None)
+
+        if ttype == "pie":
+            # ⚠️ إصلاح: trace.labels عبارة عن مصفوفة (numpy array)، لا
+            # قيمة مفردة — استخدام "if trace.labels" مباشرة يرمي
+            # "truth value of an array... is ambiguous" بمجرد وجود أكثر
+            # من عنصر فيها. الفحص الصحيح هو "is not None" ثم len().
+            labels = getattr(trace, "labels", None)
+            n_slices = len(labels) if labels is not None else 6
+            try:
+                trace.marker.colors = _generate_chart_colorway(colors, n=max(n_slices, 1))
+            except Exception as e:
+                logger.debug("pie coloring skipped: %s", e)
+            continue
+
+        if ttype == "indicator":
+            # شريط الـ Gauge نفسه يأخذ لون التمييز (accent) — النصوص
+            # (الرقم/المحور) تُلوَّن بالفعل عبر layout.font في الأعلى.
+            try:
+                trace.gauge.bar.color = accent
+            except Exception as e:
+                logger.debug("gauge coloring skipped: %s", e)
+            continue
+
+        color = base_colorway[trace_idx % len(base_colorway)]
+
+        try:
+            if ttype == "bar":
+                trace.marker.color = color
+            elif ttype == "scatter":
+                mode = trace.mode or "lines"
+                if trace.fill and trace.fill != "none":
+                    trace.fillcolor = color
+                if "lines" in mode or not mode:
+                    trace.line.color = color
+                if "markers" in mode:
+                    trace.marker.color = color
+        except Exception as e:
+            logger.debug("trace coloring skipped (type=%s): %s", ttype, e)
+
+        trace_idx += 1
+
+
 def get_chart_theme(settings_or_theme="ocean_dark") -> dict:
     """
     إرجاع إعدادات ثيم جاهزة للتطبيق مباشرة على أي Plotly figure عبر
     fig.update_layout(**get_chart_theme(settings)) — تجعل خلفية الرسم
-    شفافة تماماً (تتناسب مع أي خلفية خلفها)، لون النص متوافقاً مع لون
-    نص الثيم الحالي، ولوحة ألوان السلاسل (colorway) مبنية من لون
-    التمييز (accent) في نفس الثيم بدل ألوان Plotly الافتراضية — بما
-    يضمن أن شكل كل الرسوم (Bar/Line/Pie/Scatter...) متناسق بصرياً مع
-    باقي عناصر الواجهة (الأزرار، العناوين...) في أي ثيم، بما فيها
-    الثيم المخصص.
+    شفافة تماماً، لون النص متوافقاً مع لون نص الثيم، ولوحة ألوان
+    السلاسل (colorway) مبنية من لون التمييز (accent) في نفس الثيم.
+
+    ⚠️ ملاحظة: هذا القاموس يُدمَج مباشرة كـ **kwargs في
+    fig.update_layout() في أكثر من مكان بالمشروع — لذا يجب أن يحتوي
+    فقط على مفاتيح Plotly Layout الصالحة (paper_bgcolor, plot_bgcolor,
+    font_color, colorway, legend...). أي مفتاح إضافي غير معروف
+    لـ Plotly سيرمي استثناءً. لقراءة الألوان الخام (accent/text/...)
+    مباشرة، استخدم get_theme_colors() بدل هذه الدالة.
 
     يقبل إما dict إعدادات المشروع كاملاً أو اسم ثيم كنص مباشرة.
     """
@@ -382,9 +538,10 @@ def get_chart_theme(settings_or_theme="ocean_dark") -> dict:
 
 def apply_plotly_theme(fig, settings_or_theme="ocean_dark"):
     """
-    تطبيق ثيم شفاف متوافق مع لون نص الثيم الحالي ولوحة ألوان الثيم
-    (بما فيها الثيم المخصص) مباشرة على كائن Plotly figure، وإرجاعه
-    (لتسلسل الاستدعاءات إن رغبت).
+    تطبيق ثيم شفاف متوافق مع لون نص الثيم الحالي مباشرة على كائن
+    Plotly figure، بما يشمل فرض ألوان الثيم فعلياً على كل عناصر
+    الرسم (أعمدة/خطوط/مساحات/شرائح/شريط Gauge) — وليس فقط الخلفية
+    والنص — ثم إرجاعه (لتسلسل الاستدعاءات إن رغبت).
 
     الاستخدام:
         fig = px.bar(df, x="x", y="y")
@@ -392,12 +549,106 @@ def apply_plotly_theme(fig, settings_or_theme="ocean_dark"):
         st.plotly_chart(fig, width='stretch')
 
     يقبل إما dict إعدادات المشروع كاملاً (settings) أو اسم ثيم كنص
-    مباشرة (مثل "ocean_dark") — نفس مرونة get_chart_theme أعلاه، وهما
-    في جوهرهما نفس المنطق: get_chart_theme تُرجع dict للدمج اليدوي،
-    وapply_plotly_theme تطبّقه مباشرة على fig كاختصار.
+    مباشرة (مثل "ocean_dark") — نفس مرونة get_chart_theme أعلاه.
     """
-    fig.update_layout(**get_chart_theme(settings_or_theme))
+    colors = _resolve_theme_colors(settings_or_theme)
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font_color=colors["text"],
+        colorway=_generate_chart_colorway(colors),
+        legend={"font": {"color": colors["text"]}},
+    )
+    _apply_chart_colors(fig, colors)
     return fig
+
+
+# ══════════════════════════════════════════════════════════════
+#  🆕 جدول HTML مُنسَّق يدوياً — بديل مضمون التلوين عن st.dataframe
+# ══════════════════════════════════════════════════════════════
+#
+# st.dataframe التفاعلي في Streamlit يُرسم فعلياً على <canvas> عبر
+# مكتبة glide-data-grid الداخلية، وليس عناصر HTML عادية. رغم تعريف
+# متغيرات CSS (--gdg-*) في apply_theme_css أعلاه كمحاولة أولى، تبيّن
+# عملياً أن الجدول التفاعلي لا يلتزم بها بشكل موثوق ويبقى بالألوان
+# الافتراضية البيضاء بغض النظر عن الثيم. الحل الموثوق 100% هو بناء
+# جدول HTML يدوياً بألوان الثيم مباشرة كنص Markdown — على حساب فقدان
+# ميزات التفاعل (الفرز، تغيير حجم الأعمدة، تحميل CSV من الجدول نفسه)
+# التي تبقى متاحة فقط في st.dataframe (المُستخدَم في صفحات إدارة
+# البيانات مثل ui/data.py وui/files.py التي لم تُعدَّل هنا).
+
+def render_themed_table(df, settings_or_theme="ocean_dark", max_rows: int = None, key: str = None) -> None:
+    """
+    عرض DataFrame كجدول HTML ملوَّن فعلياً بألوان الثيم الحالي (رأس
+    بلون primary ونص أبيض، خلفية الخلايا بلون card، حدود بلون accent،
+    ولون نص الخلايا من الثيم) — يُستخدم بدل st.dataframe في أي مكان
+    يظهر فيه الجدول كنتيجة عرض نهائية (خلايا اللوحات، نتائج المحادثة،
+    بلوكات التقارير) حيث التلوين الصحيح أهم من التفاعل الكامل.
+
+    key: معرّف فريد اختياري لتفادي تصادم أسماء أصناف CSS لو ظهر أكثر
+         من جدول مُنسَّق في نفس الصفحة (وإلا يُولَّد تلقائياً).
+    """
+    colors = _resolve_theme_colors(settings_or_theme)
+    show_df = df.head(max_rows) if (max_rows and df is not None) else df
+
+    if show_df is None or show_df.empty:
+        st.caption("لا توجد بيانات")
+        return
+
+    cls = f"themed-tbl-{key or _uuid_module.uuid4().hex[:8]}"
+
+    header_cells = "".join(f"<th>{_html.escape(str(c))}</th>" for c in show_df.columns)
+    body_rows = []
+    for _, row in show_df.iterrows():
+        cells = "".join(
+            f"<td>{_html.escape('' if pd.isna(row[c]) else str(row[c]))}</td>"
+            for c in show_df.columns
+        )
+        body_rows.append(f"<tr>{cells}</tr>")
+
+    st.markdown(
+        f"""
+        <style>
+        .{cls}-wrap {{
+            overflow-x: auto;
+            border: 1px solid {colors['accent']}40;
+            border-radius: 6px;
+        }}
+        .{cls} {{
+            width: 100%;
+            border-collapse: collapse;
+            direction: rtl;
+            text-align: right;
+            font-size: 0.9rem;
+        }}
+        .{cls} thead tr {{ background-color: {colors['primary']}; }}
+        .{cls} th {{
+            color: #FFFFFF;
+            padding: 8px 12px;
+            text-align: center;
+            border: 1px solid {colors['accent']}55;
+            white-space: nowrap;
+        }}
+        .{cls} td {{
+            color: {colors['text']};
+            background-color: {colors['card']};
+            padding: 6px 12px;
+            text-align: center;
+            border: 1px solid {colors['accent']}33;
+        }}
+        .{cls} tbody tr:nth-child(even) td {{
+            background-color: {colors['bg']};
+        }}
+        </style>
+        <div class="{cls}-wrap">
+        <table class="{cls}">
+            <thead><tr>{header_cells}</tr></thead>
+            <tbody>{''.join(body_rows)}</tbody>
+        </table>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def require_login():
