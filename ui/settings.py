@@ -23,19 +23,26 @@ ai.engine_registry + OpenAICompatibleEngine — لا حاجة لأي كود إض
 
 🆕 الثيم المخصص (custom):
 ----------------------------
-بالإضافة إلى الثيمات الجاهزة، يمكن للمستخدم الآن اختيار "🎨 مخصص"
-وتحديد الألوان الخمسة بحرّية كاملة عبر color_picker (أساسي، تمييز،
-خلفية، نص، بطاقة) — تُحفظ في project settings تحت مفتاح
-"custom_theme_colors" وتُستخدم تلقائياً في كل الصفحات (الجداول،
-الرسوم البيانية، عناصر الإدخال...) بمجرد اختيار "مخصص" كثيم نشط،
-عبر ui.common._resolve_theme_colors التي تقرأ هذا المفتاح مباشرة.
+بالإضافة إلى الثيمات الجاهزة، يمكن للمستخدم اختيار "🎨 مخصص" وتحديد
+الألوان الخمسة بحرّية كاملة عبر color_picker (أساسي، تمييز، خلفية،
+نص، بطاقة) — تُحفظ في project settings تحت مفتاح "custom_theme_colors"
+وتُستخدم تلقائياً في كل صفحات المشروع (الجداول، الرسوم البيانية،
+عناصر الإدخال، Story Telling...) بمجرد اختيار "مخصص" كثيم نشط.
+
+🆕 بذر الألوان تلقائياً من آخر ثيم نشط:
+--------------------------------------------
+عند فتح تبويب "🎨 مخصص" لأول مرة (أو عند التبديل إليه من ثيم جاهز لم
+يُخصَّص بعد)، تُملأ منتقيات الألوان تلقائياً بنفس ألوان الثيم الذي
+كان نشطاً قبل ذلك مباشرة (مثلاً Ocean Dark)، بدل البدء من قيم افتراضية
+غير ذات صلة — بحيث يبدأ المستخدم من مظهر مألوف ويُعدّل عليه بدل
+البدء من الصفر. راجع _seed_custom_color_pickers أدناه للتفاصيل.
 """
 
 import streamlit as st
 
 from ui.common import (
     apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
-    THEME_COLORS, get_chart_theme,
+    THEME_COLORS, get_chart_theme, apply_plotly_theme,
 )
 from ai.ai_manager import get_engine
 from core.auth import AuthManager
@@ -216,6 +223,8 @@ _COLOR_FIELDS = [
     ("card", "لون البطاقات والشريط الجانبي"),
 ]
 
+_SEED_MARKER_KEY = "_custom_theme_seed_signature"
+
 
 def _render_theme_tab(db, settings: dict):
     current_theme = settings.get("theme", "ocean_dark")
@@ -252,25 +261,65 @@ def _render_preset_theme_preview(db, theme_key: str):
         st.rerun()
 
 
+def _seed_custom_color_pickers(settings: dict) -> None:
+    """
+    🆕 بذر منتقيات الألوان الخمسة تلقائياً بألوان الثيم الذي كان نشطاً
+    قبل التبديل إلى "مخصص" — بدل تركها بقيم افتراضية غير ذات صلة.
+
+    القاعدة:
+    - لو الثيم النشط حالياً هو "custom" فعلاً (المستخدم خصّصه سابقاً
+      وحفظه) → نبدأ من custom_theme_colors المحفوظة كما هي.
+    - غير ذلك (الثيم النشط حالياً ثيم جاهز، مثل ocean_dark) → نبدأ من
+      ألوان ذلك الثيم الجاهز نفسه، حتى يبدأ المستخدم من مظهر مألوف
+      يُعدّل عليه بدل البدء من الصفر.
+
+    التنفيذ يعتمد على "توقيع" (signature) نخزّنه في session_state:
+    بما أن مفاتيح الـ widgets ثابتة (custom_theme_primary...)،
+    Streamlit تتجاهل معامل value بمجرد وجود قيمة سابقة في
+    session_state لنفس المفتاح — لذا نفرض القيمة الجديدة يدوياً في
+    session_state فقط عند اكتشاف تغيّر فعلي في مصدر البذر (لا نكرر
+    الفرض في كل تكرار سكربت، وإلا سيمحو أي تعديل يدوي يجريه المستخدم
+    على الألوان).
+    """
+    current_theme = settings.get("theme", "ocean_dark")
+    saved_custom = settings.get("custom_theme_colors")
+
+    if current_theme == "custom" and saved_custom:
+        base_colors = {
+            key: saved_custom.get(key) or DEFAULT_SETTINGS["custom_theme_colors"][key]
+            for key, _label in _COLOR_FIELDS
+        }
+    else:
+        base_key = current_theme if current_theme in THEME_COLORS else "ocean_dark"
+        base_colors = dict(THEME_COLORS[base_key])
+
+    signature = (current_theme, tuple(base_colors.get(k, "") for k, _ in _COLOR_FIELDS))
+    if st.session_state.get(_SEED_MARKER_KEY) != signature:
+        for key, _label in _COLOR_FIELDS:
+            st.session_state[f"custom_theme_{key}"] = base_colors[key]
+        st.session_state[_SEED_MARKER_KEY] = signature
+
+
 def _render_custom_theme_editor(db, settings: dict):
     """محرر الثيم المخصص — المستخدم يختار كل الألوان الخمسة بحرّية."""
     st.caption(
         "اختر الألوان الخمسة بحرّية كاملة. تُطبَّق فوراً على كل عناصر "
-        "الواجهة (العناوين، الأزرار، الجداول، عناصر الإدخال) وعلى لوحة "
-        "ألوان الرسوم البيانية ونص التحليل (Story Telling) في كل صفحات "
-        "المشروع بمجرد الحفظ."
+        "الواجهة (العناوين، الأزرار، الجداول، عناصر الإدخال)، على لوحة "
+        "ألوان الرسوم البيانية والـ Gauge، وعلى نص التحليل "
+        "(Story Telling) في كل صفحات المشروع بمجرد الحفظ."
     )
 
-    saved_custom = settings.get("custom_theme_colors") or DEFAULT_SETTINGS["custom_theme_colors"]
+    # 🆕 بذر تلقائي من آخر ثيم نشط (أو من الثيم المخصص المحفوظ سابقاً)
+    _seed_custom_color_pickers(settings)
 
     cols = st.columns(5)
     picked = {}
     for (key, label), col in zip(_COLOR_FIELDS, cols):
         with col:
-            picked[key] = st.color_picker(
-                label, value=saved_custom.get(key, DEFAULT_SETTINGS["custom_theme_colors"][key]),
-                key=f"custom_theme_{key}",
-            )
+            # لا نمرر value= هنا عمداً — القيمة الابتدائية تأتي فقط من
+            # session_state التي بذرناها في _seed_custom_color_pickers،
+            # حتى لا تتضارب مع تعديلات المستخدم اللاحقة على كل تكرار.
+            picked[key] = st.color_picker(label, key=f"custom_theme_{key}")
 
     # معاينة حية بالألوان المختارة الآن (حتى قبل الضغط على "حفظ")
     preview_settings = {"theme": "custom", "custom_theme_colors": picked}
@@ -288,22 +337,27 @@ def _render_custom_theme_editor(db, settings: dict):
             st.success("تم حفظ الثيم المخصص وتطبيقه على كل صفحات التطبيق فوراً")
             st.rerun()
     with c2:
-        if st.button("↺ إعادة تعيين للافتراضي (Ocean Dark)", width='stretch'):
-            db.save_settings({
-                "custom_theme_colors": dict(DEFAULT_SETTINGS["custom_theme_colors"]),
-            })
+        if st.button("↺ إعادة تعيين لثيم Ocean Dark", width='stretch'):
+            reset_colors = dict(THEME_COLORS["ocean_dark"])
+            for key, _label in _COLOR_FIELDS:
+                st.session_state[f"custom_theme_{key}"] = reset_colors[key]
+            # توقيع فريد يمنع _seed_custom_color_pickers من الكتابة
+            # فوقه مباشرة في التكرار التالي للسكربت
+            st.session_state[_SEED_MARKER_KEY] = ("__manual_reset__", tuple(reset_colors.items()))
             st.rerun()
 
 
 def _render_theme_preview_sample(preview_settings: dict):
     """
-    عيّنة معاينة مصغّرة تشمل: نص عادي، جدول، رسم بياني، ومربع نص
-    (textarea) — حتى يرى المستخدم فوراً أثر الثيم على كل هذه العناصر
-    معاً (بما فيها الرسم البياني الذي يتبع لوحة ألوان الثيم تلقائياً)
-    قبل حفظ أي تعديل.
+    عيّنة معاينة مصغّرة تشمل: نص عادي، جدول، رسم بياني، مقياس (Gauge)،
+    ومربع نص (textarea) — حتى يرى المستخدم فوراً أثر الثيم على كل هذه
+    العناصر معاً (الرسم البياني والـ Gauge يتبعان لوحة ألوان الثيم
+    فعلياً عبر apply_plotly_theme، تماماً كما يظهران في صفحات
+    المحادثة ولوحات المعلومات) قبل حفظ أي تعديل.
     """
     import pandas as pd
     import plotly.express as px
+    import plotly.graph_objects as go
 
     sample_df = pd.DataFrame({
         "الفئة": ["أ", "ب", "ج", "د"],
@@ -315,10 +369,19 @@ def _render_theme_preview_sample(preview_settings: dict):
         st.text_area(
             "مثال مربع نص (Story Telling / أسئلة)",
             value="هذا نص تجريبي لمعاينة لون الكتابة داخل مربعات النص.",
-            height=90, key="_theme_preview_textarea", disabled=True,
+            height=90, key="_theme_preview_textarea",
         )
         st.dataframe(sample_df, width='stretch', hide_index=True)
     with p2:
         fig = px.bar(sample_df, x="الفئة", y="القيمة", text_auto=True)
-        fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=260, **get_chart_theme(preview_settings))
+        fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=180)
+        apply_plotly_theme(fig, preview_settings)
         st.plotly_chart(fig, width='stretch', key="_theme_preview_chart")
+
+        gauge_fig = go.Figure(go.Indicator(
+            mode="gauge+number", value=68,
+            gauge={"axis": {"range": [0, 100]}},
+        ))
+        gauge_fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=180)
+        apply_plotly_theme(gauge_fig, preview_settings)
+        st.plotly_chart(gauge_fig, width='stretch', key="_theme_preview_gauge")
