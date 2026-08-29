@@ -58,6 +58,13 @@ core/query_engine.py) تبني view مفلترة حقيقية فوق كل جدو
 OpenAI API) يُبنى ديناميكياً عبر ai.engine_registry +
 ai.openai_compatible_engine.OpenAICompatibleEngine — إضافة محرك جديد
 تتم بسطر واحد في ai/engine_registry.py فقط، دون أي تعديل هنا.
+
+🆕 build_ai_manager():
+------------------------
+دالة مساعدة واحدة تبني AIManager جاهزاً مباشرة من إعدادات مشروع
+(project.db)، بدل تكرار نفس منطق "قراءة settings → get_engine →
+AIManager(...)" في أكثر من مكان (كان مكرراً بين ui/dashboards.py
+و core/dashboard_cells/base.py). راجع نهاية هذا الملف.
 """
 
 import time
@@ -435,3 +442,38 @@ class AIManager:
 
         data_result["story"] = story_text
         return data_result
+
+
+# ══════════════════════════════════════════════════════════════
+#  🆕 بناء AIManager جاهز من إعدادات مشروع مباشرة
+# ══════════════════════════════════════════════════════════════
+
+def build_ai_manager(db: ProjectDB):
+    """
+    بناء AIManager جاهز من إعدادات مشروع (project.db) مباشرة — نقطة
+    مشتركة واحدة يستخدمها كل من ui/dashboards.py (معرض اللوحات،
+    الإنشاء التلقائي بالذكاء الاصطناعي) وcore/dashboard_cells/base.py
+    (زر "اختبار" داخل محرر الخلية)، بدل تكرار نفس منطق قراءة
+    الإعدادات وبناء المحرك في أكثر من مكان.
+
+    يرجع: (ai_manager: AIManager, settings: dict)
+    """
+    settings = db.get_settings()
+    engine_name = settings.get("ai_engine", "gemini")
+    engine = get_engine(
+        engine_name=engine_name,
+        api_key=settings.get(f"api_key_{engine_name}", ""),
+        model=settings.get("model", ""),
+        timeout=settings.get("timeout", 30),
+        ollama_url=settings.get("ollama_url", "http://localhost:11434"),
+    )
+    ai = AIManager(
+        db, engine,
+        temperature=settings.get("temperature", 0.1),
+        max_tries=settings.get("max_tries", 3),
+        retry_delay=settings.get("retry_delay", 10),
+        max_total_wait_seconds=settings.get("max_total_wait_seconds", 0),
+        story_max_total_wait_seconds=settings.get("story_max_total_wait_seconds", 0),
+        story_timeout=settings.get("story_timeout", 45),
+    )
+    return ai, settings
