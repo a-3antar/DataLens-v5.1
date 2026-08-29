@@ -5,8 +5,18 @@ core/dashboard_manager.py
 البيانات" (متوازٍ عبر Threads)، وبناء خطة لوحة كاملة تلقائياً بالذكاء
 الاصطناعي.
 
-سياسة استدعاء AI:
---------------------
+🆕 إعادة هيكلة (خلايا OOP):
+------------------------------
+منطق كل نوع خلية (تنفيذ AI/fast-update، تحويل النتيجة لشكل قابل
+للتخزين) انتقل بالكامل إلى core/dashboard_cells/*.py — كل خلية الآن
+كائن (TableCell/ChartCell/GaugeCell/KpiCell/StoryCell) يُبنى عبر
+core.dashboard_cells.create_cell() من الصف الخام في project_db، ويعرف
+بنفسه كيف يُنفَّذ (execute) وكيف يُخزَّن (to_stored_dict). هذا الملف
+لم يعد يحتوي أي فرع "if display_type == ..." — فقط يستدعي الدوال
+المتعارف عليها على أي كائن خلية بغض النظر عن نوعه الفعلي.
+
+سياسة استدعاء AI (تبقى كما كانت، الآن داخل كل كلاس خلية):
+--------------------------------------------------------------
 - خلية عادية (table/chart/gauge/kpi) ولها base_sql محفوظ مسبقاً:
   يُعاد تطبيق الفلاتر الحالية على نفس الـ SQL في طبقة بايثون/DuckDB
   مباشرة — بدون أي استدعاء AI جديد (أسرع وأرخص وأكثر ثباتاً).
@@ -15,8 +25,8 @@ core/dashboard_manager.py
 - خلية Story Telling: يُستدعى AI دائماً (لأن السرد نص جديد يُبنى فعلياً
   على البيانات الحالية بعد الفلترة — وهذا تحليل، وليس مجرد استعلام).
 
-سياسة التوازي (Threads):
-----------------------------
+سياسة التوازي (Threads) — بدون أي تغيير:
+----------------------------------------------
 - خلايا Story Telling: تُنفَّذ دائماً عبر thread pool منفصل (متوازية
   فيما بينها) بغض النظر عن المحرك — لأنها الأبطأ (استدعاءين متتاليين
   لكل خلية: توليد SQL ثم توليد السرد).
@@ -35,16 +45,13 @@ refresh_dashboard() أو refresh_single_cell() (المرتبطين بأزرار 
 
 import json
 import logging
-import datetime as _dt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, Callable
-
-import pandas as pd
-import numpy as np
 
 from core.project_db import ProjectDB
 from core.query_engine import QueryEngine
 from core.dashboard_templates import DASHBOARD_TEMPLATES
+from core.dashboard_cells import create_cell
 from ai.ai_manager import AIManager
 from config import DASHBOARD_GAUGE_COUNT
 
@@ -102,36 +109,21 @@ class DashboardManager:
     #  تنفيذ خلية واحدة (تُستدعى داخل thread — لا تكتب في DB)
     # ──────────────────────────────────────────────────────────
 
-    def _process_cell(self, cell: dict, filters: list, ai_rules: Optional[str]) -> dict:
+    def _process_cell(self, cell_obj, filters: list, ai_rules: Optional[str]) -> dict:
         """
-        تنفيذ منطق خلية واحدة فعلياً (AI أو fast-update حسب الحالة).
+        تنفيذ خلية واحدة فعلياً عبر cell_obj.execute() — بغض النظر عن
+        نوعها (كل كلاس خلية يعرف منطقه الخاص، راجع core/dashboard_cells).
         لا يكتب أي شيء في project.db — فقط يُرجع النتيجة الخام، حتى
         يمكن استدعاؤه بأمان من داخل thread منفصل. الكتابة الفعلية
         تحدث لاحقاً تسلسلياً بعد تجميع كل نتائج الـ threads.
         """
-        position = cell["position"]
-        display_type = cell.get("display_type") or "table"
-        question = cell["question"]
-        base_sql = cell.get("base_sql")
-        used_ai = False
-
         try:
-            if display_type == "story":
-                r = self.ai.tell_story(question, ai_rules=ai_rules, filters=filters)
-                used_ai = True
-            elif base_sql:
-                r = self._run_fast(base_sql, filters)
-            else:
-                r = self.ai.ask(question, result_type=display_type, ai_rules=ai_rules, filters=filters)
-                used_ai = True
+            r = cell_obj.execute(self.ai, self.qe, filters, ai_rules)
         except Exception as e:
-            logger.error("Dashboard cell %d execution error: %s", position, e)
-            r = {"ok": False, "error": str(e)}
+            logger.error("Dashboard cell %d execution error: %s", cell_obj.position, e)
+            r = {"ok": False, "error": str(e), "used_ai": False}
 
-        return {
-            "cell": cell, "position": position, "display_type": display_type,
-            "result": r, "used_ai": used_ai,
-        }
+        return {"cell_obj": cell_obj, "position": cell_obj.position, "result": r}
 
     # ──────────────────────────────────────────────────────────
     #  تحديث البيانات (كل خلايا اللوحة) — متوازٍ عبر Threads
@@ -163,14 +155,16 @@ class DashboardManager:
         يرجع: {"ok": True, "results": {position: {...}}, "errors": N,
                "total": N, "ai_calls": N, "fast_updates": N}
         """
-        cells = self.db.get_dashboard_cells(dashboard_id)
-        configured = [c for c in cells if c.get("question")]
+        rows = self.db.get_dashboard_cells(dashboard_id)
+        configured_rows = [r for r in rows if r.get("question")]
 
-        if not configured:
+        if not configured_rows:
             return {"ok": False, "error": "لا توجد خلايا مُهيَّأة في هذه اللوحة بعد"}
 
+        cell_objs = [create_cell(r) for r in configured_rows]
+
         filters = self._build_active_filters(dashboard_id)
-        total = len(configured)
+        total = len(cell_objs)
         done_count = [0]
 
         def track_progress():
@@ -184,9 +178,8 @@ class DashboardManager:
                 except Exception as e:
                     logger.warning("on_progress callback failed: %s", e)
 
-        story_cells = [c for c in configured if (c.get("display_type") or "table") == "story"]
-        story_positions = {c["position"] for c in story_cells}
-        other_cells = [c for c in configured if c["position"] not in story_positions]
+        story_cells = [c for c in cell_objs if c.display_type == "story"]
+        other_cells = [c for c in cell_objs if c.display_type != "story"]
 
         all_outcomes = []
 
@@ -194,7 +187,7 @@ class DashboardManager:
         # ملاحظة: _process_cell لا يستدعي أي دالة st.* — فقط منطق بيانات
         # بحت (AI/DuckDB)، لذا تشغيله داخل thread آمن تماماً. التحديث
         # البصري (track_progress) يحدث فقط بعد استلام النتيجة في الـ
-        # main thread عبر as_completed، وليس من داخل الـ thread نفسه.
+        # main thread عبر as_completed، وليس من داخل الـ thread نفسها.
         if story_cells:
             workers = min(max_workers, max(1, len(story_cells)))
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="story") as ex:
@@ -225,26 +218,24 @@ class DashboardManager:
         fast_updates = 0
 
         for outcome in all_outcomes:
+            cell_obj = outcome["cell_obj"]
             position = outcome["position"]
-            display_type = outcome["display_type"]
-            cell = outcome["cell"]
             r = outcome["result"]
-            used_ai = outcome["used_ai"]
 
-            if used_ai:
+            if r.get("used_ai"):
                 ai_calls += 1
             else:
                 fast_updates += 1
 
             if r.get("ok"):
-                stored = self._serialize_result(display_type, r, cell.get("chart_type"))
+                stored = cell_obj.to_stored_dict(r)
                 self.db.save_dashboard_cell_result(
                     dashboard_id, position, stored, r.get("sql"), None
                 )
                 # لو كانت هذه أول مرة تُنتج SQL ناجح لهذه الخلية (بدون
                 # base_sql محفوظ مسبقاً)، نحفظه الآن ليُستخدم في
                 # التحديثات السريعة القادمة بدون AI
-                if display_type != "story" and not cell.get("base_sql") and r.get("sql"):
+                if cell_obj.display_type != "story" and not cell_obj.base_sql and r.get("sql"):
                     self.db.save_dashboard_cell_base_sql(dashboard_id, position, r["sql"])
                 results[position] = stored
             else:
@@ -277,21 +268,21 @@ class DashboardManager:
         يرجع: {"ok": True/False, "used_ai": True/False, "result": {...}}
                أو {"ok": False, "used_ai": ..., "error": "..."}
         """
-        cells = {c["position"]: c for c in self.db.get_dashboard_cells(dashboard_id)}
-        cell = cells.get(position)
-        if not cell or not cell.get("question"):
+        rows = {r["position"]: r for r in self.db.get_dashboard_cells(dashboard_id)}
+        row = rows.get(position)
+        if not row or not row.get("question"):
             return {"ok": False, "error": "الخلية غير مُهيَّأة"}
 
+        cell_obj = create_cell(row)
         filters = self._build_active_filters(dashboard_id)
-        outcome = self._process_cell(cell, filters, ai_rules)
-        display_type = outcome["display_type"]
+        outcome = self._process_cell(cell_obj, filters, ai_rules)
         r = outcome["result"]
-        used_ai = outcome["used_ai"]
+        used_ai = bool(r.get("used_ai"))
 
         if r.get("ok"):
-            stored = self._serialize_result(display_type, r, cell.get("chart_type"))
+            stored = cell_obj.to_stored_dict(r)
             self.db.save_dashboard_cell_result(dashboard_id, position, stored, r.get("sql"), None)
-            if display_type != "story" and not cell.get("base_sql") and r.get("sql"):
+            if cell_obj.display_type != "story" and not cell_obj.base_sql and r.get("sql"):
                 self.db.save_dashboard_cell_base_sql(dashboard_id, position, r["sql"])
             self.db.touch_dashboard(dashboard_id)
             return {"ok": True, "used_ai": used_ai, "result": stored}
@@ -302,19 +293,6 @@ class DashboardManager:
     # ──────────────────────────────────────────────────────────
     #  دوال داخلية
     # ──────────────────────────────────────────────────────────
-
-    def _run_fast(self, base_sql: str, filters: list) -> dict:
-        """تنفيذ base_sql مع الفلاتر عبر QueryEngine مباشرة (بدون AI)."""
-        result = self.qe.run_with_filters(base_sql, filters)
-        if not result["ok"]:
-            return {"ok": False, "error": result["error"], "sql": base_sql}
-        return {
-            "ok": True,
-            "sql": result.get("sql", base_sql),
-            "df": result["df"],
-            "rows": result["rows"],
-            "tries": 0,
-        }
 
     def _build_active_filters(self, dashboard_id: str) -> list:
         """يحوّل Slicers المُفعَّلة فعلياً (لها جدول+عمود+قيم) إلى صيغة الفلاتر."""
@@ -328,58 +306,6 @@ class DashboardManager:
                     "values": s["selected_values"],
                 })
         return filters
-
-    @staticmethod
-    def _json_safe(value):
-        """
-        تحويل قيمة واحدة إلى نوع قابل للتسلسل عبر json.dumps مباشرة.
-
-        السبب: نتائج DuckDB/pandas قد تحتوي أنواعاً مثل pandas.Timestamp
-        (أعمدة التاريخ)، numpy.int64/float64/bool_، أو NaT/NaN — لا شيء
-        منها قابل للتسلسل بـ json افتراضياً، وهذا كان يُسبب خطأ
-        "Object of type Timestamp is not JSON serializable" عند حفظ
-        نتيجة خلية تحتوي عمود تاريخ (شائع في اللوحات المُنشأة تلقائياً
-        بالذكاء الاصطناعي، حيث الأسئلة كثيراً ما تتضمن تجميعاً زمنياً).
-        """
-        if value is None:
-            return None
-        if isinstance(value, (pd.Timestamp, _dt.datetime, _dt.date)):
-            return value.isoformat()
-        if isinstance(value, pd.Timedelta):
-            return str(value)
-        if isinstance(value, (np.integer,)):
-            return int(value)
-        if isinstance(value, (np.floating,)):
-            f = float(value)
-            return None if pd.isna(f) else f
-        if isinstance(value, (np.bool_,)):
-            return bool(value)
-        if isinstance(value, float) and pd.isna(value):
-            return None
-        if value is pd.NaT:
-            return None
-        return value
-
-    def _sanitize_rows(self, rows: list) -> list:
-        """تطبيق _json_safe على كل قيمة في كل صف من صفوف النتيجة."""
-        return [
-            {k: self._json_safe(v) for k, v in row.items()}
-            for row in rows
-        ]
-
-    def _serialize_result(self, display_type: str, r: dict, chart_type: Optional[str]) -> dict:
-        """تحويل نتيجة ai.ask()/tell_story()/_run_fast() إلى شكل قابل للتخزين كـ JSON."""
-        df: pd.DataFrame = r.get("df")
-        raw_rows = df.to_dict(orient="records") if df is not None else []
-        stored = {
-            "columns": list(df.columns) if df is not None else [],
-            "rows": self._sanitize_rows(raw_rows),
-        }
-        if display_type == "chart":
-            stored["chart_type"] = chart_type or "bar"
-        if display_type == "story":
-            stored["story"] = r.get("story", "")
-        return stored
 
     # ──────────────────────────────────────────────────────────
     #  🆕 بناء خطة لوحة كاملة تلقائياً بالذكاء الاصطناعي

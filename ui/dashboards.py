@@ -9,17 +9,22 @@ ui/dashboards.py
 
 مفتاح API يُقرأ من إعدادات المشروع (project.db) كما كان دائماً.
 
-🆕 التصميم البصري:
----------------------
-- خلفية الرسوم البيانية (Plotly) والمقاييس (Gauge) شفافة تماماً، وألوان
-  الأعمدة/الخطوط/الشرائح/شريط الـ Gauge نفسها تُفرض فعلياً من ألوان
-  الثيم الحالي عبر ui.common.apply_plotly_theme() — وليس فقط الخلفية
-  والنص كما كان سابقاً (راجع توثيق تلك الدالة في ui/common.py).
-- خلفية الجداول (st.dataframe) ورأسها تتبعان الثيم عبر متغيرات CSS
-  الداخلية لجدول Streamlit (--gdg-*)، المُعرَّفة مركزياً في
-  ui.common.apply_theme_css.
-- النص داخل خلايا Story Telling يأخذ لون نص الثيم الحالي صراحةً عبر
-  ui.common.get_theme_colors() بدل الاعتماد فقط على وراثة CSS العامة.
+🆕 إعادة هيكلة (خلايا OOP):
+------------------------------
+منطق عرض/تحرير كل نوع خلية (جدول/رسم/مقياس/KPI/سرد) انتقل بالكامل
+إلى core/dashboard_cells/*.py — كل خلية تُبنى كائناً واحداً عبر
+core.dashboard_cells.create_cell() ثم تُستدعى عليه دوال موحّدة
+(render_result / render_editor / render_actions_menu) بغض النظر عن
+نوعها الفعلي. هذا الملف لم يعد يحتوي أي فرع "if display_type == ..."
+— فقط منطق التخطيط العام (معرض اللوحات، الـ Slicers، شبكات الأعمدة)
+الذي لا علاقة له بنوع الخلية.
+
+🆕 التصميم البصري (يبقى كما كان — الآن داخل كل كلاس خلية):
+------------------------------------------------------------------
+خلفية الرسوم البيانية (Plotly) والمقاييس (Gauge) شفافة تماماً، وألوان
+الأعمدة/الخطوط/الشرائح/شريط الـ Gauge نفسها تُفرض فعلياً من ألوان
+الثيم الحالي عبر ui.common.apply_plotly_theme() — كل كلاس خلية مسؤول
+عن استدعائها بنفسه (راجع core/dashboard_cells).
 
 🆕 الإشعارات:
 ----------------
@@ -60,30 +65,17 @@ ui/dashboards.py
 import uuid
 
 import streamlit as st
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 
 from ui.common import (
     apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
-    format_local_dt, notify, get_chart_theme, apply_plotly_theme, get_theme_colors,
-    render_themed_table,
+    format_local_dt, notify,
 )
 from core.dashboard_templates import DASHBOARD_TEMPLATES, get_template
 from core.dashboard_manager import DashboardManager
-from ai.ai_manager import AIManager, get_engine
-from config import (
-    DASHBOARD_SLICER_COUNT, DASHBOARD_GAUGE_COUNT,
-    DASHBOARD_SLICER_VALUES_LIMIT, CHART_TYPES,
-)
+from core.dashboard_cells import create_cell
+from ai.ai_manager import build_ai_manager as _core_build_ai_manager
+from config import DASHBOARD_SLICER_COUNT, DASHBOARD_GAUGE_COUNT, DASHBOARD_SLICER_VALUES_LIMIT
 
-DISPLAY_TYPE_LABELS = {
-    "table": "جدول", "chart": "رسم بياني", "gauge": "مقياس (Gauge)",
-    "kpi": "بطاقة مؤشر (KPI)", "story": "تحليل نصي (Story Telling)",
-}
-CHART_TYPE_LABELS = CHART_TYPES
-
-_HAS_POPOVER = hasattr(st, "popover")
 _BUSY_FRAMES = ["⏳", "⌛"]
 
 
@@ -197,25 +189,7 @@ def _show_dashboard_gallery(db):
 
 def _build_ai_manager(db):
     """مفتاح API يُقرأ من إعدادات المشروع (project.db) كما كان دائماً."""
-    settings = db.get_settings()
-    engine_name = settings.get("ai_engine", "gemini")
-    engine = get_engine(
-        engine_name=engine_name,
-        api_key=settings.get(f"api_key_{engine_name}", ""),
-        model=settings.get("model", ""),
-        timeout=settings.get("timeout", 30),
-        ollama_url=settings.get("ollama_url", "http://localhost:11434"),
-    )
-    ai = AIManager(
-        db, engine,
-        temperature=settings.get("temperature", 0.1),
-        max_tries=settings.get("max_tries", 3),
-        retry_delay=settings.get("retry_delay", 10),
-        max_total_wait_seconds=settings.get("max_total_wait_seconds", 0),
-        story_max_total_wait_seconds=settings.get("story_max_total_wait_seconds", 0),
-        story_timeout=settings.get("story_timeout", 45),
-    )
-    return ai, settings
+    return _core_build_ai_manager(db)
 
 
 def _show_dashboard_detail(db):
@@ -274,7 +248,7 @@ def _show_dashboard_detail(db):
             )
         st.rerun()
 
-    # 🆕 الـ Slicers أعلى الصفحة أسفل العنوان مباشرة، داخل قائمة مطوية
+    # الـ Slicers أعلى الصفحة أسفل العنوان مباشرة، داخل قائمة مطوية
     # واحدة مطوية افتراضياً — توفّر كامل عرض الصفحة لعرض الخلايا نفسها
     # بدل عمود جانبي ثابت كان يحجز مساحة دائمة.
     slicers = {s["position"]: s for s in db.get_dashboard_slicers(dashboard_id)}
@@ -345,7 +319,7 @@ def _render_slicer_panel(db, dm, dashboard_id, slicers):
                 )
 
                 if sel_column != "(بدون)":
-                    # 🆕 عرض قيم العمود فوراً بمجرد اختياره — بدون زر
+                    # عرض قيم العمود فوراً بمجرد اختياره — بدون زر
                     # "تحميل القيم" أو "إعادة تحميل القيم". يُخزَّن الجلب
                     # في session_state باسم يشمل (الجدول, العمود) بحيث
                     # يُعاد الجلب تلقائياً فقط عند تغيّر الاختيار فعلياً.
@@ -380,245 +354,32 @@ def _render_slicer_panel(db, dm, dashboard_id, slicers):
                 st.rerun()
 
 
-def _render_dashboard_cell(db, dm, settings, dashboard_id, position, cell):
+def _render_dashboard_cell(db, dm, settings, dashboard_id, position, cell_row):
+    """
+    نقطة الدخول الموحّدة لعرض/تحرير خلية واحدة — تبني كائن الخلية
+    المناسب عبر core.dashboard_cells.create_cell() (بما فيها EmptyCell
+    لو لم تُهيَّأ الخلية بعد) وتستدعي عليه الدوال الموحّدة بغض النظر عن
+    نوعها الفعلي.
+    """
     edit_key = f"editing_cell_{dashboard_id}_{position}"
     is_gauge_row = position < DASHBOARD_GAUGE_COUNT
 
+    row = cell_row or {"position": position}
+    cell_obj = create_cell(row)
+
     with st.container(border=True):
-        if cell and cell.get("question") and not st.session_state.get(edit_key):
-            # 🆕 زر "⁝" أعلى الخلية (بجانب عنوانها) بدل ظهوره أسفل
-            # النتيجة — أقرب لعنوان الخلية وأكثر إحكاماً بصرياً.
+        if cell_row and cell_row.get("question") and not st.session_state.get(edit_key):
+            # زر "⁝" أعلى الخلية (بجانب عنوانها) بدل ظهوره أسفل النتيجة
             title_col, menu_col = st.columns([5, 1])
             with title_col:
-                title = cell.get("title") or DISPLAY_TYPE_LABELS.get(cell.get("display_type"), "")
+                title = cell_obj.title or cell_obj.label
                 st.markdown(f"**{title}**")
             with menu_col:
-                _render_cell_actions_menu(db, dm, settings, dashboard_id, position, edit_key)
+                cell_obj.render_actions_menu(db, dm, settings, dashboard_id, edit_key)
 
-            _render_cell_result(db, dashboard_id, position, cell, settings, show_title=False)
+            cell_obj.render_result(settings, dashboard_id)
         else:
-            _render_cell_editor(db, dm, settings, dashboard_id, position, cell, is_gauge_row, edit_key)
-
-
-def _render_cell_actions_menu(db, dm, settings, dashboard_id, position, edit_key):
-    if _HAS_POPOVER:
-        menu_ctx = st.popover("⁝", use_container_width=True)
-    else:
-        menu_ctx = st.expander("⁝", expanded=False)
-
-    with menu_ctx:
-        if st.button("🔄 تحديث هذه الخلية", key=f"refresh_one_{dashboard_id}_{position}", width='stretch'):
-            with st.spinner("⏳ جاري التحديث..."):
-                r = dm.refresh_single_cell(dashboard_id, position, ai_rules=settings.get("ai_rules"))
-            if r["ok"]:
-                notify("تم التحديث" + (" (عبر AI)" if r["used_ai"] else ""), kind="success")
-            else:
-                notify(r.get("error", "فشل التحديث"), kind="error")
-            st.rerun()
-
-        if st.button("✏️ تعديل السؤال", key=f"edit_{dashboard_id}_{position}", width='stretch'):
-            st.session_state[edit_key] = True
-            st.rerun()
-
-        if st.button("🗑️ إفراغ الخلية", key=f"clear_{dashboard_id}_{position}", width='stretch'):
-            db.clear_dashboard_cell(dashboard_id, position)
-            st.rerun()
-
-
-def _render_cell_editor(db, dm, settings, dashboard_id, position, cell, is_gauge_row, edit_key):
-    label = "➕ إضافة مقياس (Gauge)" if is_gauge_row else "➕ إضافة عنصر"
-    st.markdown(f"**{label}**")
-
-    title = st.text_input(
-        "عنوان الخلية (اختياري)", value=(cell or {}).get("title", ""),
-        key=f"title_{dashboard_id}_{position}",
-    )
-    question = st.text_area(
-        "السؤال بلغة طبيعية", value=(cell or {}).get("question", ""),
-        key=f"question_{dashboard_id}_{position}", height=80,
-    )
-
-    if is_gauge_row:
-        display_type = "gauge"
-        chart_type = None
-    else:
-        type_options = list(DISPLAY_TYPE_LABELS.keys())
-        cur_type = (cell or {}).get("display_type") or "table"
-        display_type = st.selectbox(
-            "نوع العرض", type_options,
-            index=type_options.index(cur_type) if cur_type in type_options else 0,
-            format_func=lambda t: DISPLAY_TYPE_LABELS[t],
-            key=f"dtype_{dashboard_id}_{position}",
-        )
-        chart_type = None
-        if display_type == "chart":
-            ctype_options = list(CHART_TYPE_LABELS.keys())
-            cur_ctype = (cell or {}).get("chart_type") or "bar"
-            chart_type = st.selectbox(
-                "نوع الرسم", ctype_options,
-                index=ctype_options.index(cur_ctype) if cur_ctype in ctype_options else 0,
-                format_func=lambda t: CHART_TYPE_LABELS[t],
-                key=f"ctype_{dashboard_id}_{position}",
-            )
-
-    # 🆕 زر "اختبار" أصبح داخل نفس قائمة الخيارات المنسدلة بدل ظهوره
-    # كزر منفصل دائماً — يظهر فقط أثناء التعديل (منطقياً يفيد فقط هنا).
-    if _HAS_POPOVER:
-        test_menu_ctx = st.popover("⁝ خيارات الاختبار")
-    else:
-        test_menu_ctx = st.expander("⁝ خيارات الاختبار", expanded=False)
-
-    test_key = f"cell_test_result_{dashboard_id}_{position}"
-    with test_menu_ctx:
-        if st.button("🔍 اختبار", key=f"test_cell_{dashboard_id}_{position}", width='stretch'):
-            if not question.strip():
-                notify("الرجاء كتابة سؤال أولاً", kind="warning")
-            else:
-                ai, _ = _build_ai_manager(db)
-                filters = dm._build_active_filters(dashboard_id)
-                with st.spinner("⏳ جاري الاختبار..."):
-                    if display_type == "story":
-                        r = ai.tell_story(question.strip(), ai_rules=settings.get("ai_rules"), filters=filters)
-                    else:
-                        r = ai.ask(
-                            question.strip(), result_type=display_type,
-                            ai_rules=settings.get("ai_rules"), filters=filters,
-                        )
-                st.session_state[test_key] = r
-
-    if st.session_state.get(test_key):
-        r = st.session_state[test_key]
-        if r.get("ok"):
-            if r.get("sql"):
-                with st.expander("SQL", expanded=False):
-                    st.code(r["sql"], language="sql")
-            if r.get("df") is not None:
-                render_themed_table(r["df"], settings)
-            if r.get("story"):
-                text_color = get_theme_colors(settings)["text"]
-                st.markdown(
-                    f'<div dir="rtl" style="text-align:right; color:{text_color};">{r["story"]}</div>',
-                    unsafe_allow_html=True,
-                )
-        else:
-            st.error(f"فشل الاختبار: {r.get('error')}")
-
-    bc1, bc2 = st.columns(2)
-    with bc1:
-        if st.button("💾 حفظ", key=f"save_cell_{dashboard_id}_{position}", width='stretch', type="primary"):
-            if not question.strip():
-                notify("الرجاء كتابة سؤال", kind="warning")
-            else:
-                db.save_dashboard_cell(
-                    dashboard_id, position, display_type,
-                    title.strip() or None, question.strip(), chart_type,
-                )
-                st.session_state.pop(edit_key, None)
-                st.session_state.pop(test_key, None)
-
-                # 🆕 تحديث فوري لهذه الخلية تحديداً بعد الحفظ — بدل
-                # تركها فارغة بانتظار ضغطة يدوية إضافية على "تحديث
-                # البيانات" أو "⁝ → تحديث هذه الخلية".
-                with st.spinner("⏳ جاري تحديث الخلية..."):
-                    r = dm.refresh_single_cell(dashboard_id, position, ai_rules=settings.get("ai_rules"))
-                if r["ok"]:
-                    notify("تم الحفظ والتحديث" + (" (عبر AI)" if r["used_ai"] else ""), kind="success")
-                else:
-                    notify(f"تم الحفظ لكن فشل التحديث: {r.get('error')}", kind="warning")
-                st.rerun()
-    with bc2:
-        if cell and st.button("إلغاء", key=f"cancel_cell_{dashboard_id}_{position}", width='stretch'):
-            st.session_state.pop(edit_key, None)
-            st.session_state.pop(test_key, None)
-            st.rerun()
-
-
-def _render_cell_result(db, dashboard_id, position, cell, settings, show_title: bool = True):
-    if show_title:
-        title = cell.get("title") or DISPLAY_TYPE_LABELS.get(cell.get("display_type"), "")
-        st.markdown(f"**{title}**")
-
-    if cell.get("last_error"):
-        st.error(f"فشل آخر تحديث: {cell['last_error']}")
-        return
-
-    stored = cell.get("last_result")
-    if not stored:
-        st.caption("لم يُحدَّث بعد")
-        return
-
-    display_type = cell.get("display_type")
-    df = pd.DataFrame(stored.get("rows", []))
-    chart_theme = get_chart_theme(settings)
-
-    if display_type == "table":
-        render_themed_table(df, settings)
-
-    elif display_type == "chart":
-        if df.empty or df.shape[1] < 2:
-            st.caption("لا توجد بيانات كافية للرسم")
-        else:
-            ctype = stored.get("chart_type", "bar")
-            x_col = df.columns[0]
-            y_cols = list(df.columns[1:3])
-            try:
-                if ctype == "line":
-                    fig = px.line(df, x=x_col, y=y_cols, markers=True)
-                elif ctype == "pie":
-                    fig = px.pie(df, names=x_col, values=y_cols[0])
-                elif ctype == "area":
-                    fig = px.area(df, x=x_col, y=y_cols)
-                elif ctype == "scatter":
-                    fig = px.scatter(df, x=x_col, y=y_cols[0])
-                else:
-                    fig = px.bar(df, x=x_col, y=y_cols, barmode="group", text_auto=True)
-                fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=280)
-                # 🆕 يفرض ألوان الثيم فعلياً على الأعمدة/الخطوط/الشرائح
-                apply_plotly_theme(fig, settings)
-                st.plotly_chart(fig, width='stretch', key=f"chart_{dashboard_id}_{position}")
-            except Exception as e:
-                st.error(f"تعذر رسم البيانات: {e}")
-
-    elif display_type == "gauge":
-        row = df.iloc[0].to_dict() if not df.empty else {}
-        current = row.get("current_value", 0)
-        mn = row.get("min_value", 0)
-        mx = row.get("max_value", 100)
-        fig = go.Figure(go.Indicator(
-            mode="gauge+number", value=current,
-            number={"font": {"color": chart_theme["font_color"]}},
-            gauge={
-                "axis": {"range": [mn, mx], "tickfont": {"color": chart_theme["font_color"]}},
-            },
-        ))
-        fig.update_layout(height=180, margin=dict(l=10, r=10, t=10, b=10))
-        # 🆕 شريط الـ Gauge نفسه يأخذ لون التمييز (accent) الخاص بالثيم
-        apply_plotly_theme(fig, settings)
-        st.plotly_chart(fig, width='stretch', key=f"gauge_{dashboard_id}_{position}")
-
-    elif display_type == "kpi":
-        row = df.iloc[0].to_dict() if not df.empty else {}
-        actual = row.get("actual_value", 0)
-        target = row.get("target_value", 0)
-        delta = (actual - target) if isinstance(actual, (int, float)) and isinstance(target, (int, float)) else None
-        st.metric("القيمة", actual, delta=round(delta, 2) if delta is not None else None)
-        st.caption(f"الهدف: {target}")
-
-    elif display_type == "story":
-        story_text = stored.get("story", "")
-        # 🆕 لون النص يُحدَّد صراحة من ألوان الثيم الحالي بدل الاعتماد
-        # فقط على وراثة CSS العامة — يستجيب فوراً لتغيير "لون النص".
-        text_color = get_theme_colors(settings)["text"]
-        st.markdown(
-            f'<div dir="rtl" style="text-align:right; color:{text_color};">{story_text}</div>',
-            unsafe_allow_html=True,
-        )
-        with st.expander("📊 البيانات المستخدمة"):
-            render_themed_table(df, settings)
-
-    updated = cell.get("last_updated_at")
-    if updated:
-        st.caption(f"آخر تحديث: {format_local_dt(updated, settings)}")
+            cell_obj.render_editor(db, dm, settings, dashboard_id, is_gauge_row, edit_key)
 
 
 def layout_2x2(render_cell):
