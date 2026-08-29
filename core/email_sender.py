@@ -21,7 +21,7 @@ import smtplib
 from email.message import EmailMessage
 
 ## وضعت قيم متغيرات البيئة في ملف mail_param.py
-from mail_param import *
+from core.mail_param import *
 
 logger = logging.getLogger(__name__)
 
