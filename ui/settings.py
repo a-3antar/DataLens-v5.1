@@ -227,14 +227,40 @@ def show_settings():
 
 
 # ──────────────────────────────────────────────────────────────
-#  🆕 تبويب الحساب — تغيير كلمة المرور + حذف الحساب
+#  🆕 تبويب الحساب — أربعة أقسام: كلمة المرور / البريد الإلكتروني /
+#  بيانات المستخدم / حذف الحساب. لا يلمس project.db إطلاقاً — يتعامل
+#  مباشرة مع core.auth.AuthManager على مستوى الحساب نفسه.
 # ──────────────────────────────────────────────────────────────
 
+_ACCOUNT_SECTIONS = [
+    "🔑 تعديل كلمة السر",
+    "📧 تعديل البريد الإلكتروني",
+    "👤 تعديل بيانات المستخدم",
+    "🗑️ حذف الحساب",
+]
+
+
 def _render_account_tab(auth: AuthManager, user_id: str):
-    """
-    تبويب مستقل عن إعدادات المشروع (لا يلمس project.db إطلاقاً) —
-    يتعامل مباشرة مع core.auth.AuthManager على مستوى الحساب نفسه.
-    """
+    """قائمة أقسام الحساب — راديو أفقي بدل تبويبات متداخلة (Streamlit
+    لا يدعم تداخل st.tabs داخل st.tabs بشكل موثوق)."""
+    section = st.radio(
+        "قسم الحساب", _ACCOUNT_SECTIONS,
+        horizontal=True, label_visibility="collapsed",
+        key="_account_section_choice",
+    )
+    st.divider()
+
+    if section == "🔑 تعديل كلمة السر":
+        _render_change_password_section(auth, user_id)
+    elif section == "📧 تعديل البريد الإلكتروني":
+        _render_email_section(auth, user_id)
+    elif section == "👤 تعديل بيانات المستخدم":
+        _render_profile_section(auth, user_id)
+    else:
+        _render_delete_account_section(auth, user_id)
+
+
+def _render_change_password_section(auth: AuthManager, user_id: str):
     st.subheader("🔑 تغيير كلمة المرور")
     with st.form("change_password_form"):
         old_password = st.text_input("كلمة المرور الحالية", type="password")
@@ -251,8 +277,106 @@ def _render_account_tab(auth: AuthManager, user_id: str):
                 else:
                     st.error(r["error"])
 
-    st.divider()
 
+def _render_email_section(auth: AuthManager, user_id: str):
+    """
+    عرض البريد الحالي وحالة توثيقه + إرسال/إدخال رمز تأكيد للبريد
+    الحالي (لو غير موثّق)، بالإضافة إلى نموذج مستقل لطلب تغيير البريد
+    إلى عنوان جديد (يتطلب تأكيد الرمز المُرسَل للعنوان الجديد نفسه).
+    """
+    st.subheader("📧 البريد الإلكتروني")
+
+    if not auth.is_email_configured():
+        st.warning(
+            "⚠️ خادم البريد (SMTP) غير مضبوط على هذا السيرفر حالياً — "
+            "إرسال رموز التحقق لن يعمل حتى يُضبط من مدير النظام. "
+            "يمكنك تعديل البريد لاحقاً بمجرد تفعيل الخادم."
+        )
+
+    info = auth.get_user_info(user_id) or {}
+    current_email = info.get("email", "")
+    is_verified = info.get("email_verified", False)
+
+    if current_email:
+        badge = "✅ موثّق" if is_verified else "⚠️ غير موثّق"
+        st.caption(f"البريد الحالي: **{current_email}** — {badge}")
+
+        if not is_verified:
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                if st.button("📩 إرسال رمز تأكيد", key="send_verify_current_email"):
+                    r = auth.send_verification_code(user_id)
+                    if r["ok"]:
+                        notify("تم إرسال رمز التأكيد إلى بريدك", kind="success")
+                    else:
+                        st.error(r["error"])
+            with c2:
+                with st.form("verify_current_email_form"):
+                    code = st.text_input("رمز التأكيد (6 أرقام)")
+                    if st.form_submit_button("✅ تأكيد"):
+                        r = auth.verify_email(user_id, code)
+                        if r["ok"]:
+                            notify("تم توثيق البريد الإلكتروني بنجاح", kind="success")
+                            st.rerun()
+                        else:
+                            st.error(r["error"])
+    else:
+        st.caption("لا يوجد بريد إلكتروني مسجَّل بعد على هذا الحساب.")
+
+    st.divider()
+    st.markdown("**تغيير البريد الإلكتروني**" if current_email else "**إضافة بريد إلكتروني**")
+    st.caption("يُرسَل رمز تأكيد إلى العنوان الجديد؛ لا يتغيّر البريد فعلياً إلا بعد إدخال الرمز الصحيح.")
+
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        new_email = st.text_input("البريد الإلكتروني الجديد", key="new_email_input")
+    with c2:
+        st.write("")
+        st.write("")
+        if st.button("📩 إرسال رمز إلى البريد الجديد", key="send_change_email_code"):
+            if not new_email.strip():
+                notify("الرجاء إدخال البريد الإلكتروني الجديد", kind="warning")
+            else:
+                r = auth.request_email_change(user_id, new_email)
+                if r["ok"]:
+                    notify("تم إرسال رمز التأكيد إلى البريد الجديد", kind="success")
+                else:
+                    st.error(r["error"])
+
+    with st.form("confirm_change_email_form"):
+        confirm_code = st.text_input("رمز تأكيد البريد الجديد")
+        if st.form_submit_button("✅ تأكيد وتغيير البريد"):
+            r = auth.confirm_email_change(user_id, confirm_code)
+            if r["ok"]:
+                notify(f"تم تغيير البريد الإلكتروني إلى {r['email']}", kind="success")
+                st.rerun()
+            else:
+                st.error(r["error"])
+
+
+def _render_profile_section(auth: AuthManager, user_id: str):
+    """تعديل بيانات المستخدم — حالياً اسم المستخدم فقط."""
+    st.subheader("👤 بيانات المستخدم")
+    current_username = st.session_state.get("username", "")
+
+    with st.form("update_username_form"):
+        st.caption(f"اسم المستخدم الحالي: **{current_username}**")
+        new_username = st.text_input("اسم المستخدم الجديد", value=current_username)
+        submitted = st.form_submit_button("💾 حفظ")
+        if submitted:
+            if new_username.strip().lower() == current_username:
+                notify("لم يتغيّر اسم المستخدم", kind="info")
+            else:
+                r = auth.update_username(user_id, new_username)
+                if r["ok"]:
+                    st.session_state.username = r["username"]
+                    notify("تم تحديث اسم المستخدم بنجاح", kind="success")
+                    st.rerun()
+                else:
+                    st.error(r["error"])
+
+
+def _render_delete_account_section(auth: AuthManager, user_id: str):
     st.subheader("⚠️ حذف الحساب نهائياً")
     st.error(
         "هذا الإجراء يحذف حسابك وكل مشاريعك المرتبطة به فوراً من إمكانية "
@@ -282,7 +406,6 @@ def _render_account_tab(auth: AuthManager, user_id: str):
                     st.rerun()
                 else:
                     st.error(r["error"])
-
 
 # ──────────────────────────────────────────────────────────────
 #  تبويب الثيم — ثيمات جاهزة + ثيم مخصص بالكامل

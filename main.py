@@ -35,7 +35,7 @@ apply_rtl()
 # (١) مجلدات تصدير مؤقتة متروكة من تشغيل سابق تعطّل قبل حذفها تلقائياً
 # (٢) جلسات دخول منتهية الصلاحية في users.db (كانت الدالة موجودة
 #     ولم تُستدعَ من قبل — تتراكم بلا نهاية بدون هذا الاستدعاء)
-# (٣) 🆕 أرشيفات حسابات محذوفة تجاوزت مهلة الاحتفاظ (30 يوماً) —
+# (٣) أرشيفات حسابات محذوفة تجاوزت مهلة الاحتفاظ (30 يوماً) —
 #     راجع core/auth.py::delete_account/purge_expired_deletions
 #     للتفاصيل الكاملة عن سياسة الأرشفة المؤقتة قبل الحذف النهائي.
 if "_startup_cleanup_done" not in st.session_state:
@@ -59,9 +59,20 @@ PAGES = {
     "📝 التقارير": show_reports,
     "⚙️ الإعدادات": show_settings,
 }
+_PAGE_KEYS = list(PAGES.keys())
+
+# 🆕 لو طُلب القفز إلى صفحة معيّنة برمجياً (مثلاً زر "⚙️ إعدادات
+# الحساب" في قائمة الحساب السريعة بالشريط الجانبي — راجع
+# ui/common.py::_render_account_quick_menu)، نحدد الفهرس الافتراضي
+# للراديو بناءً على ذلك بدل تركه دائماً على أول صفحة.
+_JUMP_TARGETS = {"settings": "⚙️ الإعدادات"}
+default_index = 0
+jump_to = st.session_state.pop("_jump_to_page", None)
+if jump_to in _JUMP_TARGETS:
+    default_index = _PAGE_KEYS.index(_JUMP_TARGETS[jump_to])
 
 with st.sidebar:
     st.markdown(f"## {APP_ICON} {APP_NAME} V{APP_VERSION}")
-    choice = st.radio("الانتقال إلى", list(PAGES.keys()), label_visibility="collapsed")
+    choice = st.radio("الانتقال إلى", _PAGE_KEYS, index=default_index, label_visibility="collapsed")
 
 PAGES[choice]()

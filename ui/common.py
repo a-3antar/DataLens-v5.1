@@ -674,24 +674,62 @@ def get_project_manager() -> ProjectManager:
         st.session_state.pm = ProjectManager(st.session_state.user_id)
     return st.session_state.pm
 
-
 def sidebar_header():
-    """رأس الشريط الجانبي: اسم المستخدم + المشروع الحالي + خروج."""
+    """
+    رأس الشريط الجانبي: قائمة حساب منسدلة (اسم المستخدم) + المشروع
+    الحالي + خروج.
+
+    🆕 اسم المستخدم أصبح زراً/Popover يفتح قائمة حساب سريعة (حالة
+    البريد الإلكتروني + رابط مباشر لصفحة إعدادات الحساب) بدل عنوان
+    ثابت فقط — راجع _render_account_quick_menu أدناه. الظهور قبل
+    المشروع الحالي كما هو مطلوب.
+    """
+    from core.auth import AuthManager
+
     with st.sidebar:
-        st.markdown(f"### 👋 {st.session_state.get('username', '')}")
+        username = st.session_state.get("username", "")
+        has_popover = hasattr(st, "popover")
+        menu_ctx = (
+            st.popover(f"👋 {username}", width='stretch') if has_popover
+            else st.expander(f"👋 {username}", expanded=False)
+        )
+        with menu_ctx:
+            _render_account_quick_menu(AuthManager())
+
         if st.session_state.get("project_id"):
             settings = st.session_state.db.get_settings() if st.session_state.get("db") else {}
             name = settings.get("project_name", "بدون اسم")
             st.caption(f"📁 المشروع الحالي: **{name}**")
         st.divider()
         if st.button("🚪 تسجيل الخروج", width='stretch'):
-            from core.auth import AuthManager
             AuthManager().logout(st.session_state.get("token", ""))
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
 
 
+def _render_account_quick_menu(auth) -> None:
+    """
+    محتوى قائمة الحساب السريعة المنسدلة من اسم المستخدم في الشريط
+    الجانبي: حالة البريد الإلكتروني (موثّق/غير موثّق/غير موجود) وزر
+    ينقل مباشرة إلى صفحة الإعدادات — عبر علم "_jump_to_page" في
+    session_state يقرأه main.py لتحديد الصفحة المفتوحة افتراضياً عند
+    إعادة تشغيل السكربت (لا يوجد routing حقيقي عبر URL في هذا التطبيق).
+    """
+    user_id = st.session_state.get("user_id")
+    info = auth.get_user_info(user_id) if user_id else None
+
+    if info:
+        email = info.get("email") or ""
+        if email:
+            badge = "✅ موثّق" if info.get("email_verified") else "⚠️ غير موثّق"
+            st.caption(f"📧 {email} — {badge}")
+        else:
+            st.caption("📧 لا يوجد بريد إلكتروني مسجَّل")
+
+    if st.button("⚙️ إعدادات الحساب", key="_goto_account_settings", width='stretch'):
+        st.session_state["_jump_to_page"] = "settings"
+        st.rerun()
 # ══════════════════════════════════════════════════════════════
 #  إشعارات موحّدة (Toast) — بديل الرسائل التوضيحية الثابتة
 # ══════════════════════════════════════════════════════════════
