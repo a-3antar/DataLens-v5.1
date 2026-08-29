@@ -34,7 +34,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-from ui.common import render_themed_table, format_local_dt, get_theme_colors, notify
+from ui.common import format_local_dt, get_theme_colors, notify
 from ai.ai_manager import build_ai_manager
 
 logger = logging.getLogger(__name__)
@@ -347,13 +347,18 @@ class DashboardCellBase(ABC):
         return ai.ask(question, result_type=self.display_type, ai_rules=settings.get("ai_rules"), filters=filters)
 
     def _render_test_result(self, r: dict, settings: dict) -> None:
-        """عرض نتيجة زر "اختبار" — مشترك بين كل الأنواع."""
+        """
+        عرض نتيجة زر "اختبار" — مشترك بين كل الأنواع. الجدول يُعرض
+        عبر st.dataframe التفاعلي (فرز/تصفح) بدل render_themed_table
+        الثابت، حتى تكون معاينة الاختبار متسقة مع عرض خلية الجدول
+        الفعلية (راجع TableCell.render_result في cells.py).
+        """
         if r.get("ok"):
             if r.get("sql"):
                 with st.expander("SQL", expanded=False):
                     st.code(r["sql"], language="sql")
             if r.get("df") is not None:
-                render_themed_table(r["df"], settings)
+                st.dataframe(r["df"], width='stretch', hide_index=True)
             if r.get("story"):
                 text_color = get_theme_colors(settings)["text"]
                 st.markdown(

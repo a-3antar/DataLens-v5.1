@@ -4,7 +4,6 @@ ai/openai_compatible_engine.py
 كلاس موحّد لأي محرك AI يتبع بروتوكول OpenAI (/models و
 /chat/completions بنفس الصيغة) — يغطي حالياً Groq وOpenRouter،
 وأي محرك مستقبلي بنفس البروتوكول (OpenAI نفسه، Together، Fireworks...)
-دون كتابة كلاس جديد؛ فقط إضافة إدخال في ai/engine_registry.py.
 
 سبب التوحيد:
 ------------
@@ -153,3 +152,34 @@ class OpenAICompatibleEngine(BaseEngine):
         if result["ok"]:
             return {"ok": True, "models_count": len(result["models"])}
         return result
+
+
+
+OPENAI_COMPATIBLE_ENGINES = {
+    "groq": {
+        "display_name" : "Groq",
+        "base_url"     : "https://api.groq.com/openai/v1",
+        "default_model": "openai/gpt-oss-120b",
+    },
+    "openrouter": {
+        "display_name" : "OpenRouter",
+        "base_url"     : "https://openrouter.ai/api/v1",
+        "default_model": "mistralai/mistral-7b-instruct",
+    },
+
+    "openai": {
+        "display_name" : "OpenAI",
+        "base_url"     : "https://api.openai.com/v1",
+        "default_model": "gpt-4o-mini",
+    },
+}
+
+
+def get_registry_entry(engine_name: str) -> dict:
+    """إرجاع تعريف محرك من السجل، أو {} لو غير موجود."""
+    return OPENAI_COMPATIBLE_ENGINES.get(engine_name.lower().strip(), {})
+
+
+def all_openai_compatible_names() -> list[str]:
+    """كل أسماء المحركات المسجّلة هنا (بدون gemini/ollama)."""
+    return list(OPENAI_COMPATIBLE_ENGINES.keys())

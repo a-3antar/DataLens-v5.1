@@ -35,9 +35,13 @@ apply_rtl()
 # (١) مجلدات تصدير مؤقتة متروكة من تشغيل سابق تعطّل قبل حذفها تلقائياً
 # (٢) جلسات دخول منتهية الصلاحية في users.db (كانت الدالة موجودة
 #     ولم تُستدعَ من قبل — تتراكم بلا نهاية بدون هذا الاستدعاء)
+# (٣) 🆕 أرشيفات حسابات محذوفة تجاوزت مهلة الاحتفاظ (30 يوماً) —
+#     راجع core/auth.py::delete_account/purge_expired_deletions
+#     للتفاصيل الكاملة عن سياسة الأرشفة المؤقتة قبل الحذف النهائي.
 if "_startup_cleanup_done" not in st.session_state:
     cleanup_stale_temp_dirs(max_age_hours=2)
     AuthManager().clean_expired_sessions()
+    AuthManager().purge_expired_deletions()
     st.session_state["_startup_cleanup_done"] = True
 
 # ── التأكد من تسجيل الدخول ──────────────────────────────────

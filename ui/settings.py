@@ -7,7 +7,7 @@ ui/settings.py
 
 مفتاح API:
 ------------
-يبقى مخزَّناً في project.db لكل مشروع تحديداً (api_key_{engine})،
+يبقى مخزَّناً في project.db لكل مشروع تحديداً (api_key_{engine}),
 تماماً كالسابق — كل مشروع يحتفظ بمفتاحه الخاص وقابل للتغيير بحرية.
 بالإضافة لذلك، عند كل حفظ نُخزِّن نسخة "آخر مفتاح استُخدم" في
 users.db (عبر core.auth.AuthManager) — تُستخدم فقط كقيمة افتراضية
@@ -36,13 +36,23 @@ ai.engine_registry + OpenAICompatibleEngine — لا حاجة لأي كود إض
 كان نشطاً قبل ذلك مباشرة (مثلاً Ocean Dark)، بدل البدء من قيم افتراضية
 غير ذات صلة — بحيث يبدأ المستخدم من مظهر مألوف ويُعدّل عليه بدل
 البدء من الصفر. راجع _seed_custom_color_pickers أدناه للتفاصيل.
+
+🆕 تبويب "🗑️ الحساب":
+-----------------------
+تبويب رابع مستقل تماماً عن إعدادات المشروع (لا علاقة له بـ project.db)
+— يتعامل مباشرة مع core.auth.AuthManager على مستوى المستخدم نفسه:
+  - تغيير كلمة المرور: يتطلب كلمة المرور الحالية الصحيحة.
+  - حذف الحساب: تأكيد مزدوج (كتابة اسم المستخدم حرفياً + كلمة المرور
+    الحالية) قبل تنفيذ AuthManager.delete_account() — عملية لا رجعة
+    فيها من واجهة المستخدم (البيانات تُؤرشف مؤقتاً 30 يوماً على مستوى
+    الخادم فقط، وليست ميزة استرجاع ذاتية من التطبيق — راجع core/auth.py).
 """
 
 import streamlit as st
 
 from ui.common import (
     apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
-    THEME_COLORS, get_chart_theme, apply_plotly_theme,
+    THEME_COLORS, get_chart_theme, apply_plotly_theme, notify,
 )
 from ai.ai_manager import get_engine
 from core.auth import AuthManager
@@ -61,7 +71,9 @@ def show_settings():
     auth = AuthManager()
     user_id = st.session_state.user_id
 
-    tab_ai, tab_general, tab_theme = st.tabs(["🤖 محرك AI", "⚙️ عام", "🎨 الثيم"])
+    tab_ai, tab_general, tab_theme, tab_account = st.tabs(
+        ["🤖 محرك AI", "⚙️ عام", "🎨 الثيم", "🗑️ الحساب"]
+    )
 
     with tab_ai:
         engine_name = st.selectbox(
@@ -209,6 +221,67 @@ def show_settings():
 
     with tab_theme:
         _render_theme_tab(db, settings)
+
+    with tab_account:
+        _render_account_tab(auth, user_id)
+
+
+# ──────────────────────────────────────────────────────────────
+#  🆕 تبويب الحساب — تغيير كلمة المرور + حذف الحساب
+# ──────────────────────────────────────────────────────────────
+
+def _render_account_tab(auth: AuthManager, user_id: str):
+    """
+    تبويب مستقل عن إعدادات المشروع (لا يلمس project.db إطلاقاً) —
+    يتعامل مباشرة مع core.auth.AuthManager على مستوى الحساب نفسه.
+    """
+    st.subheader("🔑 تغيير كلمة المرور")
+    with st.form("change_password_form"):
+        old_password = st.text_input("كلمة المرور الحالية", type="password")
+        new_password = st.text_input("كلمة المرور الجديدة", type="password")
+        confirm_password = st.text_input("تأكيد كلمة المرور الجديدة", type="password")
+        submitted = st.form_submit_button("💾 تغيير كلمة المرور")
+        if submitted:
+            if new_password != confirm_password:
+                st.error("كلمتا المرور الجديدتان غير متطابقتين")
+            else:
+                r = auth.change_password(user_id, old_password, new_password)
+                if r["ok"]:
+                    notify("تم تغيير كلمة المرور بنجاح", kind="success")
+                else:
+                    st.error(r["error"])
+
+    st.divider()
+
+    st.subheader("⚠️ حذف الحساب نهائياً")
+    st.error(
+        "هذا الإجراء يحذف حسابك وكل مشاريعك المرتبطة به فوراً من إمكانية "
+        "الوصول. تُحتفظ نسخة أرشيفية على الخادم لمدة 30 يوماً كشبكة أمان "
+        "من الحذف الخاطئ فقط (وليست ميزة استرجاع ذاتية من التطبيق)، ثم "
+        "تُحذف نهائياً وبلا رجعة. سيتم تسجيل خروجك فوراً عند التنفيذ."
+    )
+
+    username = st.session_state.get("username", "")
+    with st.form("delete_account_form"):
+        confirm_username = st.text_input(
+            f"اكتب اسم المستخدم «{username}» لتأكيد الحذف",
+        )
+        confirm_password = st.text_input("كلمة المرور الحالية", type="password")
+        submitted = st.form_submit_button("🗑️ حذف الحساب نهائياً", type="primary")
+        if submitted:
+            if confirm_username.strip().lower() != username.strip().lower():
+                st.error("اسم المستخدم المكتوب لا يطابق اسم المستخدم الحالي")
+            elif not confirm_password:
+                st.error("الرجاء إدخال كلمة المرور للتأكيد")
+            else:
+                r = auth.delete_account(user_id, confirm_password)
+                if r["ok"]:
+                    for key in list(st.session_state.keys()):
+                        del st.session_state[key]
+                    st.success("تم حذف الحساب. سيتم تسجيل خروجك الآن.")
+                    st.rerun()
+                else:
+                    st.error(r["error"])
 
 
 # ──────────────────────────────────────────────────────────────

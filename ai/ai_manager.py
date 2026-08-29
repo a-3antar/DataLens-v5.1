@@ -7,64 +7,6 @@ ai/ai_manager.py
 - إرسال السؤال مع retry loop عند الخطأ
 - استخراج SQL من الرد
 - تنفيذ SQL عبر QueryEngine
-
-إعادة المحاولة عند فشل الاتصال — دائم مقابل مؤقت:
------------------------------------------------------
-كل محرك AI يُرجع الآن (اختيارياً) "error_type" ضمن نتيجة send() الفاشلة:
-  - "auth"      : خطأ مصادقة دائم (مفتاح مرفوض/غير صالح/عليه قيود). لا فائدة
-                  إطلاقاً من إعادة المحاولة بنفس المفتاح — نتوقف فوراً بدل
-                  استهلاك max_tries كاملة و retry_delay على كل واحدة.
-  - "rate_limit": تجاوز حصة/معدل الطلبات (429) — يستحق إعادة المحاولة
-                  (المشكلة قد تزول خلال ثوانٍ)، فنُبقيه ضمن حلقة الانتظار.
-  - "transient" : انقطاع شبكة/مهلة/خطأ سيرفر عابر (5xx) — نفس المعاملة.
-  - "other"/غير محدد: نتعامل معه بحذر كأنه قد يكون مؤقتاً.
-
-حد زمني إجمالي (max_total_wait_seconds / story_max_total_wait_seconds):
---------------------------------------------------------------------------
-بالإضافة إلى max_tries × retry_delay كحد أقصى نظري، يمكن الآن ضبط
-ميزانية زمنية كلية اختيارية لكل عملية:
-  - max_total_wait_seconds       : لعملية ask() الواحدة (توليد SQL)
-  - story_max_total_wait_seconds : لعملية tell_story() الكاملة (توليد
-                                    SQL ثم توليد نص السرد — مرحلتان)
-0 أو None = بدون حد (السلوك القديم يبقى كما هو تماماً). لو ضُبطت قيمة
-أكبر من صفر، يتوقف الانتظار قبل إعادة أي محاولة لو كان الوقت المُستهلك
-حتى الآن + مدة الانتظار القادمة سيتجاوز هذه الميزانية — بدل الانتظار
-الكامل ثم اكتشاف تجاوز الوقت لاحقاً بلا فائدة.
-
-مهلة اتصال منفصلة لمرحلة السرد (story_timeout):
---------------------------------------------------
-مرحلة توليد نص السرد (المرحلة الثانية من tell_story()) تستخدم الآن
-مهلة اتصال (timeout) مستقلة تماماً عن "timeout" العام المستخدم في
-توليد SQL، عبر تمرير timeout_override إلى engine.send(). هذا يحل
-مشكلة انتظار مهلة طويلة (مثلاً 100 ثانية) على استدعاء أول فاشل قبل
-إعادة المحاولة، رغم أن المحاولة الثانية عادة تنجح بسرعة معقولة.
-
-🆕 تطبيق فعلي (وليس نصي فقط) لفلاتر لوحات المعلومات على SQL المولَّد
-من AI:
---------------------------------------------------------------------
-سابقاً كانت filters تُمرَّر فقط لبناء نص توجيهي داخل الـ prompt يطلب
-من AI أن يضيف WHERE بنفسه (PromptBuilder._build_filters) — بدون أي
-ضمان فعلي أن AI سيلتزم بذلك عند تنفيذ SQL الناتج (self.qe.run(...)
-كانت تُستدعى بدون تمرير filters إطلاقاً). الآن تُمرَّر نفس filters
-أيضاً إلى self.qe.run(last_sql, filters=filters) — والتي (راجع
-core/query_engine.py) تبني view مفلترة حقيقية فوق كل جدول له فلتر
-نشط قبل تنفيذ أي SQL عليه، بغض النظر عمّا كتبه AI. نص الـ prompt يبقى
-كسياق توضيحي مفيد لـ AI فقط، والتطبيق الفعلي مضمون من طبقة البيانات.
-
-توحيد محركات AI:
--------------------
-"gemini" و"ollama" يبقيان بكلاس منفصل خاص بكل منهما (بروتوكول مختلف).
-أي محرك آخر (مثل "groq"، "openrouter"، وأي محرك مستقبلي متوافق مع
-OpenAI API) يُبنى ديناميكياً عبر ai.engine_registry +
-ai.openai_compatible_engine.OpenAICompatibleEngine — إضافة محرك جديد
-تتم بسطر واحد في ai/engine_registry.py فقط، دون أي تعديل هنا.
-
-🆕 build_ai_manager():
-------------------------
-دالة مساعدة واحدة تبني AIManager جاهزاً مباشرة من إعدادات مشروع
-(project.db)، بدل تكرار نفس منطق "قراءة settings → get_engine →
-AIManager(...)" في أكثر من مكان (كان مكرراً بين ui/dashboards.py
-و core/dashboard_cells/base.py). راجع نهاية هذا الملف.
 """
 
 import time
@@ -74,8 +16,7 @@ from typing import Optional
 from ai.base_engine               import BaseEngine
 from ai.gemini                    import GeminiEngine
 from ai.ollama                    import OllamaEngine
-from ai.openai_compatible_engine  import OpenAICompatibleEngine
-from ai.engine_registry           import get_registry_entry
+from ai.openai_compatible_engine  import OpenAICompatibleEngine, get_registry_entry
 from ai.prompt_builder            import PromptBuilder
 from core.project_db              import ProjectDB
 from core.query_engine            import QueryEngine
@@ -97,7 +38,7 @@ def get_engine(
     """
     إرجاع محرك AI بناءً على الاسم.
     "gemini" و"ollama": كلاس مخصص لكل منهما (بروتوكول مختلف).
-    أي اسم آخر: يُبحث عنه في ai.engine_registry ويُبنى عبر
+    أي اسم آخر: يُبحث عنه في OPENAI_COMPATIBLE_ENGINES ويُبنى عبر
     OpenAICompatibleEngine — يشمل هذا "groq" و"openrouter" حالياً،
     وأي محرك يُضاف مستقبلاً للسجل بدون تعديل هذه الدالة.
     يرجع None لو الاسم غير معروف في أي من المسارين.

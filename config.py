@@ -3,23 +3,6 @@ config.py
 =========
 كل الثوابت والإعدادات العامة للتطبيق.
 لا يستورد من أي ملف داخلي آخر.
-
-ملاحظة عن Streamlit Community Cloud:
---------------------------------------
-نظام الملفات على Streamlit Cloud مؤقت (ephemeral) — أي بيانات تُكتب
-تحت مجلد التطبيق (بما فيها project.db و users.db) تُفقد عند إعادة
-تشغيل/نشر التطبيق (redeploy) أو نوم الحاوية لفترة طويلة. هذا لا يمنع
-تشغيل التطبيق إطلاقاً، لكنه يعني أن بيانات المستخدمين والمشاريع ليست
-دائمة على الخطة المجانية. لدعم تخزين دائم لاحقاً (مثلاً عبر قرص خارجي
-مثبَّت أو خدمة تخزين سحابية)، اضبط متغير البيئة DATALENS_DATA_DIR
-ليشير لمسار دائم — الكود هنا يقرأه تلقائياً دون أي تعديل إضافي.
-
-ملاحظة عن مفاتيح API:
-------------------------
-مفاتيح API لم تعد تُخزَّن في project.db (راجع core/auth.py) — بل في
-users.db لكل مستخدم لكل محرك. project.db يحتفظ فقط بمرجع اسم المحرك
-والنموذج المُستخدَمين (ai_engine, model)، دون المفتاح نفسه، حتى لا
-يتسرّب أي مفتاح عند تصدير/استيراد/مشاركة ملف مشروع.
 """
 
 import os
@@ -116,9 +99,8 @@ DEFAULT_SETTINGS = {
 #
 # "gemini" و "ollama": بروتوكول خاص بكل منهما (كلاس منفصل).
 # باقي المحركات ("groq", "openrouter", ...): تُبنى ديناميكياً عبر
-# ai.engine_registry + ai.openai_compatible_engine.OpenAICompatibleEngine
+# ai.openai_compatible_engine.OpenAICompatibleEngine
 # — إضافة محرك جديد متوافق مع OpenAI API تتم بسطر واحد فقط في
-# ai/engine_registry.py دون أي تعديل آخر هنا أو في ai_manager.py.
 AI_ENGINES = ["gemini", "groq", "openrouter", "ollama"]
 
 OLLAMA_DEFAULT_URL = "http://localhost:11434"

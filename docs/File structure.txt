@@ -4,16 +4,16 @@
 ├── 📁 ai/                           # AI engine layer
 │   ├── 📄 __init__.py
 │   ├── 📄 base_engine.py            # Abstract base class for all AI engines
-│   ├── 📄 engine_registry.py        # Registry for OpenAI-compatible engines
-│   ├── 📄 openai_compatible_engine.py # Generic OpenAI API wrapper
+│   ├── 📄 openai_compatible_engine.py # Generic OpenAI API wrapper & Registry for OpenAI-compatible engines
 │   ├── 📄 gemini.py                 # Google Gemini engine
 │   ├── 📄 ollama.py                 # Local Ollama engine
-│   ├── 📄 grok.py                   # xAI Grok engine (legacy, replaced by OpenAICompatible)
-│   ├── 📄 openrouter.py             # OpenRouter engine (legacy, replaced by OpenAICompatible)
 │   ├── 📄 ai_manager.py             # Central AI orchestration
 │   └── 📄 prompt_builder.py         # Prompt construction
 ├── 📁 core/                         # Core business logic
-│   ├── 📄 __init__.py
+│   ├── 📁 dashboard_cells/          # Dashboard cell types 
+│   │   ├── 📄 __init__.py
+│   │   ├── 📄 base.py               # Abstract base class for all dashboard cells
+│   │   └── 📄 cells.py              # Text, Gauge, Chart, KPI, and gauge cell
 │   ├── 📄 auth.py                   # User authentication and API key storage
 │   ├── 📄 project_db.py             # SQLite database operations per project
 │   ├── 📄 project_manager.py        # Project lifecycle management
@@ -40,3 +40,4 @@
     ├── 📄 dashboards.py             # Dashboard builder and viewer
     ├── 📄 reports.py                # Report builder
     └── 📄 settings.py               # Project settings (AI engine, theme, timeouts)
+    

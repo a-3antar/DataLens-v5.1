@@ -26,12 +26,10 @@
 │   │       ├── extract_sql(text) -> dict
 │   │       └── clean_response(text) -> str
 │   │
-│   ├── 📄 engine_registry.py
+│   ├── 📄 openai_compatible_engine.py
 │   │   ├── OPENAI_COMPATIBLE_ENGINES (dict)
 │   │   ├── get_registry_entry(engine_name) -> dict
-│   │   └── all_openai_compatible_names() -> list[str]
-│   │
-│   ├── 📄 openai_compatible_engine.py
+│   │   ├── all_openai_compatible_names() -> list[str]
 │   │   └── OpenAICompatibleEngine (BaseEngine)
 │   │       ├── __init__(base_url, api_key, model, timeout, display_name)
 │   │       ├── models_url (property)

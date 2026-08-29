@@ -64,8 +64,14 @@ class EmptyCell:
 class TableCell(DashboardCellBase):
     """
     خلية "جدول" — أبسط الأنواع: SQL عادي (base_sql أو AI عبر السلوك
-    الافتراضي في DashboardCellBase.execute)، يُعرض كجدول HTML مُنسَّق
-    بألوان الثيم عبر ui.common.render_themed_table.
+    الافتراضي في DashboardCellBase.execute)، يُعرض عبر st.dataframe
+    التفاعلي (فرز الأعمدة، تغيير الحجم، تكبير كامل الشاشة، تنزيل CSV)
+    بدل الجدول الثابت render_themed_table — الأخير أُبقي مستخدَماً في
+    أماكن أخرى (نتيجة زر "اختبار"، بيانات Story Telling) لكن ليس هنا،
+    لأن خلية الجدول تحديداً هي المكان الذي يحتاج فيه المستخدم فعلياً
+    الفرز والتصفح التفاعلي على بيانات قد تكون طويلة. ألوان الثيم لا
+    تزال تُطبَّق عليه عبر متغيرات --gdg-* في ui.common.apply_theme_css
+    (تُستدعى دائماً في بداية الصفحة).
     """
 
     display_type = "table"
@@ -78,7 +84,7 @@ class TableCell(DashboardCellBase):
         if self._render_error_or_empty():
             return
         df = pd.DataFrame(self.last_result.get("rows", []))
-        render_themed_table(df, settings)
+        st.dataframe(df, width='stretch', hide_index=True)
         self._render_updated_caption(settings)
 
 

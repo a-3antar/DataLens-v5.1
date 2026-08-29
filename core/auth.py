@@ -14,9 +14,33 @@ core/auth.py
 التحديث. هذا يمنع تسرّب المفاتيح كنص صريح عند تصفح/نسخ ملف
 users.db مباشرة، بينما يبقى المفتاح المُستخدَم فعلياً في الطلبات
 (get_api_key) نصاً صريحاً كما هو متوقَّع من أي محرك AI.
+
+🆕 حذف الحساب (Soft Delete + أرشفة مؤقتة):
+--------------------------------------------
+delete_account() لا يحذف بيانات المستخدم نهائياً من القرص فوراً —
+بدلاً من ذلك:
+  1. يُنقَل مجلد المشروعات الخاص بالمستخدم (data/projects/{user_id})
+     بالكامل إلى data/deleted_users/{user_id}_{timestamp}/ عبر
+     shutil.move (نقل فعلي، وليس نسخ، لتفادي مضاعفة المساحة).
+  2. تُحذف كل صفوف المستخدم من users.db (users, sessions,
+     user_api_keys) فوراً — الحساب يصبح غير قابل لتسجيل الدخول
+     أو الاستخدام من هذه اللحظة.
+  3. يُسجَّل صف في جدول pending_deletions يحمل مسار الأرشيف وتاريخ
+     الحذف الفعلي (purge_at = تاريخ الحذف + 30 يوماً).
+
+purge_expired_deletions() — تُستدعى دورياً (من main.py عند كل إقلاع،
+بنفس نمط clean_expired_sessions) — تفحص pending_deletions وتحذف
+نهائياً (shutil.rmtree) أي أرشيف تجاوز purge_at، ثم تحذف صفه من
+الجدول. هذا يوفّر نافذة أمان بمدة شهر قبل الحذف النهائي غير القابل
+للتراجع، مع عدم ترك أي بيانات معلّقة إلى الأبد.
+
+ملاحظة: لا توجد حالياً واجهة "استرجاع حساب محذوف" — الأرشفة هنا
+للحماية من الحذف الخاطئ فقط (يمكن استعادتها يدوياً من القرص خلال
+الشهر لو لزم الأمر)، وليست ميزة استرجاع ذاتية للمستخدم.
 """
 
 import sqlite3
+import shutil
 import uuid
 import logging
 from datetime import datetime, timedelta
@@ -25,10 +49,14 @@ from typing   import Optional
 
 import bcrypt
 
-from config import USERS_DB, SESSION_EXPIRE_HOURS, BCRYPT_ROUNDS
+from config import USERS_DB, SESSION_EXPIRE_HOURS, BCRYPT_ROUNDS, PROJECTS_DIR, DATA_DIR
 from core.crypto import encrypt_value, decrypt_value
 
 logger = logging.getLogger(__name__)
+
+# مجلد أرشفة الحسابات المحذوفة (مؤقتاً) قبل الحذف النهائي
+DELETED_USERS_DIR = DATA_DIR / "deleted_users"
+ACCOUNT_PURGE_DAYS = 30
 
 
 # ══════════════════════════════════════════════════════════════
@@ -76,6 +104,19 @@ def _init_users_db() -> None:
                 updated_at  TEXT NOT NULL,
                 PRIMARY KEY (user_id, engine_name)
             );
+
+            -- 🆕 حسابات محذوفة بانتظار الحذف النهائي (أرشفة مؤقتة).
+            -- لا مفتاح خارجي على users(id) عمداً — صف المستخدم نفسه
+            -- يُحذف فوراً من جدول users عند delete_account(), بينما
+            -- سجل الأرشفة هذا يبقى مستقلاً حتى purge_at.
+            CREATE TABLE IF NOT EXISTS pending_deletions (
+                id           TEXT PRIMARY KEY,
+                user_id      TEXT NOT NULL,
+                username     TEXT NOT NULL,
+                archive_path TEXT NOT NULL,
+                deleted_at   TEXT NOT NULL,
+                purge_at     TEXT NOT NULL
+            );
         """)
         conn.commit()
     logger.info("users.db initialized: %s", USERS_DB)
@@ -97,6 +138,9 @@ class AuthManager:
 
         auth.save_api_key(user_id, "gemini", "AIza...", "gemini-2.0-flash")
         saved = auth.get_api_key(user_id, "gemini")   # مفتاح صريح جاهز للاستخدام
+
+        auth.change_password(user_id, "old_pw", "new_pw")
+        auth.delete_account(user_id, "current_password")
     """
 
     def __init__(self):
@@ -247,6 +291,15 @@ class AuthManager:
         except sqlite3.Error as e:
             logger.error("_delete_session error: %s", e)
 
+    def _delete_all_sessions_for_user(self, user_id: str) -> None:
+        """حذف كل جلسات مستخدم معيّن (تُستخدم عند حذف الحساب)."""
+        try:
+            with _connect() as conn:
+                conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+                conn.commit()
+        except sqlite3.Error as e:
+            logger.error("_delete_all_sessions_for_user error: %s", e)
+
     # ──────────────────────────────────────────────────────────
     #  إدارة المستخدمين
     # ──────────────────────────────────────────────────────────
@@ -291,6 +344,151 @@ class AuthManager:
             return count
         except sqlite3.Error as e:
             logger.error("clean_expired_sessions error: %s", e)
+            return 0
+
+    # ──────────────────────────────────────────────────────────
+    #  🆕 تغيير كلمة المرور
+    # ──────────────────────────────────────────────────────────
+
+    def change_password(self, user_id: str, old_password: str, new_password: str) -> dict:
+        """
+        تغيير كلمة مرور المستخدم — يتطلب كلمة المرور الحالية الصحيحة.
+        كل الجلسات الأخرى (على أجهزة/متصفحات أخرى) تبقى سارية؛ لو
+        رغبت لاحقاً بإبطالها جميعاً عند تغيير كلمة المرور، يمكن استدعاء
+        _delete_all_sessions_for_user هنا بسهولة.
+
+        يرجع: {"ok": True} أو {"ok": False, "error": "..."}
+        """
+        if not new_password or len(new_password) < 6:
+            return {"ok": False, "error": "كلمة المرور الجديدة يجب أن تكون 6 أحرف على الأقل"}
+
+        try:
+            with _connect() as conn:
+                row = conn.execute(
+                    "SELECT password FROM users WHERE id = ?", (user_id,)
+                ).fetchone()
+                if not row:
+                    return {"ok": False, "error": "المستخدم غير موجود"}
+
+                if not bcrypt.checkpw(old_password.encode(), row["password"].encode()):
+                    return {"ok": False, "error": "كلمة المرور الحالية غير صحيحة"}
+
+                new_hashed = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt(BCRYPT_ROUNDS))
+                conn.execute(
+                    "UPDATE users SET password = ? WHERE id = ?",
+                    (new_hashed.decode(), user_id)
+                )
+                conn.commit()
+            logger.info("Password changed for user: %s", user_id)
+            return {"ok": True}
+        except sqlite3.Error as e:
+            logger.error("change_password error: %s", e)
+            return {"ok": False, "error": "خطأ في قاعدة البيانات"}
+
+    # ──────────────────────────────────────────────────────────
+    #  🆕 حذف الحساب (Soft Delete + أرشفة 30 يوماً)
+    # ──────────────────────────────────────────────────────────
+
+    def delete_account(self, user_id: str, password: str) -> dict:
+        """
+        حذف حساب المستخدم:
+        1. التحقق من كلمة المرور الحالية (تأكيد إضافي قبل عملية لا رجعة
+           فيها من واجهة المستخدم، حتى لو كانت البيانات فعلياً مؤرشفة).
+        2. نقل data/projects/{user_id} (إن وُجد) إلى
+           data/deleted_users/{user_id}_{timestamp}/.
+        3. حذف صفوف المستخدم من users/sessions/user_api_keys.
+        4. تسجيل صف في pending_deletions لحذف الأرشيف نهائياً بعد
+           ACCOUNT_PURGE_DAYS يوماً (عبر purge_expired_deletions).
+
+        يرجع: {"ok": True} أو {"ok": False, "error": "..."}
+        """
+        try:
+            with _connect() as conn:
+                row = conn.execute(
+                    "SELECT username, password FROM users WHERE id = ?", (user_id,)
+                ).fetchone()
+            if not row:
+                return {"ok": False, "error": "المستخدم غير موجود"}
+
+            if not bcrypt.checkpw(password.encode(), row["password"].encode()):
+                return {"ok": False, "error": "كلمة المرور غير صحيحة"}
+
+            username = row["username"]
+
+            # ── نقل مجلد بيانات المستخدم إلى الأرشيف (لو كان موجوداً) ──
+            source_dir = PROJECTS_DIR / user_id
+            timestamp = _now().strftime("%Y%m%d_%H%M%S")
+            archive_dir = DELETED_USERS_DIR / f"{user_id}_{timestamp}"
+
+            if source_dir.exists():
+                DELETED_USERS_DIR.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(source_dir), str(archive_dir))
+                logger.info("User data archived: %s -> %s", source_dir, archive_dir)
+            else:
+                # لا مشاريع لهذا المستخدم أصلاً — لا حاجة لأرشيف فعلي،
+                # لكن نُبقي سجل pending_deletions لضبط سلوك موحّد (لا
+                # يُنشئ مجلداً فارغاً، فقط يُسجَّل بدون archive_path فعلي)
+                archive_dir = None
+
+            # ── حذف صفوف المستخدم من users.db ──
+            with _connect() as conn:
+                conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+                conn.execute("DELETE FROM user_api_keys WHERE user_id = ?", (user_id,))
+                conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+                # تسجيل الأرشفة المعلّقة فقط لو كان هناك فعلياً مجلد أُرشِف
+                if archive_dir is not None:
+                    deleted_at = _now()
+                    purge_at = deleted_at + timedelta(days=ACCOUNT_PURGE_DAYS)
+                    conn.execute(
+                        """
+                        INSERT INTO pending_deletions
+                            (id, user_id, username, archive_path, deleted_at, purge_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (str(uuid.uuid4()), user_id, username, str(archive_dir),
+                         deleted_at.isoformat(), purge_at.isoformat())
+                    )
+                conn.commit()
+
+            logger.info("Account deleted (archived): '%s' (%s)", username, user_id)
+            return {"ok": True}
+
+        except Exception as e:
+            logger.error("delete_account error: %s", e)
+            return {"ok": False, "error": str(e)}
+
+    def purge_expired_deletions(self) -> int:
+        """
+        حذف نهائي لكل أرشيفات الحسابات المحذوفة التي تجاوزت مهلة
+        ACCOUNT_PURGE_DAYS — تُستدعى دورياً (main.py عند كل إقلاع، بنفس
+        نمط clean_expired_sessions). يرجع عدد الأرشيفات المحذوفة نهائياً.
+        """
+        removed = 0
+        try:
+            with _connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, archive_path FROM pending_deletions WHERE purge_at < ?",
+                    (_now_str(),)
+                ).fetchall()
+
+            for row in rows:
+                archive_path = Path(row["archive_path"])
+                try:
+                    if archive_path.exists():
+                        shutil.rmtree(archive_path, ignore_errors=True)
+                    with _connect() as conn:
+                        conn.execute("DELETE FROM pending_deletions WHERE id = ?", (row["id"],))
+                        conn.commit()
+                    removed += 1
+                except Exception as e:
+                    logger.warning("purge_expired_deletions: failed for %s (%s)", archive_path, e)
+
+            if removed:
+                logger.info("Purged %d expired deleted-account archive(s)", removed)
+            return removed
+        except sqlite3.Error as e:
+            logger.error("purge_expired_deletions error: %s", e)
             return 0
 
     # ──────────────────────────────────────────────────────────

@@ -13,6 +13,21 @@ settings، ويُفَكّ تشفيره تلقائياً عند القراءة ع
 save_settings() (ui/settings.py، ui/dashboards.py، ui/chat.py...).
 القيم القديمة غير المُشفَّرة (قبل هذا التحديث) تستمر بالعمل تلقائياً
 (راجع core/crypto.decrypt_value)، وتُشفَّر عند أول حفظ جديد لها.
+
+🆕 حذف ملف (remove_file) — Cascade على العلاقات:
+------------------------------------------------------
+حذف جدول يُستخدم كطرف في علاقة (relations) يحذف تلك العلاقة تلقائياً
+معه (سواء كان الجدول from_table أو to_table) — بدل ترك علاقة يتيمة
+تشير لجدول غير موجود، وهو ما كان سيُربك AI عند بناء الـ schema/prompt
+لاحقاً. الدالة تُرجع الآن عدد العلاقات المحذوفة تبعاً حتى تُبلّغ
+الواجهة المستخدم بوضوح.
+
+🆕 نسخ احتياطي (backup) — سقف 20 نسخة مع تدوير تلقائي:
+------------------------------------------------------------
+كل استدعاء لـ backup() ينشئ نسخة جديدة كما كان، ثم يفحص كل ملفات
+backup_*.db في نفس مجلد المشروع؛ لو تجاوز العدد 20 نسخة، تُحذف أقدم
+النسخ (بترتيب اسم الملف، الذي يحمل timestamp، أو وقت التعديل احتياطاً)
+حتى يعود العدد إلى الحد الأقصى المسموح به.
 """
 
 import sqlite3
@@ -33,6 +48,10 @@ logger = logging.getLogger(__name__)
 # بادئة مفاتيح الإعدادات التي تحتوي مفاتيح API فعلية ويجب تشفيرها
 # قبل الكتابة في settings (مثل "api_key_groq"، "api_key_openrouter"...)
 _API_KEY_SETTING_PREFIX = "api_key_"
+
+# 🆕 أقصى عدد نسخ احتياطية محتفَظ بها لكل مشروع — عند التجاوز تُحذف
+# أقدم النسخ تلقائياً بعد كل نسخة جديدة (راجع backup() أدناه).
+MAX_BACKUPS_PER_PROJECT = 20
 
 
 # ══════════════════════════════════════════════════════════════
@@ -313,8 +332,19 @@ class ProjectDB:
             logger.error("get_files error: %s", e)
             return []
 
-    def remove_file(self, file_id: str) -> None:
-        """حذف ملف مصدر وجدول البيانات النظيفة الخاص به."""
+    def remove_file(self, file_id: str) -> dict:
+        """
+        حذف ملف مصدر وجدول البيانات النظيفة الخاص به.
+
+        🆕 Cascade: أي علاقة (relations) تشير إلى هذا الجدول — سواء
+        كجدول مصدر (from_table) أو هدف (to_table) — تُحذف تلقائياً معه،
+        لأن العلاقة أصبحت بلا معنى بمجرد اختفاء أحد طرفيها (تجنّباً
+        لعلاقات "يتيمة" تُربك AI لاحقاً عند بناء الـ schema/prompt).
+
+        يرجع: {"removed_relations": N} — عدد العلاقات المحذوفة تبعاً،
+        حتى تعرضه الواجهة كتنبيه واضح للمستخدم بدل حذف صامت.
+        """
+        removed_relations = 0
         try:
             with _connect(self.db_path) as conn:
                 row = conn.execute(
@@ -323,9 +353,23 @@ class ProjectDB:
                 if row:
                     alias = row["table_alias"]
                     conn.execute(f'DROP TABLE IF EXISTS "data_{alias}"')
+
+                    cursor = conn.execute(
+                        "DELETE FROM relations WHERE from_table = ? OR to_table = ?",
+                        (alias, alias)
+                    )
+                    removed_relations = cursor.rowcount
+
                 conn.execute("DELETE FROM source_files WHERE id = ?", (file_id,))
                 conn.commit()
-            logger.info("File removed: %s", file_id)
+            if removed_relations:
+                logger.info(
+                    "File removed: %s — %d dependent relation(s) cascaded",
+                    file_id, removed_relations
+                )
+            else:
+                logger.info("File removed: %s", file_id)
+            return {"removed_relations": removed_relations}
         except sqlite3.Error as e:
             logger.error("remove_file error: %s", e)
             raise
@@ -926,16 +970,43 @@ class ProjectDB:
     # ──────────────────────────────────────────────────────────
 
     def backup(self) -> Path:
-        """إنشاء نسخة احتياطية من project.db."""
+        """
+        إنشاء نسخة احتياطية من project.db، ثم تطبيق سقف
+        MAX_BACKUPS_PER_PROJECT نسخة — عند التجاوز تُحذف أقدم النسخ
+        تلقائياً (بترتيب اسم الملف، الذي يحمل timestamp تصاعدياً،
+        فيكون أول عنصر بعد الترتيب الأبجدي هو الأقدم فعلياً).
+        """
         timestamp   = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         backup_path = self.db_dir / f"backup_{timestamp}.db"
         try:
             shutil.copy2(self.db_path, backup_path)
             logger.info("Backup created: %s", backup_path)
+            self._rotate_old_backups()
             return backup_path
         except Exception as e:
             logger.error("backup error: %s", e)
             raise
+
+    def _rotate_old_backups(self) -> None:
+        """
+        حذف أقدم النسخ الاحتياطية عند تجاوز MAX_BACKUPS_PER_PROJECT.
+        الترتيب يعتمد على اسم الملف (backup_YYYYMMDD_HHMMSS.db) الذي
+        يُرتَّب أبجدياً بنفس ترتيبه الزمني تماماً — بدون حاجة لقراءة
+        وقت تعديل الملف من نظام الملفات.
+        """
+        try:
+            backups = sorted(self.db_dir.glob("backup_*.db"))
+            excess = len(backups) - MAX_BACKUPS_PER_PROJECT
+            if excess <= 0:
+                return
+            for old_backup in backups[:excess]:
+                try:
+                    old_backup.unlink()
+                    logger.info("Old backup removed (rotation): %s", old_backup)
+                except Exception as e:
+                    logger.warning("Failed to remove old backup %s: %s", old_backup, e)
+        except Exception as e:
+            logger.error("_rotate_old_backups error: %s", e)
 
     # ──────────────────────────────────────────────────────────
     #  معلومات عامة
