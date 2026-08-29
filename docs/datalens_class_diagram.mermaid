@@ -1,0 +1,121 @@
+classDiagram
+    direction TB
+
+    %% ── خلايا لوحة المعلومات ──
+    class DashboardCellBase {
+        <<abstract>>
+        +int position
+        +str title
+        +str question
+        +str chart_type
+        +str base_sql
+        +dict last_result
+        +execute(ai, qe, filters, rules) dict
+        +to_stored_dict(raw)* dict
+        +render_result(settings, dash_id)* void
+        +render_editor(...) void
+        +render_actions_menu(...) void
+        +save(db, dash_id) void
+        +clear(db, dash_id) void
+        #_run_fast(qe, filters) dict
+    }
+
+    class EmptyCell {
+        +position
+        +render_editor(...) void
+    }
+    class TableCell {
+        +to_stored_dict()
+        +render_result()
+    }
+    class ChartCell {
+        +chart_type
+        +to_stored_dict()
+        +render_result()
+        +render_type_specific_fields()
+    }
+    class GaugeCell {
+        +to_stored_dict()
+        +render_result()
+    }
+    class KpiCell {
+        +to_stored_dict()
+        +render_result()
+    }
+    class StoryCell {
+        +execute() dict  %% override: يستدعي AI دائماً
+        +to_stored_dict()
+        +render_result()
+    }
+
+    DashboardCellBase <|-- TableCell
+    DashboardCellBase <|-- ChartCell
+    DashboardCellBase <|-- GaugeCell
+    DashboardCellBase <|-- KpiCell
+    DashboardCellBase <|-- StoryCell
+
+    class DashboardManager {
+        +refresh_dashboard(dash_id) dict
+        +refresh_single_cell(dash_id, pos) dict
+        -_process_cell(cell, filters, rules) dict
+        -_build_active_filters(dash_id) list
+        +generate_dashboard_plan(desc) dict
+    }
+    DashboardManager --> DashboardCellBase : uses (create_cell)
+
+    %% ── محركات AI ──
+    class BaseEngine {
+        <<abstract>>
+        +str api_key
+        +str model
+        +int timeout
+        +get_models()* dict
+        +send(prompt, temp, timeout_override)* dict
+        +status()* dict
+        +extract_sql(text) dict
+        +clean_response(text) str
+    }
+    class GeminiEngine
+    class OllamaEngine
+    class OpenAICompatibleEngine {
+        +str base_url
+        +str display_name
+    }
+
+    BaseEngine <|-- GeminiEngine
+    BaseEngine <|-- OllamaEngine
+    BaseEngine <|-- OpenAICompatibleEngine
+
+    class AIManager {
+        +ask(question, result_type, filters) dict
+        +tell_story(question, filters) dict
+        +engine_status() dict
+    }
+    AIManager --> BaseEngine : يستخدم محرك واحد
+    AIManager --> PromptBuilder
+    AIManager --> QueryEngine
+
+    class PromptBuilder {
+        +build(question, result_type, filters) str
+        +build_error_retry(...) str
+        +build_story(question, df) str
+    }
+
+    class QueryEngine {
+        +run(sql, filters) dict
+        +run_with_filters(base_sql, filters) dict
+        -_load_tables(conn, filters) list
+    }
+    QueryEngine --> ProjectDB
+
+    class ProjectDB {
+        +get_settings() dict
+        +save_settings(updates) void
+        +get_clean_data(alias) DataFrame
+        +get_schema() dict
+        +get_dashboard_cells(dash_id) list
+        +save_dashboard_cell_result(...) void
+    }
+
+    DashboardCellBase --> AIManager : execute()
+    DashboardCellBase --> QueryEngine : _run_fast()

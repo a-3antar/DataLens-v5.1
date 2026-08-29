@@ -1,0 +1,124 @@
+graph TB
+
+    subgraph UI["🖥️ طبقة الواجهة — ui/*.py (Streamlit)"]
+        Login[login.py]
+        Projects[projects.py]
+        Files[files.py]
+        Data[data.py]
+        Chat[chat.py]
+        Dashboards[dashboards.py]
+        Reports[reports.py]
+        Settings[settings.py]
+        Common[common.py<br/>RTL / Theme / Helpers]
+    end
+
+    subgraph CORE["⚙️ طبقة المنطق — core/*.py"]
+        Auth[auth.py<br/>Users + Sessions + API Keys]
+        Crypto[crypto.py<br/>Fernet Encryption]
+        ProjMgr[project_manager.py]
+        ProjDB[(project_db.py<br/>SQLite: settings/files/relations/<br/>chat/reports/dashboards)]
+        FileMgr[file_manager.py<br/>Read xlsx/csv from bytes]
+        DataMgr[data_manager.py<br/>Clean / Transform]
+        QueryEng[query_engine.py<br/>DuckDB + Filtered Views]
+        DashTmpl[dashboard_templates.py]
+        DashMgr[dashboard_manager.py<br/>Refresh via Threads]
+        subgraph CELLS["core/dashboard_cells/"]
+            CellBase[DashboardCellBase]
+            EmptyCell
+            TableCell
+            ChartCell
+            GaugeCell
+            KpiCell
+            StoryCell
+            CellBase --> TableCell
+            CellBase --> ChartCell
+            CellBase --> GaugeCell
+            CellBase --> KpiCell
+            CellBase --> StoryCell
+        end
+    end
+
+    subgraph AI["🤖 طبقة الذكاء الاصطناعي — ai/*.py"]
+        BaseEngine[BaseEngine<br/>ABC: send/get_models/status]
+        Gemini[GeminiEngine]
+        Ollama[OllamaEngine]
+        OpenAICompat[OpenAICompatibleEngine]
+        Registry[engine_registry.py<br/>groq / openrouter]
+        PromptBuilder[prompt_builder.py]
+        AIManager[ai_manager.py<br/>ask / tell_story / retry logic]
+
+        BaseEngine --> Gemini
+        BaseEngine --> Ollama
+        BaseEngine --> OpenAICompat
+        Registry -.builds.-> OpenAICompat
+        AIManager --> PromptBuilder
+        AIManager --> BaseEngine
+    end
+
+    subgraph EXPORT["📤 طبقة التصدير — exporters/*.py"]
+        ReportMgr[report_manager.py]
+        PDFExp[pdf_exporter.py]
+        ExcelExp[excel_exporter.py]
+        MDExp[markdown_exporter.py]
+        ChartRender[chart_renderer.py<br/>Pillow PNG]
+        PDFExp --> ChartRender
+        ExcelExp --> ChartRender
+    end
+
+    subgraph DBS["💾 التخزين"]
+        UsersDB[(users.db<br/>مشترك لكل المستخدمين)]
+        ProjectDBFile[(project.db<br/>لكل مشروع)]
+    end
+
+    %% ── UI depends on Core/AI/Exporters ──
+    Login --> Auth
+    Projects --> ProjMgr
+    Files --> FileMgr
+    Files --> DataMgr
+    Data --> DataMgr
+    Chat --> AIManager
+    Chat --> QueryEng
+    Dashboards --> DashMgr
+    Dashboards --> CELLS
+    Reports --> ReportMgr
+    Reports --> PDFExp
+    Reports --> ExcelExp
+    Reports --> MDExp
+    Settings --> Auth
+    Settings --> AIManager
+
+    Common -.CSS/Theme.-> UI
+
+    %% ── Core internal ──
+    ProjMgr --> ProjDB
+    DataMgr --> FileMgr
+    DataMgr --> ProjDB
+    QueryEng --> ProjDB
+    DashMgr --> CELLS
+    DashMgr --> QueryEng
+    DashMgr --> AIManager
+    CellBase --> AIManager
+    CellBase --> QueryEng
+    ReportMgr --> ProjDB
+
+    AIManager --> QueryEng
+    AIManager --> ProjDB
+
+    Auth --> Crypto
+    ProjDB --> Crypto
+
+    %% ── Storage ──
+    Auth --> UsersDB
+    ProjDB --> ProjectDBFile
+
+    classDef uiStyle fill:#1E3A5F,color:#fff,stroke:#2563EB
+    classDef coreStyle fill:#065F46,color:#fff,stroke:#10B981
+    classDef aiStyle fill:#B45309,color:#fff,stroke:#F59E0B
+    classDef exportStyle fill:#581C87,color:#fff,stroke:#A855F7
+    classDef dbStyle fill:#374151,color:#fff,stroke:#6B7280
+
+    class Login,Projects,Files,Data,Chat,Dashboards,Reports,Settings,Common uiStyle
+    class Auth,Crypto,ProjMgr,ProjDB,FileMgr,DataMgr,QueryEng,DashTmpl,DashMgr,CellBase,EmptyCell,TableCell,ChartCell,GaugeCell,KpiCell,StoryCell coreStyle
+    class BaseEngine,Gemini,Ollama,OpenAICompat,Registry,PromptBuilder,AIManager aiStyle
+    class ReportMgr,PDFExp,ExcelExp,MDExp,ChartRender exportStyle
+    class UsersDB,ProjectDBFile dbStyle
