@@ -6,6 +6,17 @@ ui/common.py
 وإشعارات موحّدة عبر Toast بدل الرسائل التوضيحية الثابتة المنتشرة في
 الصفحات.
 
+🆕 اسم المستخدم في اللوج:
+---------------------------
+sidebar_header() تستدعي الآن core.logger_config.set_log_username()
+بمجرد معرفة اسم المستخدم من session_state — هذه هي نقطة الدخول
+المركزية الوحيدة (تُستدعى في بداية كل صفحة محمية بعد تسجيل الدخول)،
+فيكفي ضبطها هنا مرة واحدة حتى يظهر اسم المستخدم تلقائياً في كل سطر
+log يُكتب لاحقاً من أي مكان في المشروع (بما في ذلك threads تحديث
+لوحات المعلومات، التي ترث نفس القيمة تلقائياً عبر contextvars —
+راجع core/logger_config.py للتفاصيل). عند الضغط على "تسجيل الخروج"
+تُستدعى clear_log_username() لإعادة الحالة إلى الافتراضي ("-").
+
 🆕 الثيمات:
 ------------
 بالإضافة إلى الثيمات الجاهزة (THEME_COLORS)، يدعم التطبيق ثيماً
@@ -56,6 +67,7 @@ import pandas as pd
 
 from core.project_manager import ProjectManager
 from core.project_db import ProjectDB
+from core.logger_config import set_log_username, clear_log_username
 
 from config import APP_NAME, DEFAULT_SETTINGS
 
@@ -77,7 +89,7 @@ RTL_CSS = """
        عند الطي عبر transform: translateX(-100%) — وهذا لا ينعكس
        تلقائياً بمجرد ضبط direction:rtl على الحاوية، فيظهر شريط
        الطي عالقاً في المنتصف. نُثبّت الموضع والانزلاق يدوياً هنا.
-       ───────────────────────────────────────────────────── */
+       ───────────────────────────────────────────────── */
     [data-testid="stSidebar"] {
         direction: rtl;
         text-align: right;
@@ -683,11 +695,18 @@ def sidebar_header():
     البريد الإلكتروني + رابط مباشر لصفحة إعدادات الحساب) بدل عنوان
     ثابت فقط — راجع _render_account_quick_menu أدناه. الظهور قبل
     المشروع الحالي كما هو مطلوب.
+
+    🆕 هذه الدالة تُستدعى في بداية كل صفحة محمية بعد تسجيل الدخول —
+    نقطة الدخول الطبيعية لضبط set_log_username() لهذا الـ context،
+    حتى يظهر اسم المستخدم تلقائياً في كل سطر log لاحق (راجع
+    core/logger_config.py للتفاصيل الكاملة).
     """
     from core.auth import AuthManager
 
+    username = st.session_state.get("username", "")
+    set_log_username(username)
+
     with st.sidebar:
-        username = st.session_state.get("username", "")
         has_popover = hasattr(st, "popover")
         menu_ctx = (
             st.popover(f"👋 {username}", width='stretch') if has_popover
@@ -703,6 +722,7 @@ def sidebar_header():
         st.divider()
         if st.button("🚪 تسجيل الخروج", width='stretch'):
             AuthManager().logout(st.session_state.get("token", ""))
+            clear_log_username()
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
