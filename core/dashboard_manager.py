@@ -13,7 +13,7 @@ core/dashboard_manager.py
 core.dashboard_cells.create_cell() من الصف الخام في project_db، ويعرف
 بنفسه كيف يُنفَّذ (execute) وكيف يُخزَّن (to_stored_dict). هذا الملف
 لم يعد يحتوي أي فرع "if display_type == ..." — فقط يستدعي الدوال
-المتعارف عليها على أي كائن خلية بغض النظر عن نوعه الفعلي.
+المتعارف عليها على أي كائن خلية بغض النظر عن نوعها الفعلي.
 
 سياسة استدعاء AI (تبقى كما كانت، الآن داخل كل كلاس خلية):
 --------------------------------------------------------------
@@ -38,6 +38,26 @@ core.dashboard_cells.create_cell() من الصف الخام في project_db، و
   الـ threads (تجميع النتائج أولاً)، وليس من داخل الـ threads نفسها —
   لتفادي أي تزامن كتابة على نفس ملف SQLite من عدة threads معاً.
 
+🆕 نقل سياق logging (contextvars) إلى الـ threads العاملة:
+------------------------------------------------------------------
+core/logger_config.py يضبط اسم المستخدم الحالي عبر
+contextvars.ContextVar — وهذه لا تنتقل تلقائياً إلى أي thread جديد
+يُنشأ عبر threading.Thread/ThreadPoolExecutor (خلافاً لـ asyncio الذي
+ينسخها تلقائياً)؛ الـ thread الجديد يبدأ بسياق افتراضي فارغ، فيظهر
+اسم المستخدم كـ "-" في كل سطر log يُكتب من داخل _process_cell رغم
+تنفيذه فعلياً لصالح مستخدم معروف — وهذا ما لوحظ فعلياً في اللوج
+(أسطر ai.ai_manager/core.query_engine الناتجة عن خلايا اللوحة تظهر
+دائماً بـ "-" رغم ظهور اسم المستخدم بشكل صحيح في الأسطر المجاورة
+الآتية من الـ main thread).
+
+الحل: عند كل submit إلى ThreadPoolExecutor هنا، نلتقط السياق الحالي
+في الـ thread الرئيسي عبر contextvars.copy_context() (قبل بدء الـ
+thread، حيث لا تزال القيمة الصحيحة متاحة)، ثم ننفّذ _process_cell
+داخل نفس هذا السياق عبر ctx.run(...) بدل استدعائه مباشرة — فينتقل
+معه أي ContextVar مضبوط وقتها (اسم المستخدم وأي سياق مشابه مستقبلاً)
+بدون أي حاجة لمعرفة تفاصيله هنا (هذا الملف لا يستورد ui/ أو
+streamlit، ويبقى كذلك — راجع _submit_with_context أدناه).
+
 لا تحديث تلقائي أو فوري لأي خلية — كل شيء يحدث فقط عند استدعاء
 refresh_dashboard() أو refresh_single_cell() (المرتبطين بأزرار صريحة
 في الواجهة).
@@ -45,6 +65,7 @@ refresh_dashboard() أو refresh_single_cell() (المرتبطين بأزرار 
 
 import json
 import logging
+import contextvars
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, Callable
 
@@ -125,6 +146,25 @@ class DashboardManager:
 
         return {"cell_obj": cell_obj, "position": cell_obj.position, "result": r}
 
+    def _submit_with_context(self, executor: ThreadPoolExecutor, cell_obj, filters: list, ai_rules: Optional[str]):
+        """
+        🆕 إرسال _process_cell إلى الـ thread pool مع نقل سياق
+        contextvars الحالي (بما فيه اسم المستخدم لأغراض اللوج — راجع
+        core/logger_config.py) إلى الـ thread العامل.
+
+        السبب: contextvars.ContextVar لا تنتقل تلقائياً لـ threads
+        جديدة (خلافاً لـ asyncio) — كل thread يبدأ بسياق افتراضي فارغ.
+        contextvars.copy_context() هنا يُستدعى في الـ thread الرئيسي
+        (وقت الإرسال، حيث السياق الصحيح لا يزال متاحاً)، فيُنشئ نسخة
+        من كل قيم السياق الحالية؛ ثم executor.submit(ctx.run, ...)
+        ينفّذ _process_cell داخل تلك النسخة بالضبط داخل الـ thread
+        العامل. هذا حل عام لا يحتاج معرفة أي تفاصيل عمّا هو مخزَّن في
+        السياق (لا استيراد لـ ui/ أو streamlit هنا) — أي ContextVar
+        حالي أو مستقبلي ينتقل تلقائياً بنفس الطريقة.
+        """
+        ctx = contextvars.copy_context()
+        return executor.submit(ctx.run, self._process_cell, cell_obj, filters, ai_rules)
+
     # ──────────────────────────────────────────────────────────
     #  تحديث البيانات (كل خلايا اللوحة) — متوازٍ عبر Threads
     # ──────────────────────────────────────────────────────────
@@ -188,10 +228,15 @@ class DashboardManager:
         # بحت (AI/DuckDB)، لذا تشغيله داخل thread آمن تماماً. التحديث
         # البصري (track_progress) يحدث فقط بعد استلام النتيجة في الـ
         # main thread عبر as_completed، وليس من داخل الـ thread نفسها.
+        # 🆕 الإرسال يمر عبر _submit_with_context لنقل سياق اللوج الحالي
+        # (اسم المستخدم) إلى كل thread عامل — راجع توثيق تلك الدالة أعلاه.
         if story_cells:
             workers = min(max_workers, max(1, len(story_cells)))
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="story") as ex:
-                futures = {ex.submit(self._process_cell, c, filters, ai_rules): c for c in story_cells}
+                futures = {
+                    self._submit_with_context(ex, c, filters, ai_rules): c
+                    for c in story_cells
+                }
                 for f in as_completed(futures):
                     all_outcomes.append(f.result())
                     track_progress()
@@ -200,12 +245,16 @@ class DashboardManager:
         if other_cells:
             if engine_name != "ollama":
                 with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="cell") as ex:
-                    futures = {ex.submit(self._process_cell, c, filters, ai_rules): c for c in other_cells}
+                    futures = {
+                        self._submit_with_context(ex, c, filters, ai_rules): c
+                        for c in other_cells
+                    }
                     for f in as_completed(futures):
                         all_outcomes.append(f.result())
                         track_progress()
             else:
                 # Ollama محلي — لا فائدة حقيقية من التوازي، نبقيه تسلسلياً
+                # (تنفيذ مباشر في الـ main thread — لا حاجة لنقل سياق هنا)
                 for c in other_cells:
                     all_outcomes.append(self._process_cell(c, filters, ai_rules))
                     track_progress()
@@ -264,6 +313,10 @@ class DashboardManager:
         تحديث خلية واحدة فقط بنفس منطق refresh_dashboard (AI فقط عند
         الحاجة). مفيد أثناء بناء اللوحة أو تصحيح سؤال معين دون الانتظار
         لتحديث كل الخلايا.
+
+        تُنفَّذ مباشرة في الـ main thread (بدون ThreadPoolExecutor) —
+        لا حاجة لنقل سياق هنا لأن السياق الحالي (اسم المستخدم) هو
+        السياق الصحيح بالفعل.
 
         يرجع: {"ok": True/False, "used_ai": True/False, "result": {...}}
                أو {"ok": False, "used_ai": ..., "error": "..."}
