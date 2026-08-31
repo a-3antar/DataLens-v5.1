@@ -8,6 +8,15 @@ core/data_manager.py
 - load_file يستدعي db.add_file() لتسجيل الملف في source_files
   حتى يتمكن QueryEngine من تحميل الجداول عبر get_files()
 - fill_nulls يفحص صحة strategy قبل فحص null_count == 0
+- 🆕 filter_rows تحوّل القيمة المُدخلة (نصية دائماً من واجهة Streamlit)
+  إلى نوع العمود الفعلي (رقمي/تاريخ/منطقي) قبل المقارنة — بدون هذا
+  التحويل، مقارنة عمود int64 أو datetime64 بقيمة نصية خام ترمي
+  "Invalid comparison between dtype=int64 and str" في pandas، أو
+  تُرجع دائماً نتيجة فارغة بصمت مع أعمدة التاريخ.
+- 🆕 get_stats أصبحت تكتشف نوع العمود فعلياً (رقمي/تاريخ/نصي) وتُرجع
+  إحصاءات مناسبة لكل نوع، بدل فرض pd.to_numeric على كل الأعمدة (كان
+  يُنتج NaN/أصفاراً بلا معنى لأي عمود نصي وحتى بعض أعمدة التاريخ).
+- 🆕 drop_empty_rows لحذف الصفوف الفارغة كلياً/جزئياً أو حسب عمود محدد.
 """
 
 import logging
@@ -30,10 +39,13 @@ class DataManager:
         dm.load_file("f001", ".xlsx", "sales", sheet="Sheet1")
         dm.change_dtype("sales", "amount", "float")
         dm.fill_nulls("sales", "amount", "mean")
+        dm.drop_empty_rows("sales", mode="all")
     """
 
     # الـ strategies الصحيحة — نعرفها هنا لإعادة الاستخدام
     VALID_STRATEGIES = {"mean", "median", "mode", "zero", "value"}
+    # طرق حذف الصفوف الفارغة المدعومة
+    VALID_DROP_MODES = {"all", "any", "column"}
 
     def __init__(self, db: ProjectDB, fm: FileManager):
         self.db = db
@@ -142,6 +154,46 @@ class DataManager:
     #  تصفية الصفوف
     # ──────────────────────────────────────────────────────────
 
+    def _coerce_filter_value(self, col: pd.Series, operator: str, raw_value: object):
+        """
+        🆕 تحويل القيمة المُدخلة (نصية دائماً من st.text_input) إلى نوع
+        العمود الفعلي قبل المقارنة — يمنع "Invalid comparison between
+        dtype=int64 and str" على الأعمدة الرقمية، ويمنع مقارنة صامتة
+        فارغة النتيجة على أعمدة التاريخ (نص مقابل Timestamp).
+
+        "contains" مستثناة عمداً (تعمل دائماً على تمثيل نصي للعمود).
+
+        يرجع: (القيمة المُحوَّلة, رسالة خطأ أو None)
+        """
+        if operator == "contains":
+            return raw_value, None
+
+        if pd.api.types.is_datetime64_any_dtype(col):
+            converted = pd.to_datetime(raw_value, errors="coerce")
+            if pd.isna(converted):
+                return None, f"القيمة '{raw_value}' ليست تاريخاً صالحاً لهذا العمود"
+            return converted, None
+
+        if pd.api.types.is_bool_dtype(col):
+            normalized = str(raw_value).strip().lower()
+            if normalized in ("true", "1", "yes", "نعم", "صح"):
+                return True, None
+            if normalized in ("false", "0", "no", "لا", "خطأ"):
+                return False, None
+            return None, f"القيمة '{raw_value}' ليست قيمة منطقية صالحة (true/false)"
+
+        if pd.api.types.is_integer_dtype(col) or pd.api.types.is_float_dtype(col):
+            try:
+                num = float(raw_value)
+            except (TypeError, ValueError):
+                return None, f"القيمة '{raw_value}' ليست رقماً صالحاً لهذا العمود"
+            if pd.api.types.is_integer_dtype(col) and num.is_integer():
+                return int(num), None
+            return num, None
+
+        # عمود نصي عادي — بدون تحويل
+        return raw_value, None
+
     def filter_rows(
         self,
         table_alias: str,
@@ -161,20 +213,25 @@ class DataManager:
 
         before = len(df)
         try:
+            # 🆕 تحويل القيمة لنوع العمود الفعلي قبل أي مقارنة
+            coerced_value, coerce_error = self._coerce_filter_value(df[column], operator, value)
+            if coerce_error:
+                return {"ok": False, "error": coerce_error}
+
             if operator == "==":
-                df = df[df[column] == value]
+                df = df[df[column] == coerced_value]
             elif operator == "!=":
-                df = df[df[column] != value]
+                df = df[df[column] != coerced_value]
             elif operator == ">":
-                df = df[df[column] > value]
+                df = df[df[column] > coerced_value]
             elif operator == "<":
-                df = df[df[column] < value]
+                df = df[df[column] < coerced_value]
             elif operator == ">=":
-                df = df[df[column] >= value]
+                df = df[df[column] >= coerced_value]
             elif operator == "<=":
-                df = df[df[column] <= value]
+                df = df[df[column] <= coerced_value]
             elif operator == "contains":
-                df = df[df[column].astype(str).str.contains(str(value), na=False)]
+                df = df[df[column].astype(str).str.contains(str(coerced_value), na=False)]
             else:
                 return {"ok": False, "error": f"عملية غير مدعومة: {operator}"}
 
@@ -185,6 +242,59 @@ class DataManager:
 
         except Exception as e:
             logger.error("filter_rows error: %s", e)
+            return {"ok": False, "error": str(e)}
+
+    # ──────────────────────────────────────────────────────────
+    #  🆕 حذف الصفوف الفارغة
+    # ──────────────────────────────────────────────────────────
+
+    def drop_empty_rows(
+        self,
+        table_alias: str,
+        mode       : str = "all",
+        column     : Optional[str] = None,
+    ) -> dict:
+        """
+        حذف الصفوف الفارغة من الجدول.
+
+        mode:
+            "all"    — يُحذف الصف فقط لو كل أعمدته فارغة معاً.
+            "any"    — يُحذف الصف لو أي عمود فيه قيمة فارغة (أكثر صرامة).
+            "column" — يُحذف الصف فقط لو كان عمود محدد (column) فارغاً.
+
+        يرجع: {"ok": True, "before": N, "after": M} أو {"ok": False, "error": "..."}
+        """
+        if mode not in self.VALID_DROP_MODES:
+            return {"ok": False, "error": f"طريقة غير مدعومة: {mode}"}
+
+        df = self.db.get_clean_data(table_alias)
+        if df is None:
+            return {"ok": False, "error": f"الجدول '{table_alias}' غير موجود"}
+
+        before = len(df)
+        try:
+            if mode == "column":
+                if not column:
+                    return {"ok": False, "error": "يجب تحديد عمود لهذه الطريقة"}
+                if column not in df.columns:
+                    return {"ok": False, "error": f"العمود '{column}' غير موجود"}
+                df = df[df[column].notna()]
+            elif mode == "any":
+                df = df.dropna(how="any")
+            else:  # "all"
+                df = df.dropna(how="all")
+
+            df = df.reset_index(drop=True)
+            self.db.save_clean_data(table_alias, df)
+            after = len(df)
+            logger.info(
+                "drop_empty_rows: %s (mode=%s%s) — %d -> %d rows",
+                table_alias, mode, f", column={column}" if column else "", before, after
+            )
+            return {"ok": True, "before": before, "after": after}
+
+        except Exception as e:
+            logger.error("drop_empty_rows error: %s", e)
             return {"ok": False, "error": str(e)}
 
     # ──────────────────────────────────────────────────────────
@@ -301,24 +411,77 @@ class DataManager:
         }
 
     def get_stats(self, table_alias: str, column: str) -> dict:
-        """إحصاءات أساسية لعمود."""
+        """
+        إحصاءات أساسية لعمود، مبنية على نوعه الفعلي بدل فرض تحويل
+        رقمي على كل الأعمدة (كان يُنتج قيماً وهمية/NaN لأي عمود نصي
+        وحتى لأعمدة التاريخ التي لا تتحوّل عبر pd.to_numeric).
+
+        يرجع "kind" يوضّح نوع الإحصاء المُرجَع فعلياً:
+            "numeric" → count/nulls/min/max/mean/median (أرقام حقيقية)
+            "date"    → count/nulls/min/max (كتواريخ)
+            "text"    → count/nulls/unique/most_common
+        """
         df = self.db.get_clean_data(table_alias)
         if df is None:
             return {"ok": False, "error": f"الجدول '{table_alias}' غير موجود"}
         if column not in df.columns:
             return {"ok": False, "error": f"العمود '{column}' غير موجود"}
+
         try:
-            s = pd.to_numeric(df[column], errors="coerce")
-            n = s.count()
+            col = df[column]
+            total = len(col)
+            nulls = int(col.isna().sum())
+            count = total - nulls
+            valid = col.dropna()
+
+            if pd.api.types.is_datetime64_any_dtype(col):
+                return {
+                    "ok"    : True,
+                    "kind"  : "date",
+                    "count" : count,
+                    "nulls" : nulls,
+                    "min"   : valid.min().isoformat() if count > 0 else None,
+                    "max"   : valid.max().isoformat() if count > 0 else None,
+                }
+
+            if pd.api.types.is_bool_dtype(col):
+                # منطقي: لا معنى لمتوسط/وسيط — نعرضه كنص (عدد True/False)
+                return {
+                    "ok"          : True,
+                    "kind"        : "text",
+                    "count"       : count,
+                    "nulls"       : nulls,
+                    "unique"      : int(valid.nunique()),
+                    "most_common" : str(valid.mode().iloc[0]) if count > 0 and not valid.mode().empty else None,
+                }
+
+            if pd.api.types.is_numeric_dtype(col):
+                return {
+                    "ok"    : True,
+                    "kind"  : "numeric",
+                    "count" : count,
+                    "nulls" : nulls,
+                    "min"   : float(valid.min())    if count > 0 else None,
+                    "max"   : float(valid.max())    if count > 0 else None,
+                    "mean"  : float(valid.mean())   if count > 0 else None,
+                    "median": float(valid.median()) if count > 0 else None,
+                }
+
+            # نصي/فئوي — لا نفرض pd.to_numeric (كان يُنتج NaN لكل شيء)
+            most_common = None
+            if count > 0:
+                mode_result = valid.astype(str).mode()
+                if not mode_result.empty:
+                    most_common = mode_result.iloc[0]
             return {
-                "ok"    : True,
-                "count" : int(n),
-                "nulls" : int(s.isna().sum()),
-                "min"   : float(s.min())    if n > 0 else None,
-                "max"   : float(s.max())    if n > 0 else None,
-                "mean"  : float(s.mean())   if n > 0 else None,
-                "median": float(s.median()) if n > 0 else None,
+                "ok"          : True,
+                "kind"        : "text",
+                "count"       : count,
+                "nulls"       : nulls,
+                "unique"      : int(valid.astype(str).nunique()) if count > 0 else 0,
+                "most_common" : most_common,
             }
+
         except Exception as e:
             logger.error("get_stats error: %s", e)
             return {"ok": False, "error": str(e)}

@@ -86,6 +86,8 @@ class GeminiEngine(BaseEngine):
         timeout_override: مهلة اتصال بديلة لهذا الاستدعاء فقط (بدون
         تعديل self.timeout الدائم) — راجع BaseEngine.send للتفاصيل.
         """
+
+        logger.critical("Starting Gemini send method...")
         if not self.api_key:
             return {"ok": False, "error": "API key غير موجود", "error_type": "auth"}
         if not self.model:
@@ -103,7 +105,8 @@ class GeminiEngine(BaseEngine):
                 "maxOutputTokens": 2048,
             },
         }
-
+        logging.critical(f"Gemini send method: {url}")
+        logging.critical(f"Gemini send method: {payload}")
         try:
             resp = httpx.post(
                 url,
