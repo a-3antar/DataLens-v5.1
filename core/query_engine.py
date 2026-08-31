@@ -133,21 +133,44 @@ class QueryEngine:
         بناء شرط WHERE من فلاتر جدول واحد (AND فيما بينها). يرجع
         (نص_الشرط, قائمة_أعمدة_الفلاتر_المتجاهَلة).
 
-        نستخدم CAST(... AS VARCHAR) على كل من العمود والقيم حتى يعمل
-        الفلتر بشكل موثوق بغض النظر عن نوع العمود الفعلي (رقمي/نصي/
-        تاريخ)، بدل الاعتماد على تطابق أنواع ضمني قد يفشل صامتاً في
-        DuckDB بين VARCHAR وINTEGER مثلاً.
+        نوعان من الفلاتر مدعومان لكل عنصر في filters:
+        - فلتر قائمة (Slicer عادي): {"column": ..., "values": [...]}
+          → IN (...) مع CAST(... AS VARCHAR) حتى يعمل بغض النظر عن نوع
+          العمود الفعلي (رقمي/نصي/تاريخ)، بدل الاعتماد على تطابق أنواع
+          ضمني قد يفشل صامتاً في DuckDB بين VARCHAR وINTEGER مثلاً.
+        - 🆕 فلتر نطاق تاريخ: {"column": ..., "date_range": {"start": "...", "end": "..."}}
+          → BETWEEN على العمود مُحوَّلاً صراحة إلى DATE، بغض النظر عن
+          كونه مخزَّناً كـ TEXT في SQLite (راجع project_db.get_clean_data
+          — يُعاد تحويله إلى datetime64 فعلياً عند التحميل، لكن الـ CAST
+          هنا حماية إضافية لا تضر).
         """
         clauses = []
         skipped = []
         for f in filters:
             column = f.get("column")
-            values = f.get("values") or []
-            if not column or not values:
+            if not column:
                 continue
             if column not in available_columns:
                 skipped.append(column)
                 logger.info("Filter skipped: column '%s' not present in table", column)
+                continue
+
+            date_range = f.get("date_range")
+            if date_range:
+                start = date_range.get("start")
+                end = date_range.get("end")
+                if not start or not end:
+                    continue
+                start_escaped = str(start).replace("'", "''")
+                end_escaped = str(end).replace("'", "''")
+                clauses.append(
+                    f'CAST("{column}" AS DATE) BETWEEN '
+                    f"DATE '{start_escaped}' AND DATE '{end_escaped}'"
+                )
+                continue
+
+            values = f.get("values") or []
+            if not values:
                 continue
             escaped_values = ", ".join(
                 "'" + str(v).replace("'", "''") + "'" for v in values
@@ -155,7 +178,6 @@ class QueryEngine:
             clauses.append(f'CAST("{column}" AS VARCHAR) IN ({escaped_values})')
 
         return " AND ".join(clauses), skipped
-
     # ──────────────────────────────────────────────────────────
     #  تحميل الجداول في DuckDB (مع بناء views مفلترة عند وجود فلاتر)
     # ──────────────────────────────────────────────────────────

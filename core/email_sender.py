@@ -27,15 +27,19 @@ logger = logging.getLogger(__name__)
 
 
 def _smtp_config() -> dict:
+    port = int(DATALENS_SMTP_PORT or os.environ.get("DATALENS_SMTP_PORT", "587") or 587)
+    use_ssl_env = globals().get("DATALENS_SMTP_USE_SSL", None) or os.environ.get("DATALENS_SMTP_USE_SSL")
+    use_ssl = (str(use_ssl_env) == "1") if use_ssl_env is not None else (port == 465)
     return {
         "host"     : DATALENS_SMTP_HOST or os.environ.get("DATALENS_SMTP_HOST", ""),
-        "port"     : int(DATALENS_SMTP_PORT or os.environ.get("DATALENS_SMTP_PORT", "587") or 587),
+        "port"     : port,
         "user"     : DATALENS_SMTP_USER or os.environ.get("DATALENS_SMTP_USER", ""),
         "password" : DATALENS_SMTP_PASSWORD or os.environ.get("DATALENS_SMTP_PASSWORD", ""),
         "from_addr": DATALENS_SMTP_FROM or os.environ.get("DATALENS_SMTP_FROM", "") or os.environ.get("DATALENS_SMTP_USER", ""),
         "use_tls"  : DATALENS_SMTP_USE_TLS or os.environ.get("DATALENS_SMTP_USE_TLS", "1") != "0",
+        "use_ssl"  : use_ssl,
     }
-
+    
 def is_configured() -> bool:
     """هل خادم SMTP مضبوط فعلياً على هذا السيرفر؟"""
     cfg = _smtp_config()

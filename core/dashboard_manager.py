@@ -346,20 +346,42 @@ class DashboardManager:
     # ──────────────────────────────────────────────────────────
     #  دوال داخلية
     # ──────────────────────────────────────────────────────────
-
     def _build_active_filters(self, dashboard_id: str) -> list:
-        """يحوّل Slicers المُفعَّلة فعلياً (لها جدول+عمود+قيم) إلى صيغة الفلاتر."""
+        """
+        يحوّل Slicers المُفعَّلة فعلياً (لها جدول+عمود+قيم) إلى صيغة
+        الفلاتر التي يفهمها QueryEngine._build_where_clause.
+
+        🆕 فلتر التاريخ يُستخدم فيه نفس تخزين Slicer العادي (جدول +
+        عمود + selected_values) بدون أي عمود إضافي في project_db —
+        التمييز يعتمد فقط على كون العمود مُسجَّلاً كتاريخ فعلياً
+        (_date_cols_{table} المحفوظة أصلاً عند save_clean_data). في
+        هذه الحالة selected_values تحمل عنصرين بالضبط [start, end]
+        بدل قائمة قيم مفتوحة، فتُبنى كـ "date_range" بدل "values".
+        """
         slicers = self.db.get_dashboard_slicers(dashboard_id)
+        settings = self.db.get_settings()
         filters = []
         for s in slicers:
-            if s.get("table_name") and s.get("column_name") and s.get("selected_values"):
+            table = s.get("table_name")
+            column = s.get("column_name")
+            values = s.get("selected_values")
+            if not table or not column or not values:
+                continue
+
+            date_cols = settings.get(f"_date_cols_{table}", [])
+            if column in date_cols and len(values) == 2:
                 filters.append({
-                    "table" : s["table_name"],
-                    "column": s["column_name"],
-                    "values": s["selected_values"],
+                    "table": table,
+                    "column": column,
+                    "date_range": {"start": values[0], "end": values[1]},
+                })
+            else:
+                filters.append({
+                    "table": table,
+                    "column": column,
+                    "values": values,
                 })
         return filters
-
     # ──────────────────────────────────────────────────────────
     #  🆕 بناء خطة لوحة كاملة تلقائياً بالذكاء الاصطناعي
     # ──────────────────────────────────────────────────────────
