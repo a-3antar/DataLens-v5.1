@@ -6,6 +6,15 @@ ui/common.py
 وإشعارات موحّدة عبر Toast بدل الرسائل التوضيحية الثابتة المنتشرة في
 الصفحات.
 
+🆕 تنسيق القوائم النقطية والعناوين داخل محتوى Markdown (RTL):
+------------------------------------------------------------------
+أُضيفت قواعد CSS إلى RTL_CSS أدناه (ul/ol/li/h1-h4/p ضمن .stMarkdown)
+لتصحيح شكل النقاط (•) في سياق RTL — المتصفح افتراضياً يضع
+padding-left على القوائم حتى مع direction:rtl، فتظهر النقطة بعيدة عن
+حافة النص بمسافة كبيرة وغير متسقة. هذا يُصلح عرض أي محتوى Markdown
+في التطبيق (وعلى رأسه نص Story Telling المعروض عبر st.markdown في
+ui/chat.py وcore/dashboard_cells/cells.py/base.py).
+
 🆕 اسم المستخدم في اللوج:
 ---------------------------
 sidebar_header() تستدعي الآن core.logger_config.set_log_username()
@@ -14,7 +23,7 @@ sidebar_header() تستدعي الآن core.logger_config.set_log_username()
 فيكفي ضبطها هنا مرة واحدة حتى يظهر اسم المستخدم تلقائياً في كل سطر
 log يُكتب لاحقاً من أي مكان في المشروع (بما في ذلك threads تحديث
 لوحات المعلومات، التي ترث نفس القيمة تلقائياً عبر contextvars —
-راجع core/logger_config.py للتفاصيل). عند الضغط على "تسجيل الخروج"
+راجع core/logger_config.py للتفاصيل الكاملة). عند الضغط على "تسجيل الخروج"
 تُستدعى clear_log_username() لإعادة الحالة إلى الافتراضي ("-").
 
 🆕 الثيمات:
@@ -110,6 +119,45 @@ RTL_CSS = """
     /* منطقة المحتوى الرئيسي: نضمن عدم بقاء مساحة فارغة يسارية بعد نقل الشريط لليمين */
     section.main {
         direction: rtl;
+    }
+
+    /* ─────────────────────────────────────────────────────────
+       🆕 تنسيق القوائم النقطية (ul/li) والعناوين الفرعية والفقرات
+       داخل أي محتوى Markdown (خصوصاً نص التحليل — Story Telling
+       المعروض عبر st.markdown مباشرة في ui/chat.py وcore/
+       dashboard_cells/cells.py|base.py) في سياق RTL.
+
+       المتصفح افتراضياً يضع padding-left على <ul>/<ol> حتى مع
+       direction:rtl مضبوطة على الحاوية الأب — فتظهر النقطة (•)
+       بعيدة عن حافة النص اليمنى بمسافة كبيرة وغير متسقة بين
+       الأسطر (كما لوحظ فعلياً: نقطة في أقصى يمين الصفحة والنص
+       يبدأ بعدها بمسافة كبيرة). هنا نُصفّر padding-left ونضيف
+       padding-right بدلاً منه، مع تحسين تباعد الأسطر بين النقاط
+       وهوامش العناوين الفرعية والفقرات حتى يكون شكل السرد الكامل
+       متناسقاً ومقروءاً.
+       ───────────────────────────────────────────────── */
+    .stMarkdown ul, .stMarkdown ol {
+        padding-left: 0 !important;
+        padding-right: 1.6em !important;
+        margin-right: 0 !important;
+        margin-top: 0.4em;
+        margin-bottom: 0.8em;
+    }
+    .stMarkdown li {
+        margin-bottom: 8px;
+        line-height: 1.9;
+        text-align: right;
+    }
+    .stMarkdown li::marker {
+        unicode-bidi: isolate;
+    }
+    .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 {
+        margin-top: 1.1em;
+        margin-bottom: 0.5em;
+    }
+    .stMarkdown p {
+        line-height: 1.9;
+        margin-bottom: 0.6em;
     }
 </style>
 """

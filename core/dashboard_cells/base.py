@@ -23,6 +23,12 @@ core/dashboard_cells/base.py
 كل subclass concrete (TableCell/ChartCell/GaugeCell/KpiCell/StoryCell)
 مسؤول فقط عن: to_stored_dict، render_result، وعند الحاجة
 render_type_specific_fields وexecute (StoryCell فقط).
+
+🆕 عرض نتيجة "اختبار" لخلية Story:
+--------------------------------------
+_render_test_result أدناه تعرض النص عبر st.markdown مباشرة بدل لفّه
+داخل <div> خام — نفس السبب والمنطق المُوثَّق في
+core/dashboard_cells/cells.py::StoryCell.render_result وui/chat.py.
 """
 
 import logging
@@ -352,6 +358,13 @@ class DashboardCellBase(ABC):
         عبر st.dataframe التفاعلي (فرز/تصفح) بدل render_themed_table
         الثابت، حتى تكون معاينة الاختبار متسقة مع عرض خلية الجدول
         الفعلية (راجع TableCell.render_result في cells.py).
+
+        🆕 نص السرد (story) يُعرض عبر st.markdown مباشرة بدل لفّه في
+        <div> خام — نفس السبب الموضَّح في cells.py::StoryCell.render_result
+        وui/chat.py: محتوى داخل وسم HTML مفتوح على سطر واحد يُعرض كنص
+        حرفي في Streamlit، فتُفقد عناصر الماركداون (### عناوين، - نقاط،
+        **bold**) التي ينتجها AI فعلياً بناءً على قواعد
+        ai/prompt_builder.py::build_story.
         """
         if r.get("ok"):
             if r.get("sql"):
@@ -360,11 +373,7 @@ class DashboardCellBase(ABC):
             if r.get("df") is not None:
                 st.dataframe(r["df"], width='stretch', hide_index=True)
             if r.get("story"):
-                text_color = get_theme_colors(settings)["text"]
-                st.markdown(
-                    f'<div dir="rtl" style="text-align:right; color:{text_color};">{r["story"]}</div>',
-                    unsafe_allow_html=True,
-                )
+                st.markdown(r["story"])
         else:
             st.error(f"فشل الاختبار: {r.get('error')}")
 

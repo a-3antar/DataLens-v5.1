@@ -15,6 +15,16 @@ core/dashboard_cells/cells.py
     KpiCell    — بطاقة مؤشر (KPI).
     StoryCell  — تحليل نصي (Story Telling) — الوحيدة التي تُعيد تعريف
                  execute() بالكامل (تستدعي AI دائماً).
+
+🆕 عرض StoryCell:
+--------------------
+النص التحليلي (story) يُعرض الآن عبر st.markdown مباشرة بدل لفّه داخل
+<div> خام، لنفس السبب الموضَّح في ui/chat.py: محتوى داخل وسم HTML
+مفتوح على سطر واحد يُعرض كنص حرفي في Streamlit، فتُفقد عناصر
+الماركداون الكتلية (### عناوين، - نقاط، **bold**) التي يُنتجها AI
+الآن فعلياً بناءً على قواعد ai/prompt_builder.py::build_story
+المُحدَّثة. RTL ولون النص مضبوطان أصلاً عالمياً عبر
+ui.common.apply_rtl()/apply_theme_css() فلا حاجة لأي HTML إضافي هنا.
 """
 
 import streamlit as st
@@ -255,11 +265,11 @@ class StoryCell(DashboardCellBase):
             return
 
         story_text = self.last_result.get("story", "")
-        text_color = get_theme_colors(settings)["text"]
-        st.markdown(
-            f'<div dir="rtl" style="text-align:right; color:{text_color};">{story_text}</div>',
-            unsafe_allow_html=True,
-        )
+        # 🆕 عرض مباشر عبر st.markdown بدل لفّ النص في <div> خام — راجع
+        # توثيق أعلى الملف وai/prompt_builder.py::build_story للسبب
+        # الكامل. RTL ولون النص مضبوطان أصلاً عالمياً عبر apply_rtl()/
+        # apply_theme_css() (تُستدعيان دائماً في بداية صفحة اللوحات).
+        st.markdown(story_text)
         df = pd.DataFrame(self.last_result.get("rows", []))
         with st.expander("📊 البيانات المستخدمة"):
             render_themed_table(df, settings)

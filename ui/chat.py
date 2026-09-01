@@ -3,6 +3,17 @@ ui/chat.py
 ==========
 واجهة المحادثة: كتابة سؤال بلغة طبيعية → SQL من AI → تنفيذ → عرض النتيجة
 كـ جدول / رسم بياني / gauge / KPI، مع إمكانية الإرسال للتقرير.
+
+🆕 عرض Story Telling:
+------------------------
+النص التحليلي (story) أصبح يُعرض عبر st.markdown مباشرة بدل لفّه داخل
+<div> خام — لأن Streamlit يفسّر عناصر الماركداون الكتلية (### عناوين،
+- نقاط، **bold**) فقط عندما تكون خارج أي وسم HTML مفتوح على نفس
+السطر؛ محتوى داخل <div>...</div> يُعرض كنص حرفي بدل ماركداون. الاتجاه
+RTL ولون النص مضبوطان أصلاً بشكل عام عبر ui.common.apply_rtl() و
+apply_theme_css() (تُستدعيان في بداية كل صفحة)، فلا حاجة لأي لفّ HTML
+إضافي هنا — راجع ai/prompt_builder.py::build_story للقواعد التي تجعل
+AI يُنتج هذه البنية فعلياً.
 """
 
 import uuid
@@ -203,14 +214,12 @@ def _render_result(db, settings, result: dict, result_type: str, chart_type: str
 
     elif result_type == "story":
         story_text = result.get("story", "")
-        # 🆕 لون النص يُحدَّد صراحة من ألوان الثيم الحالي (بما فيها
-        # الثيم المخصص) بدل الاعتماد فقط على وراثة CSS العامة، حتى
-        # يستجيب فوراً لأي تغيير في "لون النص" من صفحة الإعدادات.
-        text_color = get_theme_colors(settings)["text"]
-        st.markdown(
-            f'<div dir="rtl" style="text-align:right; color:{text_color};">{story_text}</div>',
-            unsafe_allow_html=True,
-        )
+        # 🆕 عرض مباشر عبر st.markdown بدل لفّ النص في <div> خام —
+        # حتى تُفسَّر عناصر الماركداون الكتلية (### عناوين، - نقاط،
+        # **bold**) فعلياً بدل الظهور كنص خام. RTL ولون النص مضبوطان
+        # أصلاً عالمياً عبر apply_rtl()/apply_theme_css() (راجع توثيق
+        # أعلى الملف)، فلا حاجة لأي HTML إضافي هنا.
+        st.markdown(story_text)
         with st.expander("📊 البيانات المستخدمة في التحليل"):
             render_themed_table(df, settings)
 
