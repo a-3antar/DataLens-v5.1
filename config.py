@@ -37,7 +37,7 @@ BCRYPT_ROUNDS        = 12
 # مدة الانتظار (بالثواني) قبل إعادة المحاولة عند خطأ اتصال بمحرك AI
 # نفسه (وليس عند خطأ SQL أو رد فارغ). قابلة للتخصيص لكل مشروع من
 # صفحة الإعدادات (تُخزَّن في project settings كـ "retry_delay").
-AI_RETRY_DELAY_SECONDS = 10
+AI_RETRY_DELAY_SECONDS = 5
 
 # 🆕 مهلة اتصال منفصلة لمرحلة توليد نص السرد (Story Telling) فقط.
 # جُعلت أقل من الـ timeout العام لأن انتظار مهلة طويلة (مثلاً 100
@@ -52,19 +52,19 @@ STORY_TIMEOUT_SECONDS = 45
 # ─── المشروع — قيم افتراضية ────────────────────────────────
 DEFAULT_SETTINGS = {
     "ai_engine"  : "gemini",
-    "model"      : "gemini-2.0-flash",
+    "model"      : "gemini-2.5-flash",
     "temperature": 0.1,
     "auto_run"   : True,
     "max_tries"  : 3,
     "timeout"    : 30,
     "retry_delay": 10,
-    "theme"      : "ocean_dark",
+    "theme"      : "arctic_light",
     "language"   : "ar",
     # المنطقة الزمنية المستخدمة لعرض كل التواريخ/الأوقات في الواجهة
     # (آخر تحديث للوحات/الخلايا، سجل المحادثة...). التخزين الداخلي
     # يبقى دائماً UTC (كما هو في project_db._now())، والتحويل يحدث
     # فقط في طبقة العرض عبر ui.common.format_local_dt().
-    "timezone"   : "Asia/Riyadh",
+    "timezone"   : "Africa/Cairo",
     # حد زمني إجمالي اختياري (بالثواني) لعملية توليد SQL الواحدة
     # (ask())، يوقف إعادة المحاولة فوراً لو تجاوزها حتى مع وجود محاولات
     # متبقية ضمن max_tries. 0 = بدون حد (السلوك الافتراضي القديم).
@@ -123,8 +123,8 @@ CHART_TYPES = {
 }
 
 # ─── سرد قصصي (Story Telling) ──────────────────────────────
-STORY_MAX_ROWS = 200      # أقصى عدد صفوف تُرسل للـ AI كسياق لكتابة السرد
-STORY_SAMPLE_ROWS_IN_PROMPT = 30  # عدد الصفوف الفعلي المضمّن نصياً في الـ prompt
+STORY_MAX_ROWS = 500      # أقصى عدد صفوف تُرسل للـ AI كسياق لكتابة السرد
+STORY_SAMPLE_ROWS_IN_PROMPT = 500  # عدد الصفوف الفعلي المضمّن نصياً في الـ prompt
 
 # ─── الثيمات ───────────────────────────────────────────────
 # "custom" يُضاف دائماً كخيار أخير في الواجهة (ui/settings.py) — ليس
