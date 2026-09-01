@@ -123,30 +123,37 @@ RTL_CSS = """
 
     /* ─────────────────────────────────────────────────────────
        🆕 تنسيق القوائم النقطية (ul/li) والعناوين الفرعية والفقرات
-       داخل أي محتوى Markdown (خصوصاً نص التحليل — Story Telling
-       المعروض عبر st.markdown مباشرة في ui/chat.py وcore/
+       والجداول داخل أي محتوى Markdown (خصوصاً نص التحليل — Story
+       Telling المعروض عبر st.markdown مباشرة في ui/chat.py وcore/
        dashboard_cells/cells.py|base.py) في سياق RTL.
 
-       المتصفح افتراضياً يضع padding-left على <ul>/<ol> حتى مع
-       direction:rtl مضبوطة على الحاوية الأب — فتظهر النقطة (•)
-       بعيدة عن حافة النص اليمنى بمسافة كبيرة وغير متسقة بين
-       الأسطر (كما لوحظ فعلياً: نقطة في أقصى يمين الصفحة والنص
-       يبدأ بعدها بمسافة كبيرة). هنا نُصفّر padding-left ونضيف
-       padding-right بدلاً منه، مع تحسين تباعد الأسطر بين النقاط
-       وهوامش العناوين الفرعية والفقرات حتى يكون شكل السرد الكامل
-       متناسقاً ومقروءاً.
+       ⚠️ ملاحظة مهمة: المتصفح/Streamlit يضبطان تباعد القوائم عبر
+       خصائص CSS "منطقية" (padding-inline-start/margin-inline-start)
+       وليس الفيزيائية (padding-left/right) — وهذه خصائص منفصلة تماماً
+       عن padding-left/padding-right؛ ضبط الأخيرة فقط (كما كان في
+       محاولة سابقة) لا يُلغي القيمة المنطقية الفعلية، فيبقى هامش
+       كبير غير متوقَّع. هنا نُصفّر كل الأشكال الأربعة معاً (منطقية +
+       فيزيائية) قبل ضبط القيمة المطلوبة، لضمان تجاوز فعلي.
        ───────────────────────────────────────────────── */
     .stMarkdown ul, .stMarkdown ol {
+        padding-inline-start: 1.4em !important;
+        padding-inline-end: 0 !important;
         padding-left: 0 !important;
-        padding-right: 1.6em !important;
+        padding-right: 1.4em !important;
+        margin-inline-start: 0 !important;
+        margin-inline-end: 0 !important;
+        margin-left: 0 !important;
         margin-right: 0 !important;
         margin-top: 0.4em;
         margin-bottom: 0.8em;
+        list-style-position: outside;
     }
     .stMarkdown li {
         margin-bottom: 8px;
         line-height: 1.9;
         text-align: right;
+        padding-inline-start: 0 !important;
+        padding-inline-end: 0 !important;
     }
     .stMarkdown li::marker {
         unicode-bidi: isolate;
@@ -154,10 +161,53 @@ RTL_CSS = """
     .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 {
         margin-top: 1.1em;
         margin-bottom: 0.5em;
+        text-align: right;
     }
     .stMarkdown p {
         line-height: 1.9;
         margin-bottom: 0.6em;
+        text-align: right;
+    }
+
+    /* ─────────────────────────────────────────────────────────
+       🆕 جداول Markdown (| عمود | عمود |) — يستخدمها الآن نص
+       التحليل (Story Telling) عند وجود بيانات مقارَنة، بعد تحديث
+       قواعد ai/prompt_builder.py::build_story. تنسيق أساسي (حدود،
+       تباعد، رأس بارز) هنا؛ ألوان الثيم الفعلية (خلفية/نص/حدود)
+       تُطبَّق في apply_theme_css أدناه بحيث تتوافق مع الثيم النشط.
+       ───────────────────────────────────────────────── */
+    .stMarkdown table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 0.6em 0 1em 0;
+        direction: rtl;
+    }
+    .stMarkdown th, .stMarkdown td {
+        padding: 6px 12px;
+        text-align: center;
+        border: 1px solid rgba(128,128,128,0.35);
+    }
+    .stMarkdown th {
+        font-weight: 700;
+    }
+
+    /* ─────────────────────────────────────────────────────────
+       🆕 كتل الكود (```...```) المستخدمة في نص التحليل لعرض رسم
+       نصي بسيط (أعمدة بحرف '█') — نُبقيها بخط ثابت العرض (monospace)
+       لضمان محاذاة الأعمدة، مع اتجاه محتوى يسار-ليمين داخلياً
+       (الأرقام والرموز الرسومية) لكن محاذاة الكتلة نفسها تبقى يمين
+       الصفحة حتى لا تنفرد بمظهر مختلف عن باقي السرد.
+       ───────────────────────────────────────────────── */
+    .stMarkdown pre {
+        direction: ltr;
+        text-align: left;
+        margin: 0.6em 0 1em 0;
+        border-radius: 6px;
+        overflow-x: auto;
+    }
+    .stMarkdown pre code {
+        font-family: "Consolas", "Courier New", monospace;
+        white-space: pre;
     }
 </style>
 """
@@ -284,6 +334,33 @@ def apply_theme_css(theme_key_or_settings="ocean_dark"):
         .stCaption, [data-testid="stCaptionContainer"] {{
             color: {text} !important;
             opacity: 0.75;
+        }}
+
+        /* ─────────────────────────────────────────────────────
+           🆕 جداول Markdown (نص التحليل — Story Telling وأي محتوى
+           آخر يستخدم صيغة | عمود | عمود |) — رأس بلون primary ونص
+           أبيض، خلايا بلون card ونص بلون text، حدود بلون accent —
+           بنفس منطق render_themed_table لكن عبر الماركداون العادي
+           (Streamlit يحوّل جدول Markdown القياسي إلى <table> HTML
+           فعلي تلقائياً، فيستجيب لهذه القواعد مباشرة).
+           ───────────────────────────────────────────────────── */
+        .stMarkdown table {{
+            border: 1px solid {accent}55 !important;
+        }}
+        .stMarkdown thead tr {{
+            background-color: {primary} !important;
+        }}
+        .stMarkdown th {{
+            color: #FFFFFF !important;
+            border: 1px solid {accent}55 !important;
+        }}
+        .stMarkdown td {{
+            color: {text} !important;
+            background-color: {card} !important;
+            border: 1px solid {accent}33 !important;
+        }}
+        .stMarkdown tbody tr:nth-child(even) td {{
+            background-color: {bg} !important;
         }}
 
         /* ─────────────────────────────────────────────────────

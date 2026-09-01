@@ -25,7 +25,7 @@ PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 # ─── التطبيق ───────────────────────────────────────────────
 APP_NAME    = "DataLens"
 APP_ICON    = "📊"
-APP_VERSION = "5.0"
+APP_VERSION = "5.1"
 APP_HOST    = "0.0.0.0"   # متاح على الـ LAN
 APP_PORT    = 8000
 
