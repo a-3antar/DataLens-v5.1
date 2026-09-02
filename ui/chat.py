@@ -213,15 +213,17 @@ def _render_result(db, settings, result: dict, result_type: str, chart_type: str
         st.caption(f"الهدف: {target}")
 
     elif result_type == "story":
+        queries = result.get("queries", [])
+        if queries:
+            for q in queries:
+                with st.expander(f"📊 {q.get('title', 'بيانات')}", expanded=False):
+                    st.code(q.get("sql", ""), language="sql")
+                    if q.get("ok") and q.get("df") is not None:
+                        render_themed_table(q["df"], settings)
+                    elif not q.get("ok"):
+                        st.caption(f"⚠️ فشل هذا الاستعلام: {q.get('error')}")
         story_text = result.get("story", "")
-        # 🆕 عرض مباشر عبر st.markdown بدل لفّ النص في <div> خام —
-        # حتى تُفسَّر عناصر الماركداون الكتلية (### عناوين، - نقاط،
-        # **bold**) فعلياً بدل الظهور كنص خام. RTL ولون النص مضبوطان
-        # أصلاً عالمياً عبر apply_rtl()/apply_theme_css() (راجع توثيق
-        # أعلى الملف)، فلا حاجة لأي HTML إضافي هنا.
         st.markdown(story_text)
-        with st.expander("📊 البيانات المستخدمة في التحليل"):
-            render_themed_table(df, settings)
 
     st.divider()
     with st.form("send_to_report_form"):
@@ -245,7 +247,7 @@ def _render_result(db, settings, result: dict, result_type: str, chart_type: str
                 r = _add_block_for_type(
                     rm, report_id, result_id, result_type, df, label,
                     story_text=result.get("story"), include_data_table=include_data_table,
-                    chart_type=chart_type,
+                    chart_type=chart_type, queries=result.get("queries"),
                 )
                 if r["ok"]:
                     notify("تمت الإضافة إلى التقرير", kind="success")
@@ -255,7 +257,7 @@ def _render_result(db, settings, result: dict, result_type: str, chart_type: str
 
 def _add_block_for_type(rm, report_id, result_id, result_type, df: pd.DataFrame, label,
                          story_text: str = None, include_data_table: bool = False,
-                         chart_type: str = "bar"):
+                         chart_type: str = "bar", queries: list = None):
     if result_type == "table":
         return rm.add_table(report_id, result_id, df.to_dict(orient="records"), list(df.columns))
     if result_type == "chart":
@@ -287,6 +289,14 @@ def _add_block_for_type(rm, report_id, result_id, result_type, df: pd.DataFrame,
             text = f"## {label}\n\n{text}"
         result = rm.add_paragraph(report_id, text)
         if result["ok"] and include_data_table:
-            rm.add_table(report_id, result_id, df.to_dict(orient="records"), list(df.columns))
+            if queries:
+                for q in queries:
+                    if q.get("ok") and q.get("df") is not None and not q["df"].empty:
+                        rm.add_table(
+                            report_id, str(uuid.uuid4()),
+                            q["df"].to_dict(orient="records"), list(q["df"].columns),
+                        )
+            elif df is not None and not df.empty:
+                rm.add_table(report_id, result_id, df.to_dict(orient="records"), list(df.columns))
         return result
     return {"ok": False, "error": "نوع نتيجة غير مدعوم"}

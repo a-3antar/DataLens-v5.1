@@ -63,6 +63,8 @@ refresh_dashboard() أو refresh_single_cell() (المرتبطين بأزرار 
 في الواجهة).
 """
 
+from PIL import ImageColor
+from PIL import ImageColor
 import json
 import logging
 import contextvars
@@ -281,11 +283,13 @@ class DashboardManager:
                 self.db.save_dashboard_cell_result(
                     dashboard_id, position, stored, r.get("sql"), None
                 )
-                # لو كانت هذه أول مرة تُنتج SQL ناجح لهذه الخلية (بدون
-                # base_sql محفوظ مسبقاً)، نحفظه الآن ليُستخدم في
-                # التحديثات السريعة القادمة بدون AI
-                if cell_obj.display_type != "story" and not cell_obj.base_sql and r.get("sql"):
-                    self.db.save_dashboard_cell_base_sql(dashboard_id, position, r["sql"])
+                # 🆕 لأي نوع خلية (بما فيها story): لو لا يوجد base_sql محفوظ بعد،
+                # نحفظ ما يصلح كأساس للتحديث السريع القادم — SQL مفرد لبقية
+                # الأنواع، أو JSON خطة الاستعلامات لـ story (base_queries_json).
+                if not cell_obj.base_sql:
+                    base_to_save = r.get("base_queries_json") or r.get("sql")
+                    if base_to_save:
+                        self.db.save_dashboard_cell_base_sql(dashboard_id, position, base_to_save)
                 results[position] = stored
             else:
                 error_count += 1
@@ -335,8 +339,10 @@ class DashboardManager:
         if r.get("ok"):
             stored = cell_obj.to_stored_dict(r)
             self.db.save_dashboard_cell_result(dashboard_id, position, stored, r.get("sql"), None)
-            if cell_obj.display_type != "story" and not cell_obj.base_sql and r.get("sql"):
-                self.db.save_dashboard_cell_base_sql(dashboard_id, position, r["sql"])
+            if not cell_obj.base_sql:
+                base_to_save = r.get("base_queries_json") or r.get("sql")
+                if base_to_save:
+                    self.db.save_dashboard_cell_base_sql(dashboard_id, position, base_to_save)
             self.db.touch_dashboard(dashboard_id)
             return {"ok": True, "used_ai": used_ai, "result": stored}
         else:

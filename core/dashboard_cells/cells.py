@@ -31,9 +31,10 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import json
 
 from ui.common import render_themed_table, apply_plotly_theme, get_chart_theme, get_theme_colors
-from core.dashboard_cells.base import DashboardCellBase
+from core.dashboard_cells.base import DashboardCellBase, _sanitize_rows
 from config import CHART_TYPES
 
 
@@ -238,40 +239,74 @@ class KpiCell(DashboardCellBase):
 # ══════════════════════════════════════════════════════════════
 #  StoryCell — تحليل نصي (Story Telling)
 # ══════════════════════════════════════════════════════════════
+import json
+# ... باقي الاستيرادات كما هي، مع إضافة:
+from core.dashboard_cells.base import DashboardCellBase, _sanitize_rows
+
 
 class StoryCell(DashboardCellBase):
-    """
-    خلية "تحليل نصي" (Story Telling) — الاستثناء الوحيد الذي يُعيد
-    تعريف execute() بالكامل: تستدعي AI دائماً (سرد نصي جديد يُبنى
-    فعلياً على البيانات الحالية بعد الفلترة، بخلاف بقية الأنواع التي
-    تعتمد على base_sql المحفوظ عند توفره).
-    """
-
     display_type = "story"
     label = "تحليل نصي (Story Telling)"
 
     def execute(self, ai_manager, query_engine, filters: list, ai_rules) -> dict:
-        r = ai_manager.tell_story(self.question, ai_rules=ai_rules, filters=filters)
+        """
+        🆕 لو كان base_sql محفوظاً (يحمل JSON لخطة استعلامات سابقة)،
+        يُعاد استخدامه مباشرة — لا يُستدعى AI لتوليد خطة جديدة، فقط
+        تُنفَّذ الاستعلامات مع الفلاتر الحالية ثم يُطلب السرد فقط
+        (استدعاء AI واحد بدل اثنين). عند تعديل نص السؤال، project_db
+        يُفرغ base_sql تلقائياً فتُعاد الخطة من الصفر تلقائياً.
+        """
+        base_queries = None
+        if self.base_sql:
+            try:
+                base_queries = json.loads(self.base_sql)
+            except Exception:
+                base_queries = None
+
+        r = ai_manager.tell_story(
+            self.question, ai_rules=ai_rules, filters=filters, base_queries=base_queries,
+        )
         r["used_ai"] = True
         return r
 
     def to_stored_dict(self, raw_result: dict) -> dict:
-        stored = self._base_stored_dict(raw_result)
-        stored["story"] = raw_result.get("story", "")
-        return stored
+        queries = []
+        for q in raw_result.get("queries", []):
+            if q.get("ok"):
+                df = q.get("df")
+                rows = df.to_dict(orient="records") if df is not None else []
+                queries.append({
+                    "title": q.get("title"), "sql": q.get("sql"), "ok": True,
+                    "columns": list(df.columns) if df is not None else [],
+                    "rows": _sanitize_rows(rows),
+                })
+            else:
+                queries.append({
+                    "title": q.get("title"), "sql": q.get("sql"),
+                    "ok": False, "error": q.get("error"),
+                })
+        return {
+            "story": raw_result.get("story", ""),
+            "queries": queries,
+        }
 
     def render_result(self, settings: dict, dashboard_id: str) -> None:
         if self._render_error_or_empty():
             return
 
         story_text = self.last_result.get("story", "")
-        # 🆕 عرض مباشر عبر st.markdown بدل لفّ النص في <div> خام — راجع
-        # توثيق أعلى الملف وai/prompt_builder.py::build_story للسبب
-        # الكامل. RTL ولون النص مضبوطان أصلاً عالمياً عبر apply_rtl()/
-        # apply_theme_css() (تُستدعيان دائماً في بداية صفحة اللوحات).
         st.markdown(story_text)
-        df = pd.DataFrame(self.last_result.get("rows", []))
-        with st.expander("📊 البيانات المستخدمة"):
-            render_themed_table(df, settings)
+
+        queries = self.last_result.get("queries", [])
+        if queries:
+            with st.expander("📊 البيانات المستخدمة"):
+                for q in queries:
+                    st.markdown(f"**{q.get('title', 'بيانات')}**")
+                    if q.get("ok"):
+                        df = pd.DataFrame(q.get("rows", []))
+                        render_themed_table(df, settings)
+                    else:
+                        st.caption(f"⚠️ فشل هذا الاستعلام: {q.get('error')}")
+                    st.divider()
 
         self._render_updated_caption(settings)

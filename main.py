@@ -4,6 +4,7 @@ main.py
 نقطة الدخول لتطبيق DataLens V5.0 (Streamlit).
 """
 
+
 import streamlit as st
 
 from ui.common import apply_rtl, cleanup_stale_temp_dirs
@@ -18,9 +19,9 @@ from ui.settings import show_settings
 from core.auth import AuthManager
 from config import APP_NAME, APP_VERSION, APP_ICON
 from core.logger_config import setup_logging
+import logging
 
-
-setup_logging()
+setup_logging(logging.DEBUG)
 
 st.set_page_config(
     page_title=APP_NAME,

@@ -354,29 +354,32 @@ class DashboardCellBase(ABC):
 
     def _render_test_result(self, r: dict, settings: dict) -> None:
         """
-        عرض نتيجة زر "اختبار" — مشترك بين كل الأنواع. الجدول يُعرض
-        عبر st.dataframe التفاعلي (فرز/تصفح) بدل render_themed_table
-        الثابت، حتى تكون معاينة الاختبار متسقة مع عرض خلية الجدول
-        الفعلية (راجع TableCell.render_result في cells.py).
-
-        🆕 نص السرد (story) يُعرض عبر st.markdown مباشرة بدل لفّه في
-        <div> خام — نفس السبب الموضَّح في cells.py::StoryCell.render_result
-        وui/chat.py: محتوى داخل وسم HTML مفتوح على سطر واحد يُعرض كنص
-        حرفي في Streamlit، فتُفقد عناصر الماركداون (### عناوين، - نقاط،
-        **bold**) التي ينتجها AI فعلياً بناءً على قواعد
-        ai/prompt_builder.py::build_story.
+        عرض نتيجة زر "اختبار" — مشترك بين كل الأنواع. لخلايا Story
+        (التي تُرجع "queries" — قائمة نتائج استعلامات متعددة) نعرض كل
+        استعلام في expander مستقل قبل نص السرد. لبقية الأنواع (استعلام
+        SQL واحد فقط عبر ask()) نبقي العرض القديم دون تغيير.
         """
-        if r.get("ok"):
-            if r.get("sql"):
-                with st.expander("SQL", expanded=False):
-                    st.code(r["sql"], language="sql")
+        if not r.get("ok"):
+            st.error(f"فشل الاختبار: {r.get('error')}")
+            return
+
+        queries = r.get("queries")
+        if queries:
+            for q in queries:
+                with st.expander(f"SQL — {q.get('title', 'بيانات')}", expanded=False):
+                    st.code(q.get("sql", ""), language="sql")
+                if q.get("ok") and q.get("df") is not None:
+                    st.dataframe(q["df"], width='stretch', hide_index=True)
+                elif not q.get("ok"):
+                    st.caption(f"⚠️ فشل: {q.get('error')}")
+        elif r.get("sql"):
+            with st.expander("SQL", expanded=False):
+                st.code(r["sql"], language="sql")
             if r.get("df") is not None:
                 st.dataframe(r["df"], width='stretch', hide_index=True)
-            if r.get("story"):
-                st.markdown(r["story"])
-        else:
-            st.error(f"فشل الاختبار: {r.get('error')}")
 
+        if r.get("story"):
+            st.markdown(r["story"])
     # ──────────────────────────────────────────────────────────
     #  قائمة الإجراءات — موحّدة 100%، لا تُعاد كتابتها في أي subclass
     # ──────────────────────────────────────────────────────────
