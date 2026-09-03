@@ -357,17 +357,32 @@ class DashboardManager:
         يحوّل Slicers المُفعَّلة فعلياً (لها جدول+عمود+قيم) إلى صيغة
         الفلاتر التي يفهمها QueryEngine._build_where_clause.
 
-        🆕 فلتر التاريخ يُستخدم فيه نفس تخزين Slicer العادي (جدول +
-        عمود + selected_values) بدون أي عمود إضافي في project_db —
-        التمييز يعتمد فقط على كون العمود مُسجَّلاً كتاريخ فعلياً
-        (_date_cols_{table} المحفوظة أصلاً عند save_clean_data). في
-        هذه الحالة selected_values تحمل عنصرين بالضبط [start, end]
-        بدل قائمة قيم مفتوحة، فتُبنى كـ "date_range" بدل "values".
+        الآن مجرد غلاف رقيق فوق filters_from_slicer_rows (راجعها
+        للتفاصيل الكاملة) — استُخرج المنطق منها ليكون قابلاً لإعادة
+        الاستخدام مع صفوف Slicer لم تُحفظ بعد في project_db (مثل
+        فلاتر شاشة "الإنشاء التلقائي" قبل وجود dashboard_id فعلي).
         """
         slicers = self.db.get_dashboard_slicers(dashboard_id)
+        return self.filters_from_slicer_rows(slicers)
+
+    def filters_from_slicer_rows(self, slicer_rows: list) -> list:
+        """
+        🆕 يحوّل قائمة صفوف Slicer خام (كل صف: {"table_name", "column_name",
+        "selected_values"}) إلى صيغة الفلاتر التي يفهمها
+        QueryEngine._build_where_clause — بدون أي اعتماد على وجود
+        dashboard_id محفوظ في project_db، حتى يمكن استخدامها لكل من:
+          (١) Slicers لوحة موجودة فعلاً (عبر _build_active_filters أعلاه)
+          (٢) فلاتر مُختارة في شاشة "الإنشاء التلقائي" قبل إنشاء أي لوحة.
+
+        فلتر التاريخ يُستخدم فيه نفس تخزين Slicer العادي (جدول + عمود +
+        selected_values) — التمييز يعتمد فقط على كون العمود مُسجَّلاً
+        كتاريخ فعلياً (_date_cols_{table}). في هذه الحالة selected_values
+        تحمل عنصرين بالضبط [start, end] بدل قائمة قيم مفتوحة، فتُبنى
+        كـ "date_range" بدل "values".
+        """
         settings = self.db.get_settings()
         filters = []
-        for s in slicers:
+        for s in slicer_rows:
             table = s.get("table_name")
             column = s.get("column_name")
             values = s.get("selected_values")
@@ -388,32 +403,25 @@ class DashboardManager:
                     "values": values,
                 })
         return filters
+    
+    
     # ──────────────────────────────────────────────────────────
     #  🆕 بناء خطة لوحة كاملة تلقائياً بالذكاء الاصطناعي
     # ──────────────────────────────────────────────────────────
-
-    def generate_dashboard_plan(self, description: str, ai_rules: Optional[str] = None) -> dict:
+    def generate_dashboard_plan(self, description: str, ai_rules: Optional[str] = None,
+                                 filters: Optional[list] = None) -> dict:
         """
-        يطلب من AI اختيار أحد القوالب الستة الموجودة فعلياً في
-        DASHBOARD_TEMPLATES + اقتراح عنوان وسؤال لكل خلية (٤ Gauges
-        أعلى دائماً + خلايا القالب المختار)، بناءً على وصف حر من
-        المستخدم وschema المشروع الفعلي.
+        (نفس التوثيق السابق)
 
-        هذه الدالة لا تُنشئ اللوحة مباشرة — تُرجع فقط خطة (dict) تُعرض
-        للمراجعة في الواجهة. الإنشاء الفعلي في ui/dashboards.py يستخدم
-        بالضبط نفس db.save_dashboard_cell() المُستخدَمة في الإنشاء
-        اليدوي — أي أن اللوحة الناتجة هنا مطابقة تماماً للوحة عادية
-        وقابلة للتعديل لاحقاً بلا أي قيد إضافي؛ الفرق الوحيد هو لحظة
-        الإنشاء الأولى فقط.
-
-        يرجع:
-        {
-            "ok": True,
-            "template_id": "A",
-            "gauges": [{"title": "...", "question": "..."}, ...],  # طولها دائماً DASHBOARD_GAUGE_COUNT
-            "cells": [{"title": "...", "question": "...", "display_type": "...", "chart_type": None|"..."}, ...],
-        }
-        أو {"ok": False, "error": "..."}
+        🆕 filters (اختياري): فلاتر بصيغة QueryEngine القياسية (نفس
+        شكل filters_from_slicer_rows) مُختارة من المستخدم في شاشة
+        الإنشاء التلقائي قبل توليد الخطة — تُضاف كسياق للـ prompt حتى
+        يقترح AI عناوين/أسئلة تتماشى مع نطاق البيانات المُصفّى فعلياً
+        (مثلاً فترة زمنية محددة أو حالة معينة)، تماماً كما تُستخدم في
+        PromptBuilder._build_filters لصفحة المحادثة. الفلاتر الفعلية
+        تبقى تُطبَّق لاحقاً كـ Slicers حقيقية على اللوحة بعد إنشائها
+        (راجع ui/dashboards.py) — هذا السياق هنا استرشادي فقط لتوليد
+        أسئلة أكثر دقة، وليس تنفيذاً فعلياً للفلترة في هذه المرحلة.
         """
         schema = self.db.get_schema()
         if not schema:
@@ -429,6 +437,22 @@ class DashboardManager:
             schema_lines.append(f"{alias}: {cols}")
         schema_text = "\n".join(schema_lines)
 
+        filters_text = ""
+        if filters:
+            filter_lines = ["الفلاتر النشطة التالية ستُطبَّق فعلياً على بيانات هذه اللوحة "
+                             "(كل الاستعلامات ستُقيَّد بها تلقائياً) — اجعل الأسئلة والعناوين "
+                             "منسجمة مع هذا النطاق دون تكرار ذكره حرفياً في كل سؤال:"]
+            for f in filters:
+                if f.get("date_range"):
+                    filter_lines.append(
+                        f'- الجدول "{f["table"]}"، العمود "{f["column"]}": من '
+                        f'{f["date_range"]["start"]} إلى {f["date_range"]["end"]}'
+                    )
+                else:
+                    vals = "، ".join(str(v) for v in (f.get("values") or []))
+                    filter_lines.append(f'- الجدول "{f["table"]}"، العمود "{f["column"]}": {vals}')
+            filters_text = "\n\nقيود الفلترة الحالية:\n" + "\n".join(filter_lines)
+
         prompt = f"""أنت مساعد لبناء لوحات معلومات (Dashboards). اختر قالباً واحداً فقط من
 القوالب المتاحة أدناه بناءً على طلب المستخدم، ثم اقترح عنواناً وسؤالاً
 طبيعياً واضحاً لكل خلية (٤ مؤشرات Gauges أعلى دائماً + خلايا القالب المختار).
@@ -437,7 +461,7 @@ class DashboardManager:
 {templates_desc}
 
 الجداول والأعمدة المتاحة في المشروع:
-{schema_text}
+{schema_text}{filters_text}
 
 طلب المستخدم: {description}
 
@@ -487,7 +511,6 @@ class DashboardManager:
                          f"الذي يحتاج {tmpl['cell_count']} خلية",
             }
 
-        # نضمن وجود ٤ gauges بالضبط (نُكمّل ببطاقات فارغة أو نقصّ الزائد بأمان)
         gauges = (gauges + [{"title": "", "question": ""}] * DASHBOARD_GAUGE_COUNT)[:DASHBOARD_GAUGE_COUNT]
 
         return {"ok": True, "template_id": template_id, "gauges": gauges, "cells": cells}

@@ -61,14 +61,25 @@ def _show_dashboard_gallery(db):
                         db.create_dashboard(dash_id, title.strip(), key)
                         st.session_state.current_dashboard_id = dash_id
                         st.rerun()
-            st.divider()
-
+            st.divider()    
     with st.expander("🤖 إنشاء لوحة تلقائياً بالذكاء الاصطناعي"):
         auto_title = st.text_input("عنوان اللوحة", key="auto_dash_title")
         auto_desc = st.text_area(
             "صف ما تريد متابعته", key="auto_dash_desc", height=90,
             placeholder="مثال: لوحة متابعة أداء المبيعات الشهري حسب المنطقة والمنتج",
         )
+
+        dm_for_filters = DashboardManager(db, None)  # لا حاجة لـ ai هنا لقراءة الجداول/القيم فقط
+        with st.expander("🔍 عوامل التصفية (اختياري)", expanded=False):
+            st.caption(
+                "اختر الجداول/الأعمدة/القيم أو نطاق التاريخ الذي تريد أن تُبنى "
+                "عليه اللوحة — نفس هذه الفلاتر ستُطبَّق تلقائياً على اللوحة بعد إنشائها."
+            )
+            auto_filter_rows = _render_filter_fields_block(
+                dm_for_filters, id_for_keys="auto_dash", slicers_existing={},
+                date_filter_existing={}, db=db,
+            )
+
         if st.button("🤖 إنشاء الخطة", key="auto_dash_generate"):
             if not auto_title.strip() or not auto_desc.strip():
                 notify("الرجاء إدخال العنوان والوصف", kind="warning")
@@ -77,8 +88,12 @@ def _show_dashboard_gallery(db):
             else:
                 ai, settings = _build_ai_manager(db)
                 dm = DashboardManager(db, ai)
+                filters_for_ai = dm.filters_from_slicer_rows(auto_filter_rows)
                 with st.spinner("⏳ جاري تحليل بياناتك وبناء خطة اللوحة..."):
-                    plan = dm.generate_dashboard_plan(auto_desc.strip(), ai_rules=settings.get("ai_rules"))
+                    plan = dm.generate_dashboard_plan(
+                        auto_desc.strip(), ai_rules=settings.get("ai_rules"),
+                        filters=filters_for_ai,
+                    )
                 if not plan["ok"]:
                     notify(plan["error"], kind="error")
                 else:
@@ -94,7 +109,17 @@ def _show_dashboard_gallery(db):
                                 dash_id, base + i, c.get("display_type") or "table",
                                 c.get("title") or None, c["question"], c.get("chart_type"),
                             )
-                    notify("تم إنشاء اللوحة بنجاح", kind="success")
+
+                    # 🆕 حفظ نفس الفلاتر المُختارة كـ Slicers ابتدائية على
+                    # اللوحة الجديدة — تظهر مُفعَّلة فوراً بمجرد فتحها لأول مرة.
+                    for row in auto_filter_rows:
+                        if row["table_name"] and row["column_name"] and row["selected_values"]:
+                            db.save_dashboard_slicer(
+                                dash_id, row["position"], row["table_name"],
+                                row["column_name"], row["selected_values"],
+                            )
+
+                    notify("تم إنشاء اللوحة بنجاح مع تطبيق الفلاتر المختارة", kind="success")
                     st.session_state.current_dashboard_id = dash_id
                     st.rerun()
 
@@ -237,23 +262,75 @@ def _show_dashboard_detail(db):
     layout_fn(render_cell)
 
 def _render_slicer_panel(db, dm, dashboard_id, slicers, date_filter_position, date_filter):
+    slicers_existing = slicers  # dict keyed by position, بدون فلتر التاريخ (تم فصله مسبقاً)
+    pending_rows = _render_filter_fields_block(
+        dm, id_for_keys=dashboard_id,
+        slicers_existing=slicers_existing,
+        date_filter_existing=date_filter,
+        db=db,
+    )
+
+    st.markdown("")
+    reset_col, save_col, _spacer = st.columns([1.2, 1.2, 3.6])
+
+    with save_col:
+        if st.button("💾 حفظ الكل", key=f"save_all_slicers_{dashboard_id}", width='stretch', type="primary"):
+            for row in pending_rows:
+                db.save_dashboard_slicer(
+                    dashboard_id, row["position"], row["table_name"],
+                    row["column_name"], row["selected_values"],
+                )
+            notify("تم حفظ كل الفلاتر", kind="success")
+            st.rerun()
+
+    with reset_col:
+        if st.button("↺ مسح الكل", key=f"reset_slicers_{dashboard_id}", width='stretch'):
+            dm.reset_slicers(dashboard_id)
+            slicer_count = DASHBOARD_SLICER_COUNT - 1
+            for i in range(slicer_count):
+                for prefix in ("slicer_table_", "slicer_col_", "slicer_vals_",
+                               "slicer_values_cache_"):
+                    st.session_state.pop(f"{prefix}{dashboard_id}_{i}", None)
+            for key in (f"date_filter_table_{dashboard_id}", f"date_filter_col_{dashboard_id}",
+                        f"date_filter_start_{dashboard_id}", f"date_filter_end_{dashboard_id}"):
+                st.session_state.pop(key, None)
+            notify("تم مسح كل الفلاتر", kind="success")
+            st.rerun()
+
+#----------------------------------------------
+def _render_filter_fields_block(dm, id_for_keys: str, slicers_existing: dict,
+                                 date_filter_existing: dict, db=None) -> list[dict]:
+    """
+    🆕 الجزء البنائي المشترك من عوامل التصفية (٣ فلاتر جدول+عمود+قيم +
+    فلتر تاريخ واحد) — بدون أي حفظ أو اعتماد على dashboard_id فعلي،
+    حتى يمكن استخدامه في مكانين:
+      (١) لوحة موجودة فعلاً (_render_slicer_panel يستدعيها ثم يحفظ).
+      (٢) شاشة "الإنشاء التلقائي بالذكاء الاصطناعي" قبل وجود أي لوحة —
+          القيم تُقرأ مباشرة من اختيارات المستخدم الحيّة بدون حفظ فوري.
+
+    id_for_keys: بادئة فريدة لمفاتيح الـ widgets (dashboard_id فعلي أو
+    نص ثابت مثل "auto_dash" لشاشة الإنشاء التلقائي).
+
+    يُرجع قائمة صفوف بنفس شكل صفوف db.get_dashboard_slicers (بدون id/
+    dashboard_id): [{"position", "table_name", "column_name",
+    "selected_values"}, ...] — جاهزة للحفظ المباشر لاحقاً أو للتحويل
+    عبر DashboardManager.filters_from_slicer_rows.
+    """
     tables = dm.get_available_tables()
-    slicer_count = DASHBOARD_SLICER_COUNT - 1  # آخر عمود محجوز لفلتر التاريخ
+    slicer_count = DASHBOARD_SLICER_COUNT - 1
     slicer_cols = st.columns(DASHBOARD_SLICER_COUNT)
 
-    # نجمع اختيارات كل فلتر أولاً (بدون حفظ فردي) — الحفظ الفعلي يحدث
-    # مرة واحدة عبر زر موحّد في نهاية الدالة، بعد قراءة كل العناصر.
-    pending_slicers = []  # [(position, table, column, values)]
+    pending_rows = []
 
     for i in range(slicer_count):
-        existing = slicers.get(i, {})
+        existing = slicers_existing.get(i, {})
         with slicer_cols[i]:
             table_options = ["(بدون)"] + tables
             cur_table = existing.get("table_name")
             table_idx = table_options.index(cur_table) if cur_table in table_options else 0
             sel_table = st.selectbox(
                 f"الجدول (فلتر {i + 1})", table_options, index=table_idx,
-                key=f"slicer_table_{dashboard_id}_{i}",
+                key=f"slicer_table_{id_for_keys}_{i}",
             )
 
             sel_column = None
@@ -265,15 +342,11 @@ def _render_slicer_panel(db, dm, dashboard_id, slicers, date_filter_position, da
                 col_idx = col_options.index(cur_col) if cur_col in col_options else 0
                 sel_column = st.selectbox(
                     "العمود", col_options, index=col_idx,
-                    key=f"slicer_col_{dashboard_id}_{i}",
+                    key=f"slicer_col_{id_for_keys}_{i}",
                 )
 
                 if sel_column != "(بدون)":
-                    # عرض قيم العمود فوراً بمجرد اختياره — بدون زر
-                    # "تحميل القيم" أو "إعادة تحميل القيم". يُخزَّن الجلب
-                    # في session_state باسم يشمل (الجدول, العمود) بحيث
-                    # يُعاد الجلب تلقائياً فقط عند تغيّر الاختيار فعلياً.
-                    values_key = f"slicer_values_cache_{dashboard_id}_{i}"
+                    values_key = f"slicer_values_cache_{id_for_keys}_{i}"
                     cache_sig_key = f"{values_key}_sig"
                     current_sig = (sel_table, sel_column)
 
@@ -291,58 +364,37 @@ def _render_slicer_panel(db, dm, dashboard_id, slicers, date_filter_position, da
                     existing_vals = [v for v in (existing.get("selected_values") or []) if v in available_values]
                     sel_values = st.multiselect(
                         "القيم", available_values, default=existing_vals,
-                        key=f"slicer_vals_{dashboard_id}_{i}",
+                        key=f"slicer_vals_{id_for_keys}_{i}",
                     )
 
             final_table = sel_table if sel_table != "(بدون)" else None
             final_column = sel_column if sel_column and sel_column != "(بدون)" else None
-            pending_slicers.append((i, final_table, final_column, sel_values if final_column else []))
+            pending_rows.append({
+                "position": i, "table_name": final_table, "column_name": final_column,
+                "selected_values": sel_values if final_column else [],
+            })
 
-    # العمود الرابع (الأخير) داخل نفس صف الفلاتر — فلتر التاريخ
     with slicer_cols[slicer_count]:
-        date_table, date_column, date_values = _render_date_filter_fields(db, dm, dashboard_id, date_filter)
-    pending_slicers.append((date_filter_position, date_table, date_column, date_values))
+        date_table, date_column, date_values = _render_date_filter_fields_generic(
+            dm, id_for_keys, date_filter_existing, db=db,
+        )
+    pending_rows.append({
+        "position": slicer_count, "table_name": date_table, "column_name": date_column,
+        "selected_values": date_values,
+    })
 
-    st.markdown("")  # مسافة بسيطة قبل صف الأزرار
-    reset_col, save_col, _spacer = st.columns([1.2, 1.2, 3.6])
+    return pending_rows
+# ---------------------------------------------- 
 
-    
-    with save_col:
-        if st.button("💾 حفظ الكل", key=f"save_all_slicers_{dashboard_id}", width='stretch', type="primary"):
-            for position, final_table, final_column, values in pending_slicers:
-                db.save_dashboard_slicer(dashboard_id, position, final_table, final_column, values)
-            notify("تم حفظ كل الفلاتر", kind="success")
-            st.rerun()
-
-    with reset_col:
-        if st.button("↺ مسح الكل", key=f"reset_slicers_{dashboard_id}", width='stretch'):
-            # reset_dashboard_slicers يحذف كل صفوف dashboard_slicers لهذه
-            # اللوحة دفعة واحدة — بما فيها موضع فلتر التاريخ نفسه، لأنه
-            # مخزَّن في نفس الجدول. لا حاجة لاستدعاء منفصل لمسحه.
-            dm.reset_slicers(dashboard_id)
-            for i in range(slicer_count):
-                for prefix in ("slicer_table_", "slicer_col_", "slicer_vals_",
-                               "slicer_values_cache_"):
-                    st.session_state.pop(f"{prefix}{dashboard_id}_{i}", None)
-            for key in (f"date_filter_table_{dashboard_id}", f"date_filter_col_{dashboard_id}",
-                        f"date_filter_start_{dashboard_id}", f"date_filter_end_{dashboard_id}"):
-                st.session_state.pop(key, None)
-            notify("تم مسح كل الفلاتر", kind="success")
-            st.rerun()
-
-    
-def _render_date_filter_fields(db, dm, dashboard_id, existing):
+def _render_date_filter_fields_generic(dm, id_for_keys: str, existing: dict, db=None):
     """
-    فلتر تاريخ مبسّط: جدول + عمود تاريخ + نطاق (من/إلى) مباشرة — بدون
-    خيارات "فترة سريعة" وبدون زر حفظ خاص به (الحفظ موحّد الآن عبر زر
-    "💾 حفظ الكل" في _render_slicer_panel). يُرجع (table, column, values)
-    ليُجمَع مع بقية الفلاتر ويُحفظ دفعة واحدة.
-
-    values عند الحفظ = [start_iso, end_iso] بالضبط — راجع
-    DashboardManager._build_active_filters للتمييز عن Slicer عادي.
+    نفس _render_date_filter_fields القديمة، مُعمَّمة لقبول id_for_keys
+    بدل dashboard_id مباشرة، وdb اختياري (لقراءة settings/_date_cols_
+    — يُمرَّر من الطرفين، أو يُؤخَذ من dm.db لو لم يُمرَّر).
     """
     import datetime as _dt
 
+    db = db or dm.db
     existing = existing or {}
     tables = dm.get_available_tables()
     settings = db.get_settings()
@@ -357,7 +409,7 @@ def _render_date_filter_fields(db, dm, dashboard_id, existing):
     table_idx = table_options.index(cur_table) if cur_table in table_options else 0
     sel_table = st.selectbox(
         "فلتر التاريخ", table_options, index=table_idx,
-        key=f"date_filter_table_{dashboard_id}",
+        key=f"date_filter_table_{id_for_keys}",
     )
 
     if sel_table == "(بدون)":
@@ -369,7 +421,7 @@ def _render_date_filter_fields(db, dm, dashboard_id, existing):
     col_idx = col_options.index(cur_col) if cur_col in col_options else 0
     sel_column = st.selectbox(
         "العمود", col_options, index=col_idx,
-        key=f"date_filter_col_{dashboard_id}",
+        key=f"date_filter_col_{id_for_keys}",
     )
 
     if sel_column == "(بدون)":
@@ -385,8 +437,8 @@ def _render_date_filter_fields(db, dm, dashboard_id, existing):
         except ValueError:
             pass
 
-    start_date = st.date_input("من", value=default_start, key=f"date_filter_start_{dashboard_id}")
-    end_date = st.date_input("إلى", value=default_end, key=f"date_filter_end_{dashboard_id}")
+    start_date = st.date_input("من", value=default_start, key=f"date_filter_start_{id_for_keys}")
+    end_date = st.date_input("إلى", value=default_end, key=f"date_filter_end_{id_for_keys}")
 
     if start_date and end_date:
         if start_date > end_date:
@@ -395,6 +447,11 @@ def _render_date_filter_fields(db, dm, dashboard_id, existing):
         return sel_table, sel_column, [start_date.isoformat(), end_date.isoformat()]
 
     return sel_table, sel_column, []
+
+
+def _render_date_filter_fields(db, dm, dashboard_id, existing):
+    """يبقى بنفس التوقيع القديم للتوافق — يُفوّض للنسخة المُعمَّمة."""
+    return _render_date_filter_fields_generic(dm, dashboard_id, existing, db=db)
 
 def _render_dashboard_cell(db, dm, settings, dashboard_id, position, cell_row):
     """
