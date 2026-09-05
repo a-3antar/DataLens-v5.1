@@ -7,17 +7,28 @@ ui/reports.py
 🆕 بلوك الجدول يُعرض الآن عبر ui.common.render_themed_table (جدول
 HTML مُنسَّق يدوياً بألوان الثيم) بدل st.dataframe التفاعلي — الأخير
 يُرسم على <canvas> ولا يلتزم بشكل موثوق بألوان الثيم الحالي.
+
+🆕 بلوك الرسم البياني (chart):
+--------------------------------
+بناء الرسم استُبدل من px.bar اليدوي المباشر إلى استدعاء
+core.dashboard_cells.cells._build_chart_figure/_apply_chart_layout_tweaks
+— نفس الدالتين المستخدمتين في خلايا لوحات المعلومات وصفحة المحادثة،
+حتى لا يتكرر نفس منطق بناء الرسم (ومشاكله السابقة: legend بعنوان
+"variable" وقيمة "y" عند عمود قيمة واحد، وعنوان محور رأسي "value" غير
+ضروري) في أكثر من ملف. البلوك المحفوظ هنا قد يحتوي أكثر من عمود قيمة
+(chart_type مخزَّن مسبقاً من ai/ai_manager عبر ReportManager.add_chart)،
+والدالة المشتركة تتعامل مع كل الحالات (عمود واحد أو أكثر) تلقائياً.
 """
 
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 
 from ui.common import (
     apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
     temp_export_dir, offer_download, apply_plotly_theme, render_themed_table,
 )
+from core.dashboard_cells.cells import _build_chart_figure, _apply_chart_layout_tweaks
 from exporters.report_manager import ReportManager
 from exporters.pdf_exporter import PDFExporter
 from exporters.excel_exporter import ExcelExporter
@@ -141,8 +152,18 @@ def _render_block(block: dict, settings: dict = None):
         y_cols = content.get("y_cols", [])
         if data and x_col and y_cols:
             df = pd.DataFrame(data)
-            fig = px.bar(df, x=x_col, y=y_cols, barmode="group", text_auto=True,
-                         title=content.get("title", ""))
+            ctype = content.get("chart_type", "bar")
+            # 🆕 بناء الرسم عبر الدالة المشتركة — تمرر اسم العمود مباشرة
+            # (وليس كقائمة من عنصر واحد) عند وجود عمود قيمة واحد فقط،
+            # فيختفي legend الزائد بعنوان "variable" وقيمة "y" تلقائياً.
+            fig = _build_chart_figure(df, x_col, y_cols, ctype)
+            fig.update_layout(
+                margin=dict(l=10, r=10, t=10, b=10),
+                title=content.get("title", ""),
+            )
+            # legend أعلى الرسم أفقياً (عند وجود عمودي قيمة أو أكثر)
+            # وإخفاء عنوان المحور الرأسي لتوفير مساحة العرض.
+            _apply_chart_layout_tweaks(fig, ctype)
             apply_plotly_theme(fig, settings)
             st.plotly_chart(fig, width='stretch')
 

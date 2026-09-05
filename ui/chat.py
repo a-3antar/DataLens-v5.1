@@ -20,6 +20,16 @@ AI يُنتج هذه البنية فعلياً.
 ui/dashboards.py وcore/dashboard_cells/base.py) — استُبدل بالكامل
 باستدعاء build_ai_manager(db) دون أي تغيير في السلوك أو الإعدادات
 المُستخدَمة.
+
+🆕 بناء الرسم البياني (chart result_type):
+----------------------------------------------
+استُبدل بناء px.bar/line/area/scatter اليدوي هنا باستدعاء
+core.dashboard_cells.cells._build_chart_figure/_apply_chart_layout_tweaks
+— نفس الدالتين المستخدمتين فعلياً في خلايا لوحات المعلومات (ChartCell)،
+بدل تكرار نفس المنطق (ومشاكله: legend بعنوان "variable" وقيمة "y" عند
+عمود قيمة واحد بسبب دمج Plotly الداخلي، وعنوان محور رأسي "value" غير
+ضروري) في مكانين منفصلين. أي تحسين مستقبلي على شكل الرسم يكفي تطبيقه
+مرة واحدة في core/dashboard_cells/cells.py ليسري هنا تلقائياً.
 """
 
 import uuid
@@ -35,6 +45,7 @@ from ui.common import (
     render_themed_table,
 )
 from ai.ai_manager import build_ai_manager
+from core.dashboard_cells.cells import _build_chart_figure, _apply_chart_layout_tweaks
 from config import CHART_TYPES
 
 
@@ -156,17 +167,15 @@ def _render_result(db, settings, result: dict, result_type: str, chart_type: str
             x_col = df.columns[0]
             y_cols = list(df.columns[1:3])
             try:
-                if chart_type == "line":
-                    fig = px.line(df, x=x_col, y=y_cols, markers=True)
-                elif chart_type == "pie":
-                    fig = px.pie(df, names=x_col, values=y_cols[0])
-                elif chart_type == "area":
-                    fig = px.area(df, x=x_col, y=y_cols)
-                elif chart_type == "scatter":
-                    fig = px.scatter(df, x=x_col, y=y_cols[0])
-                else:
-                    fig = px.bar(df, x=x_col, y=y_cols, barmode="group", text_auto=True)
+                # 🆕 بناء الرسم عبر الدالة المشتركة — تتولى تمرير اسم
+                # العمود مباشرة (وليس كقائمة من عنصر واحد) عند وجود
+                # عمود قيمة واحد فقط، فيختفي legend الزائد بعنوان عام
+                # "variable" وقيمة "y" تلقائياً بدل ظهوره بلا فائدة.
+                fig = _build_chart_figure(df, x_col, y_cols, chart_type)
                 fig.update_layout(margin=dict(l=10, r=10, t=30, b=10))
+                # legend أعلى الرسم أفقياً (عند وجود عمودي قيمة أو أكثر)
+                # وإخفاء عنوان المحور الرأسي لتوفير مساحة العرض.
+                _apply_chart_layout_tweaks(fig, chart_type)
                 # 🆕 يفرض ألوان الثيم فعلياً على الأعمدة/الخطوط/الشرائح
                 # (وليس فقط الخلفية والنص) — راجع ui/common.py للتفاصيل.
                 apply_plotly_theme(fig, settings)

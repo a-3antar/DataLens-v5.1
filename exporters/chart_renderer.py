@@ -23,7 +23,7 @@ import logging
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
-
+import math
 from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
@@ -288,7 +288,7 @@ def _render_pie(d, data, y_col, categories, W, H, margin_top, label_font):
         d.pieslice([cx - radius, cy - radius, cx + radius, cy + radius],
                    start, start + extent, fill=color)
         mid_angle = start + extent / 2
-        import math
+       
         lx = cx + (radius + 40) * math.cos(math.radians(mid_angle))
         ly = cy + (radius + 40) * math.sin(math.radians(mid_angle))
         pct = f"{v / total * 100:.0f}%"
@@ -339,7 +339,7 @@ def render_gauge(current_value, min_value, max_value, label="",
 
     # علامات القياس
     n_ticks = 5
-    import math
+
     for i in range(n_ticks + 1):
         angle = 180 + 180 * i / n_ticks
         val = min_value + span * i / n_ticks

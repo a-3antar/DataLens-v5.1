@@ -25,13 +25,27 @@ core/dashboard_cells/cells.py
 الآن فعلياً بناءً على قواعد ai/prompt_builder.py::build_story
 المُحدَّثة. RTL ولون النص مضبوطان أصلاً عالمياً عبر
 ui.common.apply_rtl()/apply_theme_css() فلا حاجة لأي HTML إضافي هنا.
+
+🆕 تحسين عرض ChartCell (legend + محور رأسي):
+------------------------------------------------
+عمود واحد فقط في y_cols كان يُمرَّر لـ Plotly Express كقائمة من عنصر
+واحد ([y_cols[0]]) بدل النص المباشر — وهذا يجعل Plotly يدمج (melt)
+البيانات داخلياً بعمودين وهميين "variable"/"value"، فيظهر legend
+بعنوان عام "variable" وقيمة "y" (اسم العمود الخام من AI) بدل عدم
+إظهار أي legend إطلاقاً (لا داعي له مع سلسلة واحدة). الحل: تمرير اسم
+العمود مباشرة (نص) بدل قائمة عندما يكون عموداً واحداً فقط — فتختفي
+مشكلة الدمج تلقائياً، ويظهر legend فعلياً (بأسماء الأعمدة الحقيقية)
+فقط عند وجود عمودين. بالإضافة لذلك: legend يُنقَل أفقياً أعلى الرسم
+(بدل يمينه/أسفله)، وعنوان المحور الرأسي (كان "value" افتراضياً من
+Plotly) يُخفى تماماً لتوفير مساحة العرض.
 """
+
+import json
 
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import json
 
 from ui.common import render_themed_table, apply_plotly_theme, get_chart_theme, get_theme_colors
 from core.dashboard_cells.base import DashboardCellBase, _sanitize_rows
@@ -100,6 +114,54 @@ class TableCell(DashboardCellBase):
 
 
 # ══════════════════════════════════════════════════════════════
+#  🆕 دالة مشتركة: بناء رسم Plotly من عمود/أعمدة قيمة بشكل صحيح
+# ══════════════════════════════════════════════════════════════
+
+def _build_chart_figure(df: pd.DataFrame, x_col: str, y_cols: list, ctype: str):
+    """
+    بناء كائن Plotly Express المناسب حسب نوع الرسم، مع معالجة حالة
+    "عمود قيمة واحد فقط" بشكل صحيح: يُمرَّر اسم العمود كنص مباشرة
+    (وليس كقائمة من عنصر واحد) — تمرير قائمة من عنصر واحد يجعل Plotly
+    Express يدمج (melt) البيانات داخلياً بعمودين وهميين "variable"/
+    "value"، فيظهر legend بعنوان عام غير مفيد بدل عدم إظهار أي legend
+    إطلاقاً (وهو المتوقَّع فعلياً مع سلسلة واحدة). مع عمودين فعليين،
+    legend يظهر طبيعياً بأسماء الأعمدة الحقيقية (لا حاجة لأي معالجة).
+    """
+    y_param = y_cols[0] if len(y_cols) == 1 else y_cols
+
+    if ctype == "line":
+        return px.line(df, x=x_col, y=y_param, markers=True)
+    if ctype == "pie":
+        return px.pie(df, names=x_col, values=y_cols[0])
+    if ctype == "area":
+        return px.area(df, x=x_col, y=y_param)
+    if ctype == "scatter":
+        return px.scatter(df, x=x_col, y=y_cols[0])
+    return px.bar(df, x=x_col, y=y_param, barmode="group", text_auto=True)
+
+
+def _apply_chart_layout_tweaks(fig, ctype: str) -> None:
+    """
+    🆕 تعديلات تخطيط مشتركة بعد بناء أي رسم بياني:
+    - نقل الـ legend (عند ظهوره فعلياً — أي عند وجود عمودي قيمة أو
+      أكثر) أفقياً إلى أعلى منطقة الرسم بدل يمينه الافتراضي، لأنه أكثر
+      وضوحاً وأقل استهلاكاً للعرض الأفقي المحدود داخل خلية اللوحة.
+    - إخفاء عنوان المحور الرأسي (Plotly يضعه تلقائياً كـ "value" في
+      حالة الدمج القديمة، أو كاسم العمود الأول في الحالة العادية) —
+      لا حاجة له بصرياً هنا (القيم مفهومة من سياق الرسم والتلميحات
+      عند المرور بالماوس)، وإزالته توفّر مساحة رأسية إضافية للرسم نفسه.
+    الرسم الدائري (pie) مستثنى: لا محور رأسي له، وlegend فيه أصلاً
+    أسماء الفئات (categories) وليس أسماء أعمدة — لا داعي لأي تعديل.
+    """
+    if ctype == "pie":
+        return
+    fig.update_layout(
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, title_text=""),
+    )
+    fig.update_yaxes(title_text="")
+
+
+# ══════════════════════════════════════════════════════════════
 #  ChartCell — رسم بياني (كل الأنواع الفرعية عبر chart_type)
 # ══════════════════════════════════════════════════════════════
 
@@ -144,17 +206,9 @@ class ChartCell(DashboardCellBase):
         x_col = df.columns[0]
         y_cols = list(df.columns[1:3])
         try:
-            if ctype == "line":
-                fig = px.line(df, x=x_col, y=y_cols, markers=True)
-            elif ctype == "pie":
-                fig = px.pie(df, names=x_col, values=y_cols[0])
-            elif ctype == "area":
-                fig = px.area(df, x=x_col, y=y_cols)
-            elif ctype == "scatter":
-                fig = px.scatter(df, x=x_col, y=y_cols[0])
-            else:
-                fig = px.bar(df, x=x_col, y=y_cols, barmode="group", text_auto=True)
+            fig = _build_chart_figure(df, x_col, y_cols, ctype)
             fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=280)
+            _apply_chart_layout_tweaks(fig, ctype)
             apply_plotly_theme(fig, settings)
             st.plotly_chart(fig, width='stretch', key=f"chart_{dashboard_id}_{self.position}")
         except Exception as e:
