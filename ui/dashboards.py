@@ -7,6 +7,10 @@ ui/dashboards.py
 3. التحديث الذكي والسريع: استخدام الذكاء الاصطناعي فقط للأسئلة الجديدة أو السرد، وتطبيق الفلاتر محلياً.
 4. التنفيذ المتوازي: تشغيل خلايا السرد بالتوازي دائماً، وبقية الخلايا مع المحرك السحابي لتسريع الأداء.
 5. الإنشاء التلقائي: إمكانية توليد اللوحات تلقائياً بالذكاء الاصطناعي بناءً على وصف حر للمستخدم.
+6. 🆕 تغيير قالب اللوحة بعد إنشائها: قائمة مطوية تسمح باختيار قالب آخر
+   لنفس اللوحة في أي وقت — بدون حذف أو تحديث أي خلية غير ظاهرة (راجع
+   core.dashboard_manager.DashboardManager.update_dashboard_template
+   للتفاصيل الكاملة عن سياسة الحفاظ على الخلايا المخفية).
 """
 
 from core import dashboard_cells
@@ -220,6 +224,15 @@ def _show_dashboard_detail(db):
             )
         st.rerun()
 
+    # 🆕 تغيير قالب اللوحة بعد إنشائها — لا يحذف ولا يُحدِّث أي خلية
+    # مخزَّنة مسبقاً (راجع DashboardManager.update_dashboard_template
+    # للتفاصيل الكاملة). الخلايا التي تصبح خارج نطاق القالب الجديد
+    # تبقى محفوظة وتتوقف فقط عن الظهور/التحديث، وتعود فوراً لو أُعيد
+    # اختيار قالب يشملها من جديد.
+    _render_template_switcher(db, dm, dashboard, dashboard_id)
+
+    st.divider()
+
     # الـ Slicers وفلتر التاريخ معاً في قائمة مطوية واحدة — فلتر
     # التاريخ يشغل العمود الرابع (الأخير) ضمن نفس صف الفلاتر بدل قائمة
     # مطوية منفصلة، فيظهر المستخدم كل عوامل التصفية في مكان واحد.
@@ -241,6 +254,9 @@ def _show_dashboard_detail(db):
 
     st.divider()
 
+    # dashboard["template_id"] قد يكون قديماً لو غُيِّر للتو في هذا
+    # التشغيل (str.rerun أعلاه يضمن قراءة القيمة المحدَّثة من الأصل
+    # في التشغيلة التالية، لذا لا حاجة لإعادة قراءته هنا يدوياً).
     template = get_template(dashboard["template_id"])
     cells = {c["position"]: c for c in db.get_dashboard_cells(dashboard_id)}
 
@@ -260,6 +276,59 @@ def _show_dashboard_detail(db):
         _render_dashboard_cell(db, dm, settings, dashboard_id, position, cells.get(position))
 
     layout_fn(render_cell)
+
+
+def _render_template_switcher(db, dm, dashboard: dict, dashboard_id: str) -> None:
+    """
+    🆕 قائمة مطوية لتغيير قالب اللوحة الحالية في أي وقت بعد إنشائها.
+
+    التغيير يمس فقط عمود dashboards.template_id (عبر
+    DashboardManager.update_dashboard_template) — لا يحذف ولا يُعدِّل
+    أي صف في dashboard_cells. الخلايا التي تخرج عن نطاق القالب الجديد
+    (position >= 4 + cell_count الجديد) تبقى محفوظة كما هي بالكامل،
+    فقط تتوقف عن الظهور في هذه الصفحة وعن الدخول في "تحديث البيانات"
+    — وتعود فوراً لو أُعيد اختيار قالب أكبر يشملها مجدداً، بدون أي
+    إعادة حساب أو استدعاء AI إضافي.
+    """
+    cur_template_id = dashboard["template_id"]
+    with st.expander(f"🧩 قالب اللوحة الحالي: {get_template(cur_template_id)['name']}", expanded=False):
+        st.caption(
+            "يمكنك تغيير قالب اللوحة في أي وقت. الخلايا التي تصبح خارج "
+            "نطاق القالب الجديد لن تُحذف ولن تُحدَّث تلقائياً (توفيراً "
+            "لوقت الحسابات واستدعاءات الذكاء الاصطناعي) — تبقى محفوظة "
+            "ببياناتها وتعود للظهور فوراً لو اخترت قالباً يشملها مجدداً."
+        )
+
+        tmpl_keys = list(DASHBOARD_TEMPLATES.keys())
+        new_template_id = st.selectbox(
+            "اختر القالب الجديد", tmpl_keys,
+            index=tmpl_keys.index(cur_template_id) if cur_template_id in tmpl_keys else 0,
+            format_func=lambda k: f"{k} — {DASHBOARD_TEMPLATES[k]['name']}",
+            key=f"template_switch_select_{dashboard_id}",
+        )
+        st.caption(DASHBOARD_TEMPLATES[new_template_id]["description"])
+
+        if new_template_id != cur_template_id:
+            old_count = get_template(cur_template_id)["cell_count"]
+            new_count = DASHBOARD_TEMPLATES[new_template_id]["cell_count"]
+            if new_count < old_count:
+                st.caption(
+                    f"⚠️ القالب الجديد يعرض {new_count} خلية بدل {old_count} — "
+                    f"الخلايا الزائدة ستبقى محفوظة ومخفية فقط، ولن تُحذف."
+                )
+
+        if st.button(
+            "💾 حفظ القالب", key=f"save_template_{dashboard_id}",
+            width='stretch', type="primary",
+            disabled=(new_template_id == cur_template_id),
+        ):
+            r = dm.update_dashboard_template(dashboard_id, new_template_id)
+            if r["ok"]:
+                notify("تم تغيير قالب اللوحة", kind="success")
+                st.rerun()
+            else:
+                notify(r.get("error", "فشل تغيير القالب"), kind="error")
+
 
 def _render_slicer_panel(db, dm, dashboard_id, slicers, date_filter_position, date_filter):
     slicers_existing = slicers  # dict keyed by position, بدون فلتر التاريخ (تم فصله مسبقاً)
@@ -458,7 +527,10 @@ def _render_dashboard_cell(db, dm, settings, dashboard_id, position, cell_row):
     نقطة الدخول الموحّدة لعرض/تحرير خلية واحدة — تبني كائن الخلية
     المناسب عبر core.dashboard_cells.create_cell() (بما فيها EmptyCell
     لو لم تُهيَّأ الخلية بعد) وتستدعي عليه الدوال الموحّدة بغض النظر عن
-    نوعها الفعلي.
+    نوعها الفعلي. لا تُستدعى إطلاقاً لمواضع خارج نطاق القالب الحالي —
+    الاستدعاء يقتصر على المواضع التي يبنيها layout_fn الخاص بالقالب
+    المختار حالياً + صف الـ Gauges الثابت، وهذا وحده كافٍ لإخفاء أي
+    خلايا "زائدة" محفوظة من قالب أكبر سابق دون أي فلترة إضافية هنا.
     """
     edit_key = f"editing_cell_{dashboard_id}_{position}"
     is_gauge_row = position < DASHBOARD_GAUGE_COUNT

@@ -14,6 +14,12 @@ RTL ولون النص مضبوطان أصلاً بشكل عام عبر ui.common
 apply_theme_css() (تُستدعيان في بداية كل صفحة)، فلا حاجة لأي لفّ HTML
 إضافي هنا — راجع ai/prompt_builder.py::build_story للقواعد التي تجعل
 AI يُنتج هذه البنية فعلياً.
+
+🧹 تنظيف: بناء المحرك/AIManager من إعدادات المشروع كان يتكرر هنا يدوياً
+رغم وجود ai.ai_manager.build_ai_manager() الموحَّدة (تُستخدم فعلياً في
+ui/dashboards.py وcore/dashboard_cells/base.py) — استُبدل بالكامل
+باستدعاء build_ai_manager(db) دون أي تغيير في السلوك أو الإعدادات
+المُستخدَمة.
 """
 
 import uuid
@@ -28,8 +34,7 @@ from ui.common import (
     format_local_dt, notify, get_chart_theme, apply_plotly_theme, get_theme_colors,
     render_themed_table,
 )
-from ai.ai_manager import AIManager, get_engine
-from core.query_engine import QueryEngine
+from ai.ai_manager import build_ai_manager
 from config import CHART_TYPES
 
 
@@ -47,27 +52,10 @@ def show_chat():
         st.caption("لا توجد جداول بعد. ارفع ملفاً أولاً من صفحة الملفات.")
         return
 
-    engine_name = settings.get("ai_engine", "gemini")
-    engine = get_engine(
-        engine_name=engine_name,
-        api_key=settings.get(f"api_key_{engine_name}", ""),
-        model=settings.get("model", ""),
-        timeout=settings.get("timeout", 30),
-        ollama_url=settings.get("ollama_url", "http://localhost:11434"),
-    )
-    if engine is None:
+    ai, settings = build_ai_manager(db)
+    if ai.engine is None:
         notify("محرك AI غير معروف. راجع الإعدادات.", kind="error")
         return
-
-    ai = AIManager(
-        db, engine,
-        temperature=settings.get("temperature", 0.1),
-        max_tries=settings.get("max_tries", 3),
-        retry_delay=settings.get("retry_delay", 10),
-        max_total_wait_seconds=settings.get("max_total_wait_seconds", 0),
-        story_max_total_wait_seconds=settings.get("story_max_total_wait_seconds", 0),
-        story_timeout=settings.get("story_timeout", 45),
-    )
 
     c1, c2 = st.columns([3, 1])
     with c1:

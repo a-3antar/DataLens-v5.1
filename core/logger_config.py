@@ -37,6 +37,9 @@ contextvars.ContextVar فتُنسخ تلقائياً كنسخة مستقلة ل�
     بعدها أي `logging.getLogger(__name__)` في أي ملف بالمشروع يكتب
     تلقائياً لنفس الملف، مع اسم المستخدم مُضمَّناً تلقائياً في كل سطر،
     تماماً كما يعمل logger الحالي في كل الملفات بدون أي تعديل عليها.
+
+🧹 تنظيف: حُذفت get_log_file_path() — غير مستخدمة في أي مكان (لا توجد
+حالياً واجهة لعرض/تنزيل ملف اللوج).
 """
 
 import logging
@@ -145,8 +148,3 @@ def setup_logging(level: int = logging.INFO) -> None:
         "Logging initialized — writing to %s (max %d bytes × %d backups)",
         LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT,
     )
-
-
-def get_log_file_path() -> Path:
-    """مسار ملف الـ log الحالي — مفيد لو احتاج مكان آخر لعرضه أو تنزيله لاحقاً."""
-    return LOG_FILE

@@ -7,6 +7,10 @@ ai/ai_manager.py
 - إرسال السؤال مع retry loop عند الخطأ
 - استخراج SQL من الرد
 - تنفيذ SQL عبر QueryEngine
+
+🧹 تنظيف: حُذفت get_models()/engine_status() من AIManager — كانتا غير
+مستخدمتين في أي مكان بالمشروع (جلب النماذج وفحص حالة المحرك يتمّان
+عبر استدعاء engine.get_models()/engine.status() مباشرة في ui/settings.py).
 """
 import json
 import time
@@ -273,19 +277,6 @@ class AIManager:
         return result
 
     # ──────────────────────────────────────────────────────────
-    #  دوال مساعدة
-    # ──────────────────────────────────────────────────────────
-
-    def get_models(self) -> dict:
-        """إرجاع النماذج المتاحة من المحرك الحالي."""
-        return self.engine.get_models()
-
-    def engine_status(self) -> dict:
-        """فحص حالة المحرك الحالي."""
-        return self.engine.status()
-
-
-    # ──────────────────────────────────────────────────────────
     #  السرد القصصي (Story Telling)
     # ──────────────────────────────────────────────────────────
     def tell_story(
@@ -535,9 +526,9 @@ def build_ai_manager(db: ProjectDB):
     """
     بناء AIManager جاهز من إعدادات مشروع (project.db) مباشرة — نقطة
     مشتركة واحدة يستخدمها كل من ui/dashboards.py (معرض اللوحات،
-    الإنشاء التلقائي بالذكاء الاصطناعي) وcore/dashboard_cells/base.py
-    (زر "اختبار" داخل محرر الخلية)، بدل تكرار نفس منطق قراءة
-    الإعدادات وبناء المحرك في أكثر من مكان.
+    الإنشاء التلقائي بالذكاء الاصطناعي)، core/dashboard_cells/base.py
+    (زر "اختبار" داخل محرر الخلية)، وui/chat.py (صفحة المحادثة) —
+    بدل تكرار نفس منطق قراءة الإعدادات وبناء المحرك في أكثر من مكان.
 
     يرجع: (ai_manager: AIManager, settings: dict)
     """

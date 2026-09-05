@@ -55,6 +55,12 @@ purge_expired_deletions() — تُستدعى دورياً (من main.py عند �
 ملاحظة: لا توجد حالياً واجهة "استرجاع حساب محذوف" — الأرشفة هنا
 للحماية من الحذف الخاطئ فقط (يمكن استعادتها يدوياً من القرص خلال
 الشهر لو لزم الأمر)، وليست ميزة استرجاع ذاتية للمستخدم.
+
+🧹 تنظيف: حُذفت get_user_by_token()، get_all_users()، user_exists()
+— الثلاثة كانت غير مستخدمة في أي مكان بالمشروع (التحقق من الجلسة في
+الواجهة يعتمد على وجود "token" في st.session_state مباشرة بدون إعادة
+التحقق من users.db في كل صفحة، وتسجيل الدخول لا يتحقق من وجود اسم
+المستخدم مسبقاً إلا عبر IntegrityError عند register).
 """
 
 import sqlite3
@@ -199,7 +205,6 @@ class AuthManager:
         auth = AuthManager()
         auth.register("admin", "password123", email="admin@example.com")
         token = auth.login("admin", "password123")
-        user  = auth.get_user_by_token(token)
 
         auth.save_api_key(user_id, "gemini", "AIza...", "gemini-2.0-flash")
         saved = auth.get_api_key(user_id, "gemini")   # مفتاح صريح جاهز للاستخدام
@@ -326,43 +331,8 @@ class AuthManager:
             return {"ok": False, "error": "خطأ في قاعدة البيانات"}
 
     # ──────────────────────────────────────────────────────────
-    #  التحقق من الجلسة
+    #  معلومات المستخدم
     # ──────────────────────────────────────────────────────────
-
-    def get_user_by_token(self, token: str) -> Optional[dict]:
-        """
-        التحقق من token وإرجاع بيانات المستخدم.
-        يرجع None إذا كان الـ token منتهياً أو غير موجود.
-        """
-        if not token:
-            return None
-        try:
-            with _connect() as conn:
-                row = conn.execute(
-                    """
-                    SELECT u.id, u.username, s.expires_at
-                    FROM sessions s
-                    JOIN users u ON s.user_id = u.id
-                    WHERE s.token = ?
-                    """,
-                    (token,)
-                ).fetchone()
-
-            if not row:
-                return None
-
-            # التحقق من انتهاء الجلسة
-            expires_at = datetime.fromisoformat(row["expires_at"])
-            if _now() > expires_at:
-                self._delete_session(token)
-                logger.info("Session expired for token: %s...", token[:8])
-                return None
-
-            return {"user_id": row["id"], "username": row["username"]}
-
-        except sqlite3.Error as e:
-            logger.error("get_user_by_token error: %s", e)
-            return None
 
     def get_user_info(self, user_id: str) -> Optional[dict]:
         """
@@ -414,33 +384,8 @@ class AuthManager:
             logger.error("_delete_all_sessions_for_user error: %s", e)
 
     # ──────────────────────────────────────────────────────────
-    #  إدارة المستخدمين
+    #  إدارة الجلسات
     # ──────────────────────────────────────────────────────────
-
-    def get_all_users(self) -> list[dict]:
-        """إرجاع كل المستخدمين (بدون كلمات المرور)."""
-        try:
-            with _connect() as conn:
-                rows = conn.execute(
-                    "SELECT id, username, created_at FROM users ORDER BY created_at"
-                ).fetchall()
-            return [dict(r) for r in rows]
-        except sqlite3.Error as e:
-            logger.error("get_all_users error: %s", e)
-            return []
-
-    def user_exists(self, username: str) -> bool:
-        """التحقق من وجود مستخدم."""
-        try:
-            with _connect() as conn:
-                row = conn.execute(
-                    "SELECT id FROM users WHERE username = ?",
-                    (username.strip().lower(),)
-                ).fetchone()
-            return row is not None
-        except sqlite3.Error as e:
-            logger.error("user_exists error: %s", e)
-            return False
 
     def clean_expired_sessions(self) -> int:
         """حذف الجلسات المنتهية. يرجع عدد السجلات المحذوفة."""

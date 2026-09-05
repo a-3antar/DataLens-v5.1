@@ -39,6 +39,10 @@ db.get_clean_data() كما كانت دائماً (بدون أي تعديل عل�
 لما لا تُمرَّر filters (استخدام عادي من المحادثة/التقارير/أي مكان
 آخر): يُسجَّل الجدول الخام مباشرة تحت اسمه العادي بدون أي view إضافي
 — تماماً كالسلوك القديم، بلا أي فرق في الأداء أو النتيجة.
+
+🧹 تنظيف: حُذفت get_table_names()/preview_table() — غير مستخدمتين في
+أي مكان (أسماء الجداول تُقرأ مباشرة عبر db.get_files() عند الحاجة،
+والمعاينة تتم عبر core.data_manager.DataManager.get_preview).
 """
 
 import re
@@ -426,16 +430,3 @@ class QueryEngine:
         finally:
             if conn:
                 conn.close()
-
-    # ──────────────────────────────────────────────────────────
-    #  معلومات مساعدة
-    # ──────────────────────────────────────────────────────────
-
-    def get_table_names(self) -> list[str]:
-        """أسماء الجداول المتاحة في المشروع."""
-        return [f["table_alias"] for f in self.db.get_files()]
-
-    def preview_table(self, table_alias: str, limit: int = 5) -> dict:
-        """معاينة سريعة لجدول بدون كتابة SQL يدوي."""
-        return self.run(f'SELECT * FROM "{table_alias}" LIMIT {limit}')
-

@@ -3,6 +3,11 @@ config.py
 =========
 كل الثوابت والإعدادات العامة للتطبيق.
 لا يستورد من أي ملف داخلي آخر.
+
+🧹 تنظيف: حُذفت APP_HOST/APP_PORT (Streamlit Community Cloud لا يقرأ
+أياً منهما — التشغيل السحابي يتحكم بالمنفذ/العنوان خارج كود التطبيق)
+وSTORY_MAX_ROWS (غير مستخدم في أي مكان؛ الثابت الفعلي المستخدَم لتحديد
+عدد الصفوف المُرسَلة لـ AI في نص السرد هو STORY_SAMPLE_ROWS_IN_PROMPT).
 """
 
 import os
@@ -26,8 +31,6 @@ PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 APP_NAME    = "DataLens"
 APP_ICON    = "📊"
 APP_VERSION = "5.1"
-APP_HOST    = "0.0.0.0"   # متاح على الـ LAN
-APP_PORT    = 8000
 
 # ─── الأمان ────────────────────────────────────────────────
 SESSION_EXPIRE_HOURS = 24
@@ -123,7 +126,6 @@ CHART_TYPES = {
 }
 
 # ─── سرد قصصي (Story Telling) ──────────────────────────────
-STORY_MAX_ROWS = 500      # أقصى عدد صفوف تُرسل للـ AI كسياق لكتابة السرد
 STORY_SAMPLE_ROWS_IN_PROMPT = 500  # عدد الصفوف الفعلي المضمّن نصياً في الـ prompt
 STORY_MAX_QUERIES = 10 # أقصى عدد استعلام SQL يمكن إنشاؤه
 # ─── الثيمات ───────────────────────────────────────────────

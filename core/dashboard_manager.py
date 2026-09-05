@@ -2,8 +2,8 @@
 core/dashboard_manager.py
 ===========================
 المنطق البرمجي للوحات المعلومات: خيارات الـ Slicers، تنفيذ "تحديث
-البيانات" (متوازٍ عبر Threads)، وبناء خطة لوحة كاملة تلقائياً بالذكاء
-الاصطناعي.
+البيانات" (متوازٍ عبر Threads)، بناء خطة لوحة كاملة تلقائياً بالذكاء
+الاصطناعي، وتغيير قالب لوحة موجودة بعد إنشائها.
 
 🆕 إعادة هيكلة (خلايا OOP):
 ------------------------------
@@ -58,27 +58,51 @@ thread، حيث لا تزال القيمة الصحيحة متاحة)، ثم ن�
 بدون أي حاجة لمعرفة تفاصيله هنا (هذا الملف لا يستورد ui/ أو
 streamlit، ويبقى كذلك — راجع _submit_with_context أدناه).
 
+🆕 تغيير قالب لوحة موجودة (update_dashboard_template):
+------------------------------------------------------------
+core/project_db.py ممنوع تعديله بموجب قرار معماري صريح، ولا توجد فيه
+دالة لتحديث template_id للوحة موجودة (create_dashboard يضبطها فقط
+وقت الإنشاء). لذا — بنفس النمط المُستخدَم فعلياً في
+exporters/report_manager.py::rename وcore/project_manager.py::rename
+لأعمدة لا تغطيها ProjectDB — نُحدّث عمود dashboards.template_id مباشرة
+عبر sqlite3 على ملف project.db، دون أي تعديل على project_db.py نفسه.
+
+الخلايا التي تقع خارج نطاق القالب الجديد (position >=
+DASHBOARD_GAUGE_COUNT + cell_count الجديد) لا تُحذف ولا تُعدَّل أبداً —
+تبقى مخزَّنة كما هي بالكامل (سؤالها، base_sql، آخر نتيجة محفوظة). هي
+فقط تتوقف عن الظهور في الواجهة (ui/dashboards.py يعرض فقط الخلايا ضمن
+نطاق القالب الحالي عبر layout_fn) ولا تُشمَل ضمن "تحديث البيانات"
+(راجع الفلترة في refresh_dashboard أدناه) — توفيراً حقيقياً لوقت
+الحسابات واستدعاءات AI على خلايا غير مرئية أصلاً. لو أُعيد اختيار
+قالب أكبر لاحقاً (أو نفس القالب القديم)، تعود هذه الخلايا للظهور
+ببياناتها المحفوظة فوراً بدون أي إعادة حساب.
+
 لا تحديث تلقائي أو فوري لأي خلية — كل شيء يحدث فقط عند استدعاء
 refresh_dashboard() أو refresh_single_cell() (المرتبطين بأزرار صريحة
 في الواجهة).
 """
 
-from PIL import ImageColor
-from PIL import ImageColor
 import json
+import sqlite3
 import logging
 import contextvars
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, Callable
 
 from core.project_db import ProjectDB
 from core.query_engine import QueryEngine
-from core.dashboard_templates import DASHBOARD_TEMPLATES
+from core.dashboard_templates import DASHBOARD_TEMPLATES, get_template
 from core.dashboard_cells import create_cell
 from ai.ai_manager import AIManager
-from config import DASHBOARD_GAUGE_COUNT
+from config import DASHBOARD_GAUGE_COUNT, PROJECTS_DIR
 
 logger = logging.getLogger(__name__)
+
+
+def _now() -> str:
+    """الوقت الحالي بصيغة ISO — نفس تنسيق core.project_db._now()."""
+    return datetime.utcnow().isoformat()
 
 
 class DashboardManager:
@@ -127,6 +151,56 @@ class DashboardManager:
     def reset_slicers(self, dashboard_id: str) -> None:
         """إعادة كل Slicers اللوحة إلى الوضع الافتراضي (بدون تنفيذ أي تحديث)."""
         self.db.reset_dashboard_slicers(dashboard_id)
+
+    # ──────────────────────────────────────────────────────────
+    #  🆕 تغيير قالب لوحة موجودة — بدون حذف أو تحديث الخلايا المخفية
+    # ──────────────────────────────────────────────────────────
+
+    def _visible_cell_limit(self, dashboard: dict) -> int:
+        """
+        عدد المواضع المرئية فعلياً حسب قالب اللوحة الحالي: ٤ Gauges
+        ثابتة دائماً + عدد خلايا القالب (cell_count). أي خلية بموضع
+        (position) أكبر من أو يساوي هذا الحد تُعتبر "مخفية" — موجودة
+        في project.db لكن غير معروضة وغير مُحدَّثة ضمن "تحديث الكل".
+        """
+        template = get_template(dashboard.get("template_id", "A"))
+        return DASHBOARD_GAUGE_COUNT + template["cell_count"]
+
+    def update_dashboard_template(self, dashboard_id: str, new_template_id: str) -> dict:
+        """
+        تغيير قالب لوحة موجودة مسبقاً — لا يحذف ولا يُعدِّل أي خلية
+        مخزَّنة، فقط يُبدِّل template_id الذي يتحكم في عدد/تخطيط
+        الخلايا المعروضة (راجع توثيق الوحدة أعلاه للتفاصيل الكاملة).
+
+        core/project_db.py لا يُلمس هنا — التحديث مباشر عبر sqlite3
+        على نفس ملف project.db، بنفس نمط exporters/report_manager.py
+        ::rename وcore/project_manager.py::rename.
+
+        يرجع: {"ok": True} أو {"ok": False, "error": "..."}
+        """
+        if new_template_id not in DASHBOARD_TEMPLATES:
+            return {"ok": False, "error": f"قالب غير معروف: {new_template_id}"}
+
+        dashboard = self.db.get_dashboard(dashboard_id)
+        if not dashboard:
+            return {"ok": False, "error": "اللوحة غير موجودة"}
+
+        try:
+            db_path = PROJECTS_DIR / self.db.user_id / self.db.project_id / "project.db"
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.execute(
+                    "UPDATE dashboards SET template_id = ?, updated_at = ? WHERE id = ?",
+                    (new_template_id, _now(), dashboard_id)
+                )
+                conn.commit()
+            logger.info(
+                "Dashboard template changed: %s (%s -> %s) — no cells deleted or modified",
+                dashboard_id, dashboard.get("template_id"), new_template_id
+            )
+            return {"ok": True}
+        except Exception as e:
+            logger.error("update_dashboard_template error: %s", e)
+            return {"ok": False, "error": str(e)}
 
     # ──────────────────────────────────────────────────────────
     #  تنفيذ خلية واحدة (تُستدعى داخل thread — لا تكتب في DB)
@@ -180,9 +254,16 @@ class DashboardManager:
         max_workers: int = 4,
     ) -> dict:
         """
-        تنفيذ كل خلايا اللوحة المُهيَّأة من جديد، مع تطبيق قيود كل
-        الـ Slicers المُفعَّلة، وبالتوازي عبر ThreadPoolExecutor حيثما
-        كان ذلك آمناً ومفيداً (راجع توثيق الوحدة أعلاه).
+        تنفيذ كل خلايا اللوحة المُهيَّأة والمرئية فعلياً حسب القالب
+        الحالي من جديد، مع تطبيق قيود كل الـ Slicers المُفعَّلة،
+        وبالتوازي عبر ThreadPoolExecutor حيثما كان ذلك آمناً ومفيداً
+        (راجع توثيق الوحدة أعلاه).
+
+        🆕 الخلايا المخفية (position خارج نطاق القالب الحالي — راجع
+        _visible_cell_limit وupdate_dashboard_template أعلاه) تُستبعَد
+        بالكامل من هذا التحديث: لا تُنفَّذ، لا تُستهلَك عليها استدعاءات
+        AI، ولا تُكتب لها نتيجة جديدة — بياناتها المحفوظة سابقاً تبقى
+        كما هي دون لمس حتى تعود للظهور لو أُعيد اختيار قالب يشملها.
 
         يُستدعى فقط عند ضغط زر "🔄 تحديث البيانات" — لا نداء تلقائياً
         من أي مكان آخر.
@@ -197,11 +278,20 @@ class DashboardManager:
         يرجع: {"ok": True, "results": {position: {...}}, "errors": N,
                "total": N, "ai_calls": N, "fast_updates": N}
         """
+        dashboard = self.db.get_dashboard(dashboard_id)
+        if not dashboard:
+            return {"ok": False, "error": "اللوحة غير موجودة"}
+
+        visible_limit = self._visible_cell_limit(dashboard)
+
         rows = self.db.get_dashboard_cells(dashboard_id)
-        configured_rows = [r for r in rows if r.get("question")]
+        configured_rows = [
+            r for r in rows
+            if r.get("question") and r["position"] < visible_limit
+        ]
 
         if not configured_rows:
-            return {"ok": False, "error": "لا توجد خلايا مُهيَّأة في هذه اللوحة بعد"}
+            return {"ok": False, "error": "لا توجد خلايا مُهيَّأة (ومرئية حسب القالب الحالي) في هذه اللوحة بعد"}
 
         cell_objs = [create_cell(r) for r in configured_rows]
 
@@ -300,7 +390,7 @@ class DashboardManager:
 
         self.db.touch_dashboard(dashboard_id)
         logger.info(
-            "Dashboard '%s' refreshed: %d cells, %d errors, %d AI calls, %d fast updates",
+            "Dashboard '%s' refreshed: %d visible cells, %d errors, %d AI calls, %d fast updates",
             dashboard_id, total, error_count, ai_calls, fast_updates
         )
         return {
@@ -316,7 +406,9 @@ class DashboardManager:
         """
         تحديث خلية واحدة فقط بنفس منطق refresh_dashboard (AI فقط عند
         الحاجة). مفيد أثناء بناء اللوحة أو تصحيح سؤال معين دون الانتظار
-        لتحديث كل الخلايا.
+        لتحديث كل الخلايا. تُستدعى فقط من أزرار صريحة على خلايا مرئية
+        فعلياً في الواجهة (ui/dashboards.py لا تعرض أزرار لخلايا مخفية
+        أصلاً)، فلا حاجة لفحص visible_limit هنا بشكل منفصل.
 
         تُنفَّذ مباشرة في الـ main thread (بدون ThreadPoolExecutor) —
         لا حاجة لنقل سياق هنا لأن السياق الحالي (اسم المستخدم) هو

@@ -28,6 +28,14 @@ save_settings() (ui/settings.py، ui/dashboards.py، ui/chat.py...).
 backup_*.db في نفس مجلد المشروع؛ لو تجاوز العدد 20 نسخة، تُحذف أقدم
 النسخ (بترتيب اسم الملف، الذي يحمل timestamp، أو وقت التعديل احتياطاً)
 حتى يعود العدد إلى الحد الأقصى المسموح به.
+
+ملاحظة: backup()/_rotate_old_backups() غير مربوطتين بأي زر في الواجهة
+حالياً (بانتظار "Backup system UI" ضمن خطة الطريق) — أُبقيتا كما هما
+بدون حذف عمداً، فهما ليستا كوداً ميتاً بل ميزة جاهزة تنتظر واجهتها.
+
+🧹 تنظيف: حُذفت rename_dashboard() — غير مستخدمة في أي مكان (إعادة
+تسمية اللوحة تتم فقط عند الإنشاء حالياً؛ core/dashboard_manager.py
+يحدّث template_id مباشرة عبر sqlite3 وليس عبر هذه الدالة).
 """
 
 import sqlite3
@@ -711,18 +719,6 @@ class ProjectDB:
             logger.error("get_dashboard error: %s", e)
             return None
 
-    def rename_dashboard(self, dashboard_id: str, new_title: str) -> None:
-        try:
-            with _connect(self.db_path) as conn:
-                conn.execute(
-                    "UPDATE dashboards SET title = ?, updated_at = ? WHERE id = ?",
-                    (new_title, _now(), dashboard_id)
-                )
-                conn.commit()
-        except sqlite3.Error as e:
-            logger.error("rename_dashboard error: %s", e)
-            raise
-
     def touch_dashboard(self, dashboard_id: str) -> None:
         """تحديث updated_at (يُستدعى بعد كل ضغطة تحديث بيانات ناجحة)."""
         try:
@@ -748,7 +744,6 @@ class ProjectDB:
 
     def duplicate_dashboard(self, dashboard_id: str, new_id: str, new_title: str) -> None:
         """تكرار لوحة معلومات كاملة (خلايا + فلاتر) بمعرّف جديد."""
-        import uuid as _uuid
         try:
             src = self.get_dashboard(dashboard_id)
             if not src:
@@ -967,6 +962,7 @@ class ProjectDB:
 
     # ──────────────────────────────────────────────────────────
     #  النسخ الاحتياطي
+    #  (لم تُربط بواجهة بعد — راجع الملاحظة أعلى الملف؛ تبقى كما هي)
     # ──────────────────────────────────────────────────────────
 
     def backup(self) -> Path:

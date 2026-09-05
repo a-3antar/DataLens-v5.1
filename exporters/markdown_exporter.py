@@ -3,6 +3,9 @@ exporters/markdown_exporter.py
 ================================
 تصدير التقارير إلى Markdown (.md).
 أبسط وأسرع صيغة للتصدير — مناسبة للمشاركة والأرشفة.
+
+🧹 تنظيف: حُذفت to_string() — غير مستخدمة في أي مكان (ui/reports.py
+يستخدم export() فقط لكتابة ملف مباشرة).
 """
 
 import logging
@@ -162,20 +165,3 @@ class MarkdownExporter:
         """شريط تقدم نصي."""
         filled = int(pct / 100 * width)
         return "█" * filled + "░" * (width - filled)
-
-    # ──────────────────────────────────────────────────────────
-    #  تصدير كنص مباشر (بدون ملف)
-    # ──────────────────────────────────────────────────────────
-
-    def to_string(self, report_id: str) -> dict:
-        """
-        إرجاع محتوى التقرير كنص Markdown بدون حفظ ملف.
-        يرجع: {"ok": True, "text": "..."} أو {"ok": False, "error": "..."}
-        """
-        reports = self.rm.list_reports()
-        report  = next((r for r in reports if r["id"] == report_id), None)
-        if not report:
-            return {"ok": False, "error": "التقرير غير موجود"}
-        blocks = self.rm.get_blocks(report_id)
-        lines  = self._build_markdown(report["title"], blocks)
-        return {"ok": True, "text": "\n".join(lines)}

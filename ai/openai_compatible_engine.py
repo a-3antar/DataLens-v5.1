@@ -11,6 +11,13 @@ ai/openai_compatible_engine.py
 (نفس شكل الطلب، نفس معالجة الأخطاء 401/403/429/5xx)، والفرق الوحيد
 الفعلي بينهما هو الـ base_url والموديل الافتراضي. هذا الكلاس يلتقط
 المنطق المشترك مرة واحدة، ويأخذ base_url/default headers كمعامل.
+(الملفان القديمان ai/grok.py وai/openrouter.py حُذفا نهائياً بعد أن
+أصبحا كوداً ميتاً بالكامل — كل شيء يمر الآن عبر هذا الكلاس + السجل
+أدناه.)
+
+🧹 تنظيف: حُذفت all_openai_compatible_names() — لم تكن مستخدمة في أي
+مكان بالمشروع (config.AI_ENGINES هو المصدر الفعلي المستخدَم في
+ui/settings.py لقائمة المحركات المعروضة).
 """
 
 import logging
@@ -178,8 +185,3 @@ OPENAI_COMPATIBLE_ENGINES = {
 def get_registry_entry(engine_name: str) -> dict:
     """إرجاع تعريف محرك من السجل، أو {} لو غير موجود."""
     return OPENAI_COMPATIBLE_ENGINES.get(engine_name.lower().strip(), {})
-
-
-def all_openai_compatible_names() -> list[str]:
-    """كل أسماء المحركات المسجّلة هنا (بدون gemini/ollama)."""
-    return list(OPENAI_COMPATIBLE_ENGINES.keys())
