@@ -568,13 +568,14 @@ def layout_2x2(render_cell):
 
 
 def layout_main_and_split(render_cell):
-    """القالب B: عمود كبير + عمود جانبي مقسوم لصفين."""
+    """القالب B: عمود كبير + عمود جانبي مقسوم لثلاثة صفوف."""
     left, right = st.columns([2, 1])
     with left:
         render_cell(0)
     with right:
         render_cell(1)
         render_cell(2)
+        render_cell(3)
 
 
 def layout_3col(render_cell):

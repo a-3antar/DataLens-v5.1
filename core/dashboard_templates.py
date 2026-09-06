@@ -22,8 +22,8 @@ DASHBOARD_TEMPLATES = {
     },
     "B": {
         "name": "عمود رئيسي وعمود مقسوم",
-        "description": "٤ Gauges أعلى + عمود كبير وعمود جانبي مقسوم لصفين",
-        "cell_count": 3,
+        "description": "٤ Gauges أعلى + عمود كبير وعمود جانبي مقسوم ثلاثة صفوف",
+        "cell_count": 4,
         "layout_fn": "layout_main_and_split",
     },
     "C": {
