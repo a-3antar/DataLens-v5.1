@@ -41,6 +41,7 @@ Plotly) يُخفى تماماً لتوفير مساحة العرض.
 """
 
 import json
+import uuid
 
 import streamlit as st
 import pandas as pd
@@ -104,6 +105,14 @@ class TableCell(DashboardCellBase):
 
     def to_stored_dict(self, raw_result: dict) -> dict:
         return self._base_stored_dict(raw_result)
+
+    def send_to_report(self, rm, report_id, label, include_data=False):
+        if not self.last_result:
+            return {"ok": False, "error": "لا توجد نتيجة لإرسالها"}
+        return rm.add_table(
+            report_id, str(uuid.uuid4()),
+            self.last_result.get("rows", []), self.last_result.get("columns", []),
+        )
 
     def render_result(self, settings: dict, dashboard_id: str) -> None:
         if self._render_error_or_empty():
@@ -181,6 +190,21 @@ class ChartCell(DashboardCellBase):
         stored["chart_type"] = self.chart_type or "bar"
         return stored
 
+    def send_to_report(self, rm, report_id, label, include_data=False):
+        if not self.last_result:
+            return {"ok": False, "error": "لا توجد نتيجة لإرسالها"}
+        columns = self.last_result.get("columns", [])
+        if len(columns) < 2:
+            return {"ok": False, "error": "لا توجد بيانات كافية لإرسال الرسم"}
+        x_col = columns[0]
+        y_cols = columns[1:3]
+        return rm.add_chart(
+            report_id, str(uuid.uuid4()),
+            self.last_result.get("chart_type", "bar"),
+            self.last_result.get("rows", []), x_col, y_cols,
+            title=label or self.title or "",
+        )
+        
     def render_type_specific_fields(self, dashboard_id: str) -> dict:
         ctype_options = list(CHART_TYPES.keys())
         cur_ctype = self.chart_type or "bar"
@@ -233,6 +257,20 @@ class GaugeCell(DashboardCellBase):
     def to_stored_dict(self, raw_result: dict) -> dict:
         return self._base_stored_dict(raw_result)
 
+    def send_to_report(self, rm, report_id, label, include_data=False):
+        if not self.last_result:
+            return {"ok": False, "error": "لا توجد نتيجة لإرسالها"}
+        rows = self.last_result.get("rows", [])
+        row = rows[0] if rows else {}
+        return rm.add_gauge(
+            report_id, str(uuid.uuid4()),
+            current_value=row.get("current_value", 0),
+            min_value=row.get("min_value", 0),
+            max_value=row.get("max_value", 100),
+            label=label or self.title or "",
+        )
+
+
     def render_result(self, settings: dict, dashboard_id: str) -> None:
         if self._render_error_or_empty():
             return
@@ -270,6 +308,18 @@ class KpiCell(DashboardCellBase):
 
     def to_stored_dict(self, raw_result: dict) -> dict:
         return self._base_stored_dict(raw_result)
+
+    def send_to_report(self, rm, report_id, label, include_data=False):
+        if not self.last_result:
+            return {"ok": False, "error": "لا توجد نتيجة لإرسالها"}
+        rows = self.last_result.get("rows", [])
+        row = rows[0] if rows else {}
+        return rm.add_kpi(
+            report_id, str(uuid.uuid4()),
+            actual_value=row.get("actual_value", 0),
+            target_value=row.get("target_value", 0),
+            label=label or self.title or "",
+        )
 
     def render_result(self, settings: dict, dashboard_id: str) -> None:
         if self._render_error_or_empty():
@@ -343,6 +393,19 @@ class StoryCell(DashboardCellBase):
             "story": raw_result.get("story", ""),
             "queries": queries,
         }
+
+    def send_to_report(self, rm, report_id, label, include_data=False):
+        if not self.last_result:
+            return {"ok": False, "error": "لا توجد نتيجة لإرسالها"}
+        text = self.last_result.get("story", "")
+        if label:
+            text = f"## {label}\n\n{text}"
+        result = rm.add_paragraph(report_id, text)
+        if result["ok"] and include_data:
+            for q in self.last_result.get("queries", []):
+                if q.get("ok") and q.get("rows"):
+                    rm.add_table(report_id, str(uuid.uuid4()), q["rows"], q.get("columns", []))
+        return result
 
     def render_result(self, settings: dict, dashboard_id: str) -> None:
         if self._render_error_or_empty():

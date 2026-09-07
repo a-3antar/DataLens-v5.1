@@ -410,6 +410,111 @@ class DashboardCellBase(ABC):
                 st.rerun()
 
     # ──────────────────────────────────────────────────────────
+    #  🆕 إرسال نتيجة الخلية إلى تقرير — بنفس فكرة ui/chat.py
+    # ──────────────────────────────────────────────────────────
+
+    def send_to_report(self, rm, report_id: str, label: str, include_data: bool = False) -> dict:
+        """
+        تحويل self.last_result (المخزَّن بنفس شكل to_stored_dict) إلى
+        بلوك تقرير مناسب عبر exporters.report_manager.ReportManager.
+        كل subclass concrete يُعيد تعريفها حسب شكل بياناته الخاص —
+        راجع core/dashboard_cells/cells.py.
+        """
+        raise NotImplementedError
+
+    def render_actions_menu(self, db, dm, settings: dict, dashboard_id: str, edit_key: str) -> None:
+        """
+        قائمة إجراءات الخلية: تحديث / اختبار / تعديل السؤال / إرسال
+        إلى تقرير / إفراغ الخلية — كلها مجمَّعة في نفس القائمة "⁝".
+        """
+        has_popover = hasattr(st, "popover")
+        menu_ctx = (
+            st.popover("⁝", use_container_width=True) if has_popover
+            else st.expander("⁝", expanded=False)
+        )
+        test_key = f"cell_test_result_{dashboard_id}_{self.position}"
+
+        with menu_ctx:
+            if st.button("🔄 تحديث هذه الخلية", key=f"refresh_one_{dashboard_id}_{self.position}", width='stretch'):
+                with st.spinner("⏳ جاري التحديث..."):
+                    r = dm.refresh_single_cell(dashboard_id, self.position, ai_rules=settings.get("ai_rules"))
+                if r["ok"]:
+                    notify("تم التحديث" + (" (عبر AI)" if r["used_ai"] else ""), kind="success")
+                else:
+                    notify(r.get("error", "فشل التحديث"), kind="error")
+                st.rerun()
+
+            if st.button("🔍 اختبار", key=f"test_saved_{dashboard_id}_{self.position}", width='stretch'):
+                if not self.question:
+                    notify("لا يوجد سؤال محفوظ لهذه الخلية بعد", kind="warning")
+                else:
+                    filters = dm._build_active_filters(dashboard_id)
+                    with st.spinner("⏳ جاري الاختبار..."):
+                        r = self._run_test(self.question, db, settings, filters)
+                    st.session_state[test_key] = r
+                    st.rerun()
+
+            if st.button("✏️ تعديل السؤال", key=f"edit_{dashboard_id}_{self.position}", width='stretch'):
+                st.session_state[edit_key] = True
+                st.rerun()
+
+            st.divider()
+            self._render_send_to_report_fields(db, dashboard_id)
+
+            st.divider()
+            if st.button("🗑️ إفراغ الخلية", key=f"clear_{dashboard_id}_{self.position}", width='stretch'):
+                self.clear(db, dashboard_id)
+                st.session_state.pop(test_key, None)
+                st.rerun()
+
+        if st.session_state.get(test_key):
+            with st.container(border=True):
+                st.caption("نتيجة الاختبار:")
+                self._render_test_result(st.session_state[test_key], settings)
+                if st.button("إغلاق نتيجة الاختبار", key=f"close_test_{dashboard_id}_{self.position}"):
+                    st.session_state.pop(test_key, None)
+                    st.rerun()
+
+    def _render_send_to_report_fields(self, db, dashboard_id: str) -> None:
+        """
+        🆕 حقول إرسال نتيجة هذه الخلية إلى تقرير — تُرسَم مباشرة داخل
+        السياق الحالي (عادة داخل popover قائمة "⁝")، بدون فتح popover
+        خاص بها. لا تُعرض شيئاً لو لا توجد نتيجة محفوظة بعد أو لا توجد
+        تقارير في المشروع أصلاً.
+        """
+        from exporters.report_manager import ReportManager
+
+        st.markdown("**📤 إرسال إلى تقرير**")
+        if not self.last_result:
+            st.caption("لا توجد نتيجة محفوظة بعد لإرسالها")
+            return
+
+        reports = db.get_reports()
+        if not reports:
+            st.caption("أنشئ تقريراً أولاً من صفحة التقارير")
+            return
+
+        key_base = f"{dashboard_id}_{self.position}"
+        report_options = {r["title"]: r["id"] for r in reports}
+        report_choice = st.selectbox(
+            "التقرير", list(report_options.keys()), key=f"report_choice_{key_base}",
+        )
+        label = st.text_input(
+            "عنوان/تسمية", value=self.title or "", key=f"report_label_{key_base}",
+        )
+        include_data = False
+        if self.display_type == "story":
+            include_data = st.checkbox(
+                "إرفاق جداول البيانات المستخدمة", key=f"report_include_{key_base}",
+            )
+        if st.button("إرسال", key=f"report_send_{key_base}", width='stretch'):
+            rm = ReportManager(db)
+            r = self.send_to_report(rm, report_options[report_choice], label, include_data)
+            if r["ok"]:
+                notify("تمت الإضافة إلى التقرير", kind="success")
+            else:
+                notify(r.get("error", "فشل الإرسال إلى التقرير"), kind="error")
+    # ──────────────────────────────────────────────────────────
     #  الحفظ / الإفراغ — تتعامل مع ProjectDB كما هي الآن
     # ──────────────────────────────────────────────────────────
 
