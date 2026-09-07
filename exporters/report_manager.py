@@ -25,6 +25,7 @@ from core.project_db import ProjectDB
 logger = logging.getLogger(__name__)
 
 
+
 def _json_safe(value):
     """
     تحويل قيمة واحدة إلى نوع قابل للتسلسل عبر json.dumps مباشرة.
@@ -75,11 +76,25 @@ class ReportManager:
         blocks = rm.get_blocks(report_id)
     """
 
-    VALID_BLOCK_TYPES = {"paragraph", "table", "chart", "gauge", "kpi"}
+    VALID_BLOCK_TYPES = {"paragraph", "table", "chart", "gauge", "kpi", "dashboard"}
 
     def __init__(self, db: ProjectDB):
         self.db = db
 
+    # ──────────────────────────────────────────────────────────
+    #  إضافة "لقطة" من لوحة معلومات (داشبورد) إلى تقرير
+    # ──────────────────────────────────────────────────────────
+    def add_dashboard(self, report_id: str, title: str, gauges: list, columns: list) -> dict:
+        """
+        🆕 إضافة "لقطة" كاملة من لوحة معلومات بنفس تخطيطها (أعمدة).
+        gauges: حتى 4 عناصر {"title","type","content"} لصف المؤشرات
+        العلوي. columns: قائمة أعمدة، كل عمود قائمة عناصر بنفس الشكل،
+        من الأعلى للأسفل ضمن العمود، من اليمين لليسار بين الأعمدة —
+        نفس ترتيب القالب الأصلي في لوحات المعلومات.
+        """
+        return self._add_block(report_id, "dashboard", {
+            "title": title, "gauges": gauges, "columns": columns,
+        })
     # ──────────────────────────────────────────────────────────
     #  إنشاء وحذف التقارير
     # ──────────────────────────────────────────────────────────

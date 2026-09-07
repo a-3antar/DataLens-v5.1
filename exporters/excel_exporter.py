@@ -88,6 +88,11 @@ class ExcelExporter:
             kpi_blocks = [b for b in blocks if b["block_type"] == "kpi"]
             if kpi_blocks:
                 self._build_kpi_sheet(wb, kpi_blocks)
+                
+            # Sheet لكل لوحة (بتنسيق مصغر)
+            dashboard_blocks = [b for b in blocks if b["block_type"] == "dashboard"]
+            for block in dashboard_blocks:
+                self._build_dashboard_sheet(wb, block["content"])
 
             wb.save(str(output_path))
             logger.info("Excel exported: %s", output_path)
@@ -100,6 +105,146 @@ class ExcelExporter:
     # ──────────────────────────────────────────────────────────
     #  بناء الـ Sheets
     # ──────────────────────────────────────────────────────────
+
+    def _build_dashboard_sheet(self, wb, content: dict) -> None:
+        """Sheet للقطة لوحة كاملة — كل عمود من أعمدة اللوحة يُكتب في
+        نطاق أعمدة مستقل على نفس الـ sheet، فتحصل على تخطيط أعمدة
+        يحاكي شكل اللوحة الأصلي."""
+        title = content.get("title", "لوحة معلومات")
+        ws = wb.create_sheet((f"لوحة - {title}")[:31])
+        ws.sheet_view.rightToLeft = True
+
+        header_fill = PatternFill("solid", fgColor=COLOR_HEADER_BG)
+        header_font = Font(bold=True, color=COLOR_HEADER_FG, size=10)
+        thin = Side(style="thin", color="CBD5E1")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        ws.cell(1, 1, title).font = Font(bold=True, size=14, color=COLOR_TITLE)
+
+        row_cursor = 3
+        gauges = content.get("gauges", [])
+        if gauges:
+            for i, g in enumerate(gauges):
+                self._write_snapshot_cell(ws, g, row_cursor, i * 3 + 1, header_fill, header_font, border)
+            row_cursor += 8
+
+        col_block_width = 6
+        for ci, col_cells in enumerate(content.get("columns", [])):
+            r = row_cursor
+            for cell in col_cells:
+                r = self._write_snapshot_cell(ws, cell, r, ci * col_block_width + 1, header_fill, header_font, border) + 1
+
+        self._auto_width(ws)
+
+    def _write_snapshot_cell(self, ws, cell: dict, start_row: int, start_col: int,
+                              header_fill, header_font, border) -> int:
+        """كتابة خلية واحدة بدءاً من (start_row, start_col)، وإرجاع آخر صف مكتوب."""
+        ctype = cell.get("type")
+        data = cell.get("content", {}) or {}
+        title = cell.get("title") or ""
+
+        r = start_row
+        if title:
+            ws.cell(r, start_col, title).font = Font(bold=True, color=COLOR_TITLE)
+            r += 1
+
+        if ctype in ("table", "chart"):
+            columns_list = data.get("columns", [])
+            if columns_list:
+                for j, col_name in enumerate(columns_list):
+                    c = ws.cell(r, start_col + j, str(col_name))
+                    c.fill, c.font, c.border = header_fill, header_font, border
+                r += 1
+                for row_data in data.get("rows", []):
+                    for j, col_name in enumerate(columns_list):
+                        ws.cell(r, start_col + j, row_data.get(col_name, "")).border = border
+                    r += 1
+        elif ctype == "gauge":
+            row = (data.get("rows") or [{}])[0]
+            for label, key, default in (("القيمة الحالية", "current_value", 0),
+                                          ("الحد الأدنى", "min_value", 0),
+                                          ("الحد الأقصى", "max_value", 100)):
+                ws.cell(r, start_col, label); ws.cell(r, start_col + 1, row.get(key, default)); r += 1
+        elif ctype == "kpi":
+            row = (data.get("rows") or [{}])[0]
+            ws.cell(r, start_col, "القيمة الفعلية"); ws.cell(r, start_col + 1, row.get("actual_value", 0)); r += 1
+            ws.cell(r, start_col, "الهدف"); ws.cell(r, start_col + 1, row.get("target_value", 0)); r += 1
+        elif ctype == "story":
+            for line in (data.get("story", "") or "").splitlines():
+                if line.strip():
+                    ws.cell(r, start_col, line.strip()); r += 1
+
+        return r
+
+    def _build_dashboard_sheet(self, wb, content: dict) -> None:
+        """Sheet للقطة لوحة كاملة — كل عمود من أعمدة اللوحة يُكتب في
+        نطاق أعمدة مستقل على نفس الـ sheet، فتحصل على تخطيط أعمدة
+        يحاكي شكل اللوحة الأصلي."""
+        title = content.get("title", "لوحة معلومات")
+        ws = wb.create_sheet((f"لوحة - {title}")[:31])
+        ws.sheet_view.rightToLeft = True
+
+        header_fill = PatternFill("solid", fgColor=COLOR_HEADER_BG)
+        header_font = Font(bold=True, color=COLOR_HEADER_FG, size=10)
+        thin = Side(style="thin", color="CBD5E1")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        ws.cell(1, 1, title).font = Font(bold=True, size=14, color=COLOR_TITLE)
+
+        row_cursor = 3
+        gauges = content.get("gauges", [])
+        if gauges:
+            for i, g in enumerate(gauges):
+                self._write_snapshot_cell(ws, g, row_cursor, i * 3 + 1, header_fill, header_font, border)
+            row_cursor += 8
+
+        col_block_width = 6
+        for ci, col_cells in enumerate(content.get("columns", [])):
+            r = row_cursor
+            for cell in col_cells:
+                r = self._write_snapshot_cell(ws, cell, r, ci * col_block_width + 1, header_fill, header_font, border) + 1
+
+        self._auto_width(ws)
+
+    def _write_snapshot_cell(self, ws, cell: dict, start_row: int, start_col: int,
+                              header_fill, header_font, border) -> int:
+        """كتابة خلية واحدة بدءاً من (start_row, start_col)، وإرجاع آخر صف مكتوب."""
+        ctype = cell.get("type")
+        data = cell.get("content", {}) or {}
+        title = cell.get("title") or ""
+
+        r = start_row
+        if title:
+            ws.cell(r, start_col, title).font = Font(bold=True, color=COLOR_TITLE)
+            r += 1
+
+        if ctype in ("table", "chart"):
+            columns_list = data.get("columns", [])
+            if columns_list:
+                for j, col_name in enumerate(columns_list):
+                    c = ws.cell(r, start_col + j, str(col_name))
+                    c.fill, c.font, c.border = header_fill, header_font, border
+                r += 1
+                for row_data in data.get("rows", []):
+                    for j, col_name in enumerate(columns_list):
+                        ws.cell(r, start_col + j, row_data.get(col_name, "")).border = border
+                    r += 1
+        elif ctype == "gauge":
+            row = (data.get("rows") or [{}])[0]
+            for label, key, default in (("القيمة الحالية", "current_value", 0),
+                                          ("الحد الأدنى", "min_value", 0),
+                                          ("الحد الأقصى", "max_value", 100)):
+                ws.cell(r, start_col, label); ws.cell(r, start_col + 1, row.get(key, default)); r += 1
+        elif ctype == "kpi":
+            row = (data.get("rows") or [{}])[0]
+            ws.cell(r, start_col, "القيمة الفعلية"); ws.cell(r, start_col + 1, row.get("actual_value", 0)); r += 1
+            ws.cell(r, start_col, "الهدف"); ws.cell(r, start_col + 1, row.get("target_value", 0)); r += 1
+        elif ctype == "story":
+            for line in (data.get("story", "") or "").splitlines():
+                if line.strip():
+                    ws.cell(r, start_col, line.strip()); r += 1
+
+        return r
 
     def _build_summary_sheet(self, wb, title: str, blocks: list) -> None:
         """Sheet ملخص يحتوي العنوان والفقرات."""

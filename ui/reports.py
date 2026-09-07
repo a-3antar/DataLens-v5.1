@@ -182,3 +182,74 @@ def _render_block(block: dict, settings: dict = None):
         target = content.get("target_value", 0)
         st.metric(content.get("label", "KPI"), actual, delta=round(actual - target, 2))
         st.caption(f"الهدف: {target} {content.get('unit', '')}")
+    elif btype == "dashboard":
+        _render_dashboard_snapshot_block(content, settings)
+
+
+def _render_dashboard_snapshot_block(content: dict, settings: dict = None):
+    title = content.get("title", "")
+    if title:
+        st.markdown(f"#### 📊 {title}")
+
+    gauges = content.get("gauges", [])
+    if gauges:
+        cols = st.columns(len(gauges))
+        for col, g in zip(cols, gauges):
+            with col:
+                _render_snapshot_cell(g, settings)
+
+    columns = content.get("columns", [])
+    if columns:
+        col_widgets = st.columns(len(columns))
+        for col_widget, col_cells in zip(col_widgets, columns):
+            with col_widget:
+                for cell in col_cells:
+                    _render_snapshot_cell(cell, settings)
+                    st.markdown("")
+
+
+def _render_snapshot_cell(cell: dict, settings: dict = None):
+    ctype = cell.get("type")
+    data = cell.get("content", {}) or {}
+    title = cell.get("title")
+
+    with st.container(border=True):
+        if title:
+            st.markdown(f"**{title}**")
+
+        if ctype == "table":
+            render_themed_table(pd.DataFrame(data.get("rows", [])), settings or "ocean_dark")
+
+        elif ctype == "chart":
+            cols_list = data.get("columns", [])
+            df = pd.DataFrame(data.get("rows", []))
+            if df.empty or len(cols_list) < 2:
+                st.caption("لا توجد بيانات كافية للرسم")
+            else:
+                x_col, y_cols = cols_list[0], cols_list[1:3]
+                ctype_chart = data.get("chart_type", "bar")
+                fig = _build_chart_figure(df, x_col, y_cols, ctype_chart)
+                fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=260)
+                _apply_chart_layout_tweaks(fig, ctype_chart)
+                apply_plotly_theme(fig, settings)
+                st.plotly_chart(fig, width='stretch')
+
+        elif ctype == "gauge":
+            row = (data.get("rows") or [{}])[0]
+            fig = go.Figure(go.Indicator(
+                mode="gauge+number", value=row.get("current_value", 0),
+                gauge={"axis": {"range": [row.get("min_value", 0), row.get("max_value", 100)]}},
+            ))
+            fig.update_layout(height=180, margin=dict(l=10, r=10, t=10, b=10))
+            apply_plotly_theme(fig, settings)
+            st.plotly_chart(fig, width='stretch')
+
+        elif ctype == "kpi":
+            row = (data.get("rows") or [{}])[0]
+            actual, target = row.get("actual_value", 0), row.get("target_value", 0)
+            delta = actual - target if isinstance(actual, (int, float)) and isinstance(target, (int, float)) else None
+            st.metric("القيمة", actual, delta=round(delta, 2) if delta is not None else None)
+            st.caption(f"الهدف: {target}")
+
+        elif ctype == "story":
+            st.markdown(data.get("story", ""))

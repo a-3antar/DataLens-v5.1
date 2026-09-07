@@ -82,6 +82,8 @@ class MarkdownExporter:
                 lines.extend(self._render_gauge(content))
             elif btype == "chart":
                 lines.extend(self._render_chart(content))
+            elif btype == "dashboard":
+                lines.extend(self._render_dashboard(content))
 
             lines.append("")   # سطر فارغ بين البلوكات
 
@@ -90,6 +92,56 @@ class MarkdownExporter:
     def _render_paragraph(self, content: dict) -> list[str]:
         text = content.get("text", "")
         return text.splitlines() if text else []
+
+    def _render_dashboard(self, content: dict) -> list[str]:
+        lines = []
+        title = content.get("title", "")
+        if title:
+            lines.append(f"## {title}")
+            lines.append("")
+
+        gauges = content.get("gauges", [])
+        if gauges:
+            lines.append("| " + " | ".join("مؤشر" for _ in gauges) + " |")
+            lines.append("| " + " | ".join("---" for _ in gauges) + " |")
+            lines.append("| " + " | ".join(self._snapshot_cell_to_md(g) for g in gauges) + " |")
+            lines.append("")
+
+        columns = content.get("columns", [])
+        if columns:
+            n = len(columns)
+            lines.append("| " + " | ".join(f"عمود {i + 1}" for i in range(n)) + " |")
+            lines.append("| " + " | ".join("---" for _ in range(n)) + " |")
+            max_len = max((len(c) for c in columns), default=0)
+            for row_i in range(max_len):
+                cells = [self._snapshot_cell_to_md(col[row_i]) if row_i < len(col) else "" for col in columns]
+                lines.append("| " + " | ".join(cells) + " |")
+            lines.append("")
+
+        return lines
+
+    def _snapshot_cell_to_md(self, cell: dict) -> str:
+        ctype = cell.get("type")
+        data = cell.get("content", {}) or {}
+        title = cell.get("title") or ""
+        parts = [f"**{title}**"] if title else []
+
+        if ctype in ("table", "chart"):
+            cols = data.get("columns", [])
+            if cols:
+                parts.append(" / ".join(str(c) for c in cols))
+                for row in data.get("rows", [])[:5]:
+                    parts.append(" / ".join(str(row.get(c, "")) for c in cols))
+        elif ctype == "gauge":
+            r = (data.get("rows") or [{}])[0]
+            parts.append(f"{r.get('current_value', 0)} ({r.get('min_value', 0)}–{r.get('max_value', 100)})")
+        elif ctype == "kpi":
+            r = (data.get("rows") or [{}])[0]
+            parts.append(f"{r.get('actual_value', 0)} / {r.get('target_value', 0)}")
+        elif ctype == "story":
+            parts.append((data.get("story", "") or "")[:200])
+
+        return "<br>".join(parts) if parts else ""
 
     def _render_table(self, content: dict) -> list[str]:
         data    = content.get("data", [])

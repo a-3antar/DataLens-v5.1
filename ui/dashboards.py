@@ -176,6 +176,8 @@ def _show_dashboard_detail(db):
         st.rerun()
         return
 
+    template = get_template(dashboard["template_id"])   # 🆕 مُحرَّك للأعلى
+
     ai, settings = _build_ai_manager(db)
     dm = DashboardManager(db, ai)
     engine_name = settings.get("ai_engine", "gemini")
@@ -192,7 +194,8 @@ def _show_dashboard_detail(db):
     with c3:
         refresh_clicked = st.button("🔄 تحديث البيانات", type="primary", width='stretch')
     with c4:
-        _render_send_all_to_report(db, dashboard_id)
+        _render_send_all_to_report(db, dashboard_id, dashboard, template)
+
     if refresh_clicked:
         status_placeholder = st.empty()
         status_placeholder.markdown("⏳ جاري تحديث خلايا اللوحة...")
@@ -258,7 +261,6 @@ def _show_dashboard_detail(db):
     # dashboard["template_id"] قد يكون قديماً لو غُيِّر للتو في هذا
     # التشغيل (str.rerun أعلاه يضمن قراءة القيمة المحدَّثة من الأصل
     # في التشغيلة التالية، لذا لا حاجة لإعادة قراءته هنا يدوياً).
-    template = get_template(dashboard["template_id"])
     cells = {c["position"]: c for c in db.get_dashboard_cells(dashboard_id)}
 
     st.markdown("##### 🎯 المؤشرات الرئيسية")
@@ -330,12 +332,8 @@ def _render_template_switcher(db, dm, dashboard: dict, dashboard_id: str) -> Non
             else:
                 notify(r.get("error", "فشل تغيير القالب"), kind="error")
 
-def _render_send_all_to_report(db, dashboard_id: str) -> None:
-    """
-    🆕 إرسال كل خلايا اللوحة التي لديها نتيجة محفوظة فعلياً (Gauges +
-    خلايا القالب الحالي) دفعة واحدة إلى تقرير واحد — كل خلية تُضاف
-    كبلوك مستقل بنفس منطق send_to_report لكل نوع خلية.
-    """
+
+def _render_send_all_to_report(db, dashboard_id: str, dashboard: dict, template: dict) -> None:
     from exporters.report_manager import ReportManager
 
     reports = db.get_reports()
@@ -353,24 +351,41 @@ def _render_send_all_to_report(db, dashboard_id: str) -> None:
         report_choice = st.selectbox(
             "اختر تقريراً", list(report_options.keys()), key=f"send_all_report_{dashboard_id}",
         )
-        if st.button("📤 إرسال كل الخلايا", key=f"send_all_btn_{dashboard_id}", width='stretch', type="primary"):
-            rows = db.get_dashboard_cells(dashboard_id)
+        mode = st.radio(
+            "طريقة الإرسال", ["layout", "separate"],
+            format_func=lambda m: "بنفس شكل اللوحة (أعمدة)" if m == "layout" else "خلايا منفصلة",
+            key=f"send_all_mode_{dashboard_id}",
+        )
+
+        if st.button("📤 إرسال", key=f"send_all_btn_{dashboard_id}", width='stretch', type="primary"):
             rm = ReportManager(db)
             report_id = report_options[report_choice]
-            sent, failed = 0, 0
-            for row in rows:
-                if not row.get("question") or not row.get("last_result"):
-                    continue
-                cell_obj = create_cell(row)
-                r = cell_obj.send_to_report(rm, report_id, cell_obj.title or "")
-                if r.get("ok"):
-                    sent += 1
+
+            if mode == "layout":
+                gauges, columns = _build_dashboard_snapshot(db, dashboard_id, template)
+                if not gauges and not any(columns):
+                    notify("لا توجد خلايا محدَّثة (بنتيجة محفوظة) لإرسالها", kind="warning")
                 else:
-                    failed += 1
-            if sent:
-                notify(f"تم إرسال {sent} خلية إلى التقرير" + (f" ({failed} فشلت)" if failed else ""), kind="success")
+                    r = rm.add_dashboard(report_id, dashboard["title"], gauges, columns)
+                    notify(
+                        "تم إرسال اللوحة كاملة بنفس تخطيطها إلى التقرير" if r["ok"]
+                        else r.get("error", "فشل الإرسال"),
+                        kind="success" if r["ok"] else "error",
+                    )
             else:
-                notify("لا توجد خلايا محدَّثة (بنتيجة محفوظة) لإرسالها", kind="warning")
+                rows = db.get_dashboard_cells(dashboard_id)
+                sent, failed = 0, 0
+                for row in rows:
+                    if not row.get("question") or not row.get("last_result"):
+                        continue
+                    cell_obj = create_cell(row)
+                    r = cell_obj.send_to_report(rm, report_id, cell_obj.title or "")
+                    sent += 1 if r.get("ok") else 0
+                    failed += 0 if r.get("ok") else 1
+                if sent:
+                    notify(f"تم إرسال {sent} خلية إلى التقرير" + (f" ({failed} فشلت)" if failed else ""), kind="success")
+                else:
+                    notify("لا توجد خلايا محدَّثة (بنتيجة محفوظة) لإرسالها", kind="warning")
 
                 
 def _render_slicer_panel(db, dm, dashboard_id, slicers, date_filter_position, date_filter):
@@ -664,3 +679,36 @@ LAYOUT_REGISTRY = {
     "layout_2x3": layout_2x3,
     "layout_2col_big": layout_2col_big,
 }
+
+def _cell_payload(row: dict) -> dict:
+    """تحويل صف خلية خام إلى شكل مبسّط جاهز للتخزين في بلوك 'dashboard'."""
+    return {
+        "title": row.get("title") or "",
+        "type": row.get("display_type") or "table",
+        "content": row.get("last_result") or {},
+    }
+
+
+def _build_dashboard_snapshot(db, dashboard_id: str, template: dict):
+    """بناء (gauges, columns) بنفس تخطيط القالب الحالي — يشمل فقط
+    الخلايا المُهيَّأة ولها نتيجة محفوظة فعلياً."""
+    rows = {r["position"]: r for r in db.get_dashboard_cells(dashboard_id)}
+
+    gauges = []
+    for i in range(DASHBOARD_GAUGE_COUNT):
+        row = rows.get(i)
+        if row and row.get("question") and row.get("last_result"):
+            gauges.append(_cell_payload(row))
+
+    base = DASHBOARD_GAUGE_COUNT
+    columns = []
+    for col_indices in template["columns"]:
+        col_cells = []
+        for idx in col_indices:
+            row = rows.get(base + idx)
+            if row and row.get("question") and row.get("last_result"):
+                col_cells.append(_cell_payload(row))
+        columns.append(col_cells)
+
+    return gauges, columns
+
