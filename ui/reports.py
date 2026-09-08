@@ -27,13 +27,13 @@ import plotly.graph_objects as go
 from ui.common import (
     apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
     temp_export_dir, offer_download, apply_plotly_theme, render_themed_table,
+    get_theme_colors,
 )
 from core.dashboard_cells.cells import _build_chart_figure, _apply_chart_layout_tweaks
 from exporters.report_manager import ReportManager
 from exporters.pdf_exporter import PDFExporter
 from exporters.excel_exporter import ExcelExporter
 from exporters.markdown_exporter import MarkdownExporter
-
 
 def show_reports():
     apply_rtl()
@@ -110,7 +110,13 @@ def show_reports():
 
     with c1:
         if st.button("📄 تصدير PDF", width='stretch'):
-            _export_and_offer(PDFExporter(rm), report_id, "pdf", chosen_title)
+            
+            pdf_exporter = PDFExporter(
+                rm,
+                theme_colors=get_theme_colors(settings),
+                project_name=settings.get("project_name", ""),
+            )
+            _export_and_offer(pdf_exporter, report_id, "pdf", chosen_title)
     with c2:
         if st.button("📊 تصدير Excel", width='stretch'):
             _export_and_offer(ExcelExporter(rm), report_id, "xlsx", chosen_title)

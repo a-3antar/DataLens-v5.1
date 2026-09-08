@@ -17,6 +17,16 @@ exporters/chart_renderer.py
 البناء)، وهو ما تسبب في ظهور النص معكوساً عند بعض المستخدمين رغم عمله
 بشكل صحيح في بيئة الاختبار. الحل هنا يكتشف تلقائياً توفر raqm ويتصرف
 وفقاً لذلك، بدلاً من افتراض سلوك ثابت.
+
+🆕 تكبير خطوط Gauge (هذا التحديث):
+------------------------------------
+عند عرض عدة مؤشرات (Gauges) جنباً إلى جنب في تقرير PDF، يتقلّص عرض كل
+صورة على الصفحة، وبما أن النص مرسوم داخل الصورة نفسها بدقة بكسل ثابتة،
+كان النص (خصوصاً الرقم المركزي وتدرجات المقياس) يظهر صغيراً جداً وغير
+مقروء. رُفعت أحجام الخطوط الافتراضية هنا (value_font/tick_font/
+title_font) كطبقة أمان إضافية بغض النظر عن حجم العرض النهائي على
+الصفحة — بالتكامل مع تصغير عدد المؤشرات لكل صف في exporters/
+pdf_exporter.py (راجع _render_dashboard هناك).
 """
 
 import logging
@@ -307,12 +317,16 @@ def render_gauge(current_value, min_value, max_value, label="",
     img = Image.new("RGB", (W, H), "white")
     d = ImageDraw.Draw(img)
 
-    title_font = _font(20 * scale)
-    value_font = _font(46 * scale)
-    tick_font = _font(13 * scale)
+    # 🆕 أحجام خطوط مكبَّرة (كانت 20/46/13) — عند عرض عدة مؤشرات جنباً
+    # إلى جنب في PDF يتقلّص عرض كل صورة، وبما أن النص مرسوم داخل الصورة
+    # بدقة بكسل ثابتة، الخط الأكبر هنا يبقي الرقم المركزي وتدرجات
+    # المقياس مقروءة حتى عند عرض الصورة بحجم صغير نسبياً على الصفحة.
+    title_font = _font(26 * scale)
+    value_font = _font(60 * scale)
+    tick_font = _font(17 * scale)
 
     if label:
-        _draw_text(d, (W / 2, 30 * scale), label, title_font, COLOR_TITLE, anchor="mm", rtl=True)
+        _draw_text(d, (W / 2, 34 * scale), label, title_font, COLOR_TITLE, anchor="mm", rtl=True)
 
     cx, cy = W / 2, H * 0.62
     radius = min(W * 0.38, H * 0.42)
