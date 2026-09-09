@@ -375,8 +375,20 @@ class DashboardCellBase(ABC):
         elif r.get("sql"):
             with st.expander("SQL", expanded=False):
                 st.code(r["sql"], language="sql")
-            if r.get("df") is not None:
-                st.dataframe(r["df"], width='stretch', hide_index=True)
+            df = r.get("df")
+            if df is not None and not df.empty:
+                # خلايا Gauge/KPI تُعرض داخل عمود ضيق جداً (ربع عرض الصفحة —
+                # راجع DASHBOARD_GAUGE_COUNT في ui/dashboards.py). st.dataframe
+                # في مساحة ضيقة كهذه يضغط الأعمدة لدرجة تجعل Streamlit يلفّ
+                # النص (حتى الرؤوس العربية) حرفاً حرفاً عمودياً — وهذا هو الخلل
+                # الظاهر في لقطتك. لصف واحد بعدد أعمدة قليل (gauge/kpi النمطي)
+                # نعرض القيم عمودياً "مفتاح: قيمة" بدل جدول عريض غير مناسب.
+                if len(df) == 1 and len(df.columns) <= 4:
+                    row = df.iloc[0].to_dict()
+                    for col, val in row.items():
+                        st.caption(f"**{col}**: {val}")
+                else:
+                    st.dataframe(df, width='stretch', hide_index=True)
 
         if r.get("story"):
             st.markdown(r["story"])
