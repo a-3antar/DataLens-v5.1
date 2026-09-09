@@ -72,6 +72,36 @@ CSS جديدة (`.stMarkdown thead tr:has(th:empty):not(:has(th:not(:empty)))`)
 تُخفي هذا الصف بالكامل فقط عندما تكون كل خلاياه فارغة معاً — أي
 جدول آخر له رأس نصي فعلي (جداول المقارنة العادية، قاعدة رقم 6) لا
 يتأثر إطلاقاً ويستمر بالظهور كما هو.
+
+🆕 نظام التصميم الموحّد (أزرار / expander / popover / أدوات مساعدة):
+------------------------------------------------------------------
+لتفادي تفاوت شكل الأزرار والقوائم بين صفحات المشروع المختلفة (كل
+صفحة كانت تبني st.columns وأزرارها بشكل منفصل)، أُضيف هنا معيار
+واحد يُطبَّق تلقائياً من apply_theme_css على كل الصفحات:
+
+  • زر "أساسي" (primary): الفعل الرئيسي الوحيد في الشاشة — يُستدعى
+    عبر st.button(..., type="primary") كالمعتاد في Streamlit، ويبقى
+    بخلفية ملوّنة كاملة (كما كان سابقاً) ليجذب العين فوراً.
+  • زر "ثانوي" (الافتراضي بدون type): أي زر آخر غير الفعل الرئيسي —
+    أصبح الآن بشكل أهدأ (حدود ملوّنة + خلفية شفافة) بدل خلفية ملوّنة
+    كاملة، حتى لا تتنافس كل الأزرار بصرياً على نفس الأهمية.
+  • زر "تحذيري" (حذف/إلغاء لا رجعة فيه): يبقى مميزاً بلون تحذيري
+    (أحمر) بغض النظر عن type — عبر اتفاقية تسمية key تبدأ بـ
+    "danger_" (مثال: st.button("حذف", key="danger_delete_project"))
+    تُلتقط عبر selector [class*="st-key-danger_"] بنفس أسلوب تخصيص
+    CSS المتّبع في المشروع (راجع مذكرة "CSS targeting" في ملاحظات
+    الفريق). الصفحات التي فيها أزرار حذف موجودة مسبقاً بدون هذه
+    البادئة في الـ key تستمر بالعمل بصرياً كزر ثانوي عادي حتى تُحدَّث
+    أسماء مفاتيحها لاحقاً — لا كسر فوري لأي شيء قائم.
+  • expander/popover: وُحِّدت الحواف الخارجية (radius)، التباعد
+    الداخلي (padding)، ووزن خط العنوان لكليهما، بدل الاختلاف الحالي
+    بين الشكل الافتراضي البسيط لـ Streamlit وبين ما كانت بعض الصفحات
+    تُضيفه يدوياً.
+
+كما أُضيفت دالتان مساعدتان عامتان (action_bar وsequential_form) في
+نهاية قسم "الجداول والأزرار" أدناه — تُستخدمان تدريجياً في الصفحات
+بدل تكرار st.columns/st.text_input يدوياً في كل مكان؛ لا حاجة لتعديل
+الصفحات القائمة فوراً، فهي دوال اختيارية إضافية فقط.
 """
 
 import colorsys
@@ -245,6 +275,13 @@ _DEFAULT_CUSTOM_COLORS = dict(DEFAULT_SETTINGS["custom_theme_colors"])
 
 _REQUIRED_COLOR_KEYS = ("primary", "accent", "bg", "text", "card")
 
+# لون التحذير الثابت لأزرار "الحذف/الإلغاء لا رجعة فيه" — مقصود أن
+# يبقى ثابتاً بغض النظر عن الثيم النشط (حتى في الثيمات الداكنة) حتى
+# يظل التحذير مقروءاً وواضحاً دائماً، بعكس بقية الألوان التي تتبع
+# الثيم. راجع مذكرة "نظام التصميم الموحّد" في توثيق الوحدة أعلاه.
+_DANGER_COLOR = "#DC2626"
+_DANGER_COLOR_HOVER = "#B91C1C"
+
 
 def apply_rtl():
     st.markdown(RTL_CSS, unsafe_allow_html=True)
@@ -257,6 +294,10 @@ def apply_theme_css(theme_key_or_settings="ocean_dark"):
     جعل خلفية الجداول (st.dataframe) شفافة ومتوافقة مع لون نص الثيم
     بدل الخلفية البيضاء الافتراضية التي تكسر التناسق البصري في
     الثيمات الداكنة.
+
+    🆕 تطبّق أيضاً نظام الأزرار الموحّد (أساسي/ثانوي/تحذيري) وتوحيد
+    شكل expander/popover — راجع مذكرة "نظام التصميم الموحّد" في
+    توثيق الوحدة أعلاه للتفاصيل الكاملة عن المعيار المتّبع.
 
     تقبل إما اسم ثيم كنص مباشرة ("ocean_dark") أو dict إعدادات مشروع
     كامل (settings) — نفس مرونة get_chart_theme/apply_plotly_theme،
@@ -313,27 +354,87 @@ def apply_theme_css(theme_key_or_settings="ocean_dark"):
         [data-testid="stSidebar"] {{
             background-color: {card} !important;
         }}
+
+        /* ─────────────────────────────────────────────────────
+           🆕 نظام الأزرار الموحّد — ثلاث درجات أهمية بصرية واضحة:
+
+           1) ثانوي (الافتراضي — أي st.button بدون type="primary"):
+              أصبح بشكل أهدأ (حدود ملوّنة + خلفية شبه شفافة) بدل
+              خلفية ملوّنة كاملة كما كان سابقاً، لأن الاستخدام
+              الغالب لـ st.button في المشروع هو لأفعال ثانوية
+              (تحديث/إلغاء/تنقّل) لا يجب أن تنافس بصرياً الفعل
+              الرئيسي في نفس الشاشة.
+           2) أساسي (st.button(..., type="primary")): يبقى بخلفية
+              ملوّنة كاملة بارزة — فعل واحد واضح لكل شاشة.
+           3) تحذيري (خطر/حذف لا رجعة فيه): عبر اتفاقية تسمية
+              key تبدأ بـ "danger_" — يُلتقط عبر selector
+              [class*="st-key-danger_"] بنفس أسلوب CSS targeting
+              المتّبع في باقي المشروع لتخصيص عناصر بعينها. يبقى
+              بلون أحمر ثابت بصرف النظر عن الثيم النشط أو عن type،
+              حتى لا يُلتبس فعل الحذف بأي فعل آخر في أي ثيم.
+           ───────────────────────────────────────────────────── */
         .stButton > button {{
-            background-color: {accent} !important;
-            color: #FFFFFF !important;
-            border: 1px solid {accent} !important;
+            background-color: transparent !important;
+            color: {accent} !important;
+            border: 1px solid {accent}80 !important;
+            font-weight: 500;
         }}
         .stButton > button:hover {{
-            background-color: {primary} !important;
-            border-color: {primary} !important;
-            color: #FFFFFF !important;
+            background-color: {accent}1A !important;
+            border-color: {accent} !important;
+            color: {accent} !important;
         }}
         .stButton > button[kind="primary"] {{
             background-color: {primary} !important;
-            border-color: {primary} !important;
+            color: #FFFFFF !important;
+            border: 1px solid {primary} !important;
+            font-weight: 600;
+        }}
+        .stButton > button[kind="primary"]:hover {{
+            background-color: {accent} !important;
+            border-color: {accent} !important;
+            color: #FFFFFF !important;
+        }}
+        [class*="st-key-danger_"] .stButton > button {{
+            background-color: transparent !important;
+            color: {_DANGER_COLOR} !important;
+            border: 1px solid {_DANGER_COLOR} !important;
+        }}
+        [class*="st-key-danger_"] .stButton > button:hover {{
+            background-color: {_DANGER_COLOR} !important;
+            border-color: {_DANGER_COLOR_HOVER} !important;
+            color: #FFFFFF !important;
         }}
         div[data-testid="stMetricValue"] {{
             color: {primary} !important;
         }}
+
+        /* ─────────────────────────────────────────────────────
+           🆕 توحيد شكل expander وpopover — كانا يظهران بأشكال
+           متفاوتة قليلاً بين صفحات المشروع (لا يوجد فرق منطقي
+           يبرر ذلك، فقط تراكم تدريجي أثناء التطوير). هنا نوحّد
+           الحواف (radius)، التباعد الداخلي، ووزن خط العنوان
+           لكليهما معاً، مع إبقاء لون الحدود متوافقاً مع accent
+           الثيم النشط كبقية عناصر الواجهة.
+           ───────────────────────────────────────────────────── */
         div[data-testid="stExpander"],
         div[data-testid="stVerticalBlockBorderWrapper"] {{
             background-color: {card} !important;
             border-color: {accent}55 !important;
+            border-radius: 10px !important;
+        }}
+        div[data-testid="stExpander"] summary {{
+            font-weight: 600;
+            padding: 0.5rem 0.75rem !important;
+        }}
+        div[data-testid="stExpander"] > details > div {{
+            padding: 0.25rem 0.75rem 0.75rem 0.75rem !important;
+        }}
+        div[data-testid="stPopoverBody"] {{
+            background-color: {card} !important;
+            border: 1px solid {accent}55 !important;
+            border-radius: 10px !important;
+            padding: 0.9rem !important;
         }}
         .stTabs [data-baseweb="tab"] {{
             color: {text} !important;
@@ -445,18 +546,19 @@ def apply_theme_css(theme_key_or_settings="ocean_dark"):
 
         /* ─────────────────────────────────────────────────────
            🆕 أزرار القوائم المنبثقة (⁝ خيارات الخلية) وأشرطة أدوات
-           الجداول/الرسوم (تحميل CSV، بحث، ملء الشاشة) — نفس مبدأ
-           الأزرار العادية أعلاه، حتى لا تبقى بألوان Streamlit
-           الافتراضية الرمادية غير المتناسقة مع الثيم.
+           الجداول/الرسوم (تحميل CSV، بحث، ملء الشاشة) — زر تشغيل
+           الـ popover نفسه (وليس محتواه) يتبع نفس شكل الزر الثانوي
+           الجديد أعلاه (حدود بدل خلفية كاملة) حتى لا ينفرد بمظهر
+           مختلف عن بقية أزرار الصفحة الثانوية.
            ───────────────────────────────────────────────────── */
         [data-testid="stPopover"] > button {{
-            background-color: {accent} !important;
-            color: #FFFFFF !important;
-            border: 1px solid {accent} !important;
+            background-color: transparent !important;
+            color: {accent} !important;
+            border: 1px solid {accent}80 !important;
         }}
         [data-testid="stPopover"] > button:hover {{
-            background-color: {primary} !important;
-            border-color: {primary} !important;
+            background-color: {accent}1A !important;
+            border-color: {accent} !important;
         }}
         [data-testid="stElementToolbar"] {{
             background-color: {card}CC !important;
@@ -743,6 +845,29 @@ def apply_plotly_theme(fig, settings_or_theme="ocean_dark"):
 # ميزات التفاعل (الفرز، تغيير حجم الأعمدة، تحميل CSV من الجدول نفسه)
 # التي تبقى متاحة فقط في st.dataframe (المُستخدَم في صفحات إدارة
 # البيانات مثل ui/data.py وui/files.py التي لم تُعدَّل هنا).
+#
+# 🆕 معيار الاستخدام (render_themed_table مقابل st.dataframe):
+# ------------------------------------------------------------------
+#   • استخدم render_themed_table عندما يكون الجدول "نتيجة عرض نهائية"
+#     صغيرة/متوسطة الحجم لا يحتاج المستخدم فيها فرز الأعمدة أو تغيير
+#     حجمها أو تحميلها كملف مستقل من الجدول نفسه — مثال: خلايا
+#     اللوحات (TableCell)، نتائج سؤال AI مباشر في المحادثة، أو أي
+#     جدول صغير داخل بلوك تقرير. الأولوية هنا للتلوين الصحيح المضمون
+#     100% مع الثيم النشط (بما فيه المخصص) على حساب التفاعل.
+#   • استخدم st.dataframe عندما يكون الجدول هو الشاشة الرئيسية لصفحة
+#     كاملة أو جزءاً محورياً منها يحتاج المستخدم فعلياً التفاعل معه
+#     (فرز، تمرير أفقي/رأسي سلس لبيانات كبيرة، تحميل CSV، تحرير خلايا)
+#     — مثال: صفحات إدارة البيانات (ui/data.py، ui/files.py). التلوين
+#     هنا يبقى تقريبياً فقط (عبر متغيرات --gdg-* في apply_theme_css)
+#     لأن التفاعل الكامل أهم من دقة التلوين 100% في هذا السياق.
+#   • لا تستخدم أياً منهما لجداول كبيرة جداً (آلاف الصفوف) داخل
+#     render_themed_table تحديداً — بناء HTML يدوي لكل صف مكلف؛ استخدم
+#     max_rows دائماً أو انتقل لـ st.dataframe في هذه الحالة.
+#
+# الألوان والحدود بين الدالتين موحّدتان قدر الإمكان: كلاهما يستخدم
+# accent بشفافية 55 للحدود الخارجية للجدول، primary لخلفية الرأس مع
+# نص أبيض، وcard/bg بالتبادل لتقسيم الصفوف (zebra striping) — نفس
+# القيم المستخدمة في قواعد .stMarkdown table أعلاه في apply_theme_css.
 
 def render_themed_table(df, settings_or_theme="ocean_dark", max_rows: int = None, key: str = None) -> None:
     """
@@ -751,6 +876,10 @@ def render_themed_table(df, settings_or_theme="ocean_dark", max_rows: int = None
     ولون نص الخلايا من الثيم) — يُستخدم بدل st.dataframe في أي مكان
     يظهر فيه الجدول كنتيجة عرض نهائية (خلايا اللوحات، نتائج المحادثة،
     بلوكات التقارير) حيث التلوين الصحيح أهم من التفاعل الكامل.
+
+    راجع معيار الاستخدام الكامل (متى تُستخدم هذه الدالة مقابل
+    st.dataframe التفاعلي) في التعليق التوضيحي أعلى هذا القسم من
+    الملف.
 
     key: معرّف فريد اختياري لتفادي تصادم أسماء أصناف CSS لو ظهر أكثر
          من جدول مُنسَّق في نفس الصفحة (وإلا يُولَّد تلقائياً).
@@ -818,6 +947,148 @@ def render_themed_table(df, settings_or_theme="ocean_dark", max_rows: int = None
     )
 
 
+# ══════════════════════════════════════════════════════════════
+#  🆕 أدوات مساعدة عامة — أزرار مجمّعة ونماذج بحقول متسلسلة
+# ══════════════════════════════════════════════════════════════
+#
+# الهدف: تقليل تكرار st.columns()/st.button() اليدوي المنتشر في كل
+# صفحة بأشكال مختلفة قليلاً، وتوفير نمط جاهز لصفوف الأزرار (action_bar)
+# ونماذج الحقول المتسلسلة (sequential_form) بحيث يعمل زر Enter كإرسال
+# طبيعي. هاتان دالتان اختياريتان تُستخدمان تدريجياً في الصفحات — لا
+# تُغيّران أي سلوك حالي بمجرد وجودهما في هذا الملف.
+
+def action_bar(actions: list[dict], key: str = None) -> str | None:
+    """
+    عرض مجموعة أزرار في صف واحد بمسافات متسقة، بدل بناء st.columns
+    يدوياً في كل صفحة بأشكال متفاوتة. تُرجع "key" أو "label" الزر
+    الذي ضغطه المستخدم في هذا التشغيل (rerun) الحالي، أو None لو لم
+    يُضغط أي زر.
+
+    كل عنصر في actions هو dict بالمفاتيح:
+        label   : نص الزر (مطلوب).
+        kind    : "primary" | "secondary" (افتراضي) | "danger".
+                  "primary" يُمرَّر كـ type="primary" لـ st.button
+                  (خلفية ملوّنة بارزة — استخدمه لفعل واحد فقط في
+                  الصف). "danger" يضيف بادئة "danger_" لمفتاح الزر
+                  تلقائياً حتى يُلتقط بلون التحذير الثابت المعرَّف في
+                  apply_theme_css (راجع مذكرة "نظام التصميم الموحّد"
+                  أعلى الملف) — بدون أي إعداد إضافي من المستدعي.
+        key     : مفتاح Streamlit فريد اختياري لهذا الزر تحديداً
+                  (وإلا يُبنى تلقائياً من key الصف + الفهرس).
+        disabled: تعطيل الزر (اختياري، افتراضي False).
+        help    : نص tooltip اختياري.
+
+    مثال:
+        clicked = action_bar([
+            {"label": "حفظ",   "kind": "primary"},
+            {"label": "تحديث", "kind": "secondary"},
+            {"label": "حذف",   "kind": "danger"},
+        ], key="project_actions")
+        if clicked == "حفظ":
+            ...
+    """
+    if not actions:
+        return None
+
+    bar_key = key or f"actionbar_{_uuid_module.uuid4().hex[:6]}"
+    cols = st.columns(len(actions), gap="small")
+    clicked_label = None
+
+    for i, (col, action) in enumerate(zip(cols, actions)):
+        label = action.get("label", "")
+        kind = action.get("kind", "secondary")
+        btn_key = action.get("key") or f"{bar_key}_{i}"
+        # اتفاقية "danger_" تُقرأ من CSS مباشرة (راجع apply_theme_css) —
+        # نضيف البادئة تلقائياً هنا لو لم تكن موجودة أصلاً، حتى لا
+        # يحتاج المستدعي لتذكّرها يدوياً في كل استخدام.
+        if kind == "danger" and not btn_key.startswith("danger_"):
+            btn_key = f"danger_{btn_key}"
+
+        with col:
+            btn_kwargs = {
+                "key": btn_key,
+                "width": "stretch",
+                "disabled": action.get("disabled", False),
+            }
+            if action.get("help"):
+                btn_kwargs["help"] = action["help"]
+            if kind == "primary":
+                btn_kwargs["type"] = "primary"
+            if st.button(label, **btn_kwargs):
+                clicked_label = label
+
+    return clicked_label
+
+
+def sequential_form(fields: list[dict], submit_label: str = "حفظ", key: str = None,
+                     submit_kind: str = "primary") -> dict | None:
+    """
+    نموذج موحّد لحقول نصية متسلسلة (اسم، بريد، إلخ) بحيث الضغط على
+    Enter في أي حقل يُنفّذ الإرسال مباشرة — وهو السلوك الطبيعي لأي
+    نموذج ويب، لكنه لا يعمل تلقائياً مع st.text_input المستقل خارج
+    st.form (Streamlit يُعيد التشغيل عند فقدان التركيز فقط، لا عند
+    Enter تحديداً، إلا داخل st.form). هذه الدالة تغلّف الحقول بـ
+    st.form وتضيف st.form_submit_button تلقائياً، فيعمل Enter كتنقّل
+    بين الحقول ثم إرسال طبيعي من الحقل الأخير — نفس تجربة أي نموذج
+    ويب عادي.
+
+    ⚠️ استخدام مقترح لتحويل حقول موجودة حالياً خارج st.form في
+    المشروع لهذا النمط (دون المساس بمنطق الصفحات هنا، فقط توصية
+    تنفيذية لاحقة في كل صفحة على حدة):
+        - صفحة تسجيل الدخول (اسم المستخدم/كلمة المرور) — Enter يجب
+          أن يُسجّل الدخول مباشرة بدل الحاجة للضغط على الزر يدوياً.
+        - حقول إعادة تسمية العناصر (مشروع/جدول/خلية لوحة...) — Enter
+          يؤكد الاسم الجديد بدل الاعتماد فقط على زر منفصل.
+        - حقل اسم الجدول عند رفع ملف بيانات جديد — Enter يبدأ الرفع
+          مباشرة بعد كتابة الاسم.
+
+    كل عنصر في fields هو dict بالمفاتيح:
+        key         : مفتاح الحقل (مطلوب) — يُستخدم أيضاً كمفتاح في
+                      القاموس المُرجَع عند الإرسال.
+        label       : نص التسمية (مطلوب).
+        type        : "text" (افتراضي) | "password" | "textarea".
+        placeholder : نص placeholder اختياري.
+        default     : القيمة الافتراضية اختياري.
+
+    تُرجع dict بقيم الحقول {key: value} فقط عند الإرسال الفعلي في
+    هذا التشغيل (زر الإرسال أو Enter)، وإلا تُرجع None.
+    """
+    form_key = key or f"seqform_{_uuid_module.uuid4().hex[:6]}"
+    values = {}
+
+    with st.form(key=form_key, clear_on_submit=False):
+        for field in fields:
+            f_key = field["key"]
+            f_label = field.get("label", f_key)
+            f_type = field.get("type", "text")
+            f_placeholder = field.get("placeholder", "")
+            f_default = field.get("default", "")
+
+            if f_type == "password":
+                values[f_key] = st.text_input(
+                    f_label, value=f_default, type="password",
+                    placeholder=f_placeholder, key=f"{form_key}_{f_key}",
+                )
+            elif f_type == "textarea":
+                values[f_key] = st.text_area(
+                    f_label, value=f_default,
+                    placeholder=f_placeholder, key=f"{form_key}_{f_key}",
+                )
+            else:
+                values[f_key] = st.text_input(
+                    f_label, value=f_default,
+                    placeholder=f_placeholder, key=f"{form_key}_{f_key}",
+                )
+
+        submitted = st.form_submit_button(
+            submit_label,
+            type="primary" if submit_kind == "primary" else "secondary",
+            width="stretch",
+        )
+
+    return values if submitted else None
+
+
 def require_login():
     """يوقف تنفيذ الصفحة لو المستخدم لم يسجل دخول."""
     if "token" not in st.session_state or not st.session_state.get("token"):
@@ -875,7 +1146,10 @@ def sidebar_header():
             name = settings.get("project_name", "بدون اسم")
             st.caption(f"📁 المشروع الحالي: **{name}**")
         st.divider()
-        if st.button("🚪 تسجيل الخروج", width='stretch'):
+        # 🆕 زر تسجيل الخروج بادئته "danger_" عمداً — فعل بدون رجعة
+        # (يمسح الجلسة الحالية بالكامل) يستحق التمييز البصري الأحمر
+        # الثابت المعرَّف في apply_theme_css بدل شكل زر ثانوي عادي.
+        if st.button("🚪 تسجيل الخروج", key="danger_logout", width='stretch'):
             AuthManager().logout(st.session_state.get("token", ""))
             clear_log_username()
             for key in list(st.session_state.keys()):
