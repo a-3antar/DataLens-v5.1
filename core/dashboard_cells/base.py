@@ -24,6 +24,18 @@ core/dashboard_cells/base.py
 مسؤول فقط عن: to_stored_dict، render_result، وعند الحاجة
 render_type_specific_fields وexecute (StoryCell فقط).
 
+🆕 صف المؤشرات العلوي (Gauge row) يدعم الآن Gauge أو KPI:
+------------------------------------------------------------
+كانت أي خلية ضمن صف المؤشرات الأربعة العلوي (is_gauge_row=True) تُجبَر
+دائماً على النوع "gauge" بلا خيار آخر. الآن يُعرض اختيار صريح بين
+"gauge" و"kpi" لكل خلية من الأربع بشكل مستقل — الافتراضي عند عدم وجود
+نوع محفوظ بعد يبقى "gauge" (سواء لخلية جديدة تماماً عبر EmptyCell، أو
+لو كان النوع المحفوظ سابقاً غير أحد الخيارين المسموحين لأي سبب). لا
+تغيير على أي نوع آخر (table/chart/story) خارج هذا الصف — هذه لا تزال
+تُختار عبر القائمة الكاملة كما كانت. باقي النظام (التخزين، create_cell،
+render_result، التصدير للتقارير/PDF/Excel) لا يفرّق أصلاً بين موضع
+الخلية، فلا حاجة لأي تعديل إضافي خارج هذه الدالة.
+
 🆕 عرض نتيجة "اختبار" لخلية Story:
 --------------------------------------
 _render_test_result أدناه تعرض النص عبر st.markdown مباشرة بدل لفّه
@@ -44,6 +56,11 @@ from ui.common import format_local_dt, get_theme_colors, notify
 from ai.ai_manager import build_ai_manager
 
 logger = logging.getLogger(__name__)
+
+# 🆕 الأنواع المسموحة لأي خلية ضمن صف المؤشرات العلوي (position <
+# DASHBOARD_GAUGE_COUNT) — راجع render_editor أدناه.
+_GAUGE_ROW_TYPES = ["gauge", "kpi"]
+_GAUGE_ROW_DEFAULT = "gauge"
 
 
 # ══════════════════════════════════════════════════════════════
@@ -245,20 +262,36 @@ class DashboardCellBase(ABC):
 
     def render_editor(self, db, dm, settings: dict, dashboard_id: str, is_gauge_row: bool, edit_key: str) -> None:
         """
-        نقطة الدخول لمحرر الخلية: تعرض اختيار/تغيير نوع الخلية أولاً
-        (معطَّل لصف الـ Gauges — نوعها ثابت "gauge" دائماً)، ثم تُفوّض
-        بقية المحرر (عنوان/سؤال/حقول خاصة/اختبار/حفظ) إلى
+        نقطة الدخول لمحرر الخلية: تعرض اختيار/تغيير نوع الخلية أولاً،
+        ثم تُفوّض بقية المحرر (عنوان/سؤال/حقول خاصة/اختبار/حفظ) إلى
         _render_editor_body — إما على self مباشرة لو لم يتغيّر النوع،
         أو على كائن مؤقت من الكلاس الجديد لو غيّر المستخدم النوع
         (يحمل نفس العنوان/السؤال الحاليين، ويُحفظ بالنوع الجديد فعلياً
         عند الضغط على "حفظ"). هذا يسمح بتغيير نوع خلية موجودة مسبقاً
         تماماً كما يسمح باختيار نوع خلية جديدة.
+
+        🆕 صف المؤشرات العلوي (is_gauge_row=True) لم يعد مقيَّداً بنوع
+        "gauge" فقط — يُعرض اختيار صريح بين "gauge" و"kpi" لكل خلية من
+        الأربع بشكل مستقل (راجع _GAUGE_ROW_TYPES أعلى الملف). الافتراضي
+        عند عدم وجود نوع محفوظ بعد، أو كان النوع المحفوظ خارج هذين
+        الخيارين لأي سبب، يبقى "gauge".
         """
-        label = "➕ إضافة مقياس (Gauge)" if is_gauge_row else "➕ إضافة عنصر"
+        if is_gauge_row:
+            label = "➕ إضافة مؤشر (Gauge أو KPI)"
+        else:
+            label = "➕ إضافة عنصر"
         st.markdown(f"**{label}**")
 
         if is_gauge_row:
-            chosen_type = "gauge"
+            from core.dashboard_cells import CELL_CLASSES, DISPLAY_TYPE_LABELS
+
+            cur_type = self.display_type if self.display_type in _GAUGE_ROW_TYPES else _GAUGE_ROW_DEFAULT
+            chosen_type = st.selectbox(
+                "نوع المؤشر", _GAUGE_ROW_TYPES,
+                index=_GAUGE_ROW_TYPES.index(cur_type),
+                format_func=lambda t: DISPLAY_TYPE_LABELS[t],
+                key=f"dtype_{dashboard_id}_{self.position}",
+            )
         else:
             from core.dashboard_cells import CELL_CLASSES, DISPLAY_TYPE_LABELS
 
@@ -392,37 +425,9 @@ class DashboardCellBase(ABC):
 
         if r.get("story"):
             st.markdown(r["story"])
+
     # ──────────────────────────────────────────────────────────
     #  قائمة الإجراءات — موحّدة 100%، لا تُعاد كتابتها في أي subclass
-    # ──────────────────────────────────────────────────────────
-
-    def render_actions_menu(self, db, dm, settings: dict, dashboard_id: str, edit_key: str) -> None:
-        """تحديث الخلية / تعديل السؤال / إفراغ الخلية."""
-        has_popover = hasattr(st, "popover")
-        menu_ctx = (
-            st.popover("⁝", use_container_width=True) if has_popover
-            else st.expander("⁝", expanded=False)
-        )
-        with menu_ctx:
-            if st.button("🔄 تحديث هذه الخلية", key=f"refresh_one_{dashboard_id}_{self.position}", width='stretch'):
-                with st.spinner("⏳ جاري التحديث..."):
-                    r = dm.refresh_single_cell(dashboard_id, self.position, ai_rules=settings.get("ai_rules"))
-                if r["ok"]:
-                    notify("تم التحديث" + (" (عبر AI)" if r["used_ai"] else ""), kind="success")
-                else:
-                    notify(r.get("error", "فشل التحديث"), kind="error")
-                st.rerun()
-
-            if st.button("✏️ تعديل السؤال", key=f"edit_{dashboard_id}_{self.position}", width='stretch'):
-                st.session_state[edit_key] = True
-                st.rerun()
-
-            if st.button("🗑️ إفراغ الخلية", key=f"clear_{dashboard_id}_{self.position}", width='stretch'):
-                self.clear(db, dashboard_id)
-                st.rerun()
-
-    # ──────────────────────────────────────────────────────────
-    #  🆕 إرسال نتيجة الخلية إلى تقرير — بنفس فكرة ui/chat.py
     # ──────────────────────────────────────────────────────────
 
     def send_to_report(self, rm, report_id: str, label: str, include_data: bool = False) -> dict:
@@ -476,8 +481,6 @@ class DashboardCellBase(ABC):
             st.divider()
             self._render_send_to_report_fields(db, dashboard_id)
 
-            
-
         if st.session_state.get(test_key):
             with st.container(border=True):
                 st.caption("نتيجة الاختبار:")
@@ -525,6 +528,7 @@ class DashboardCellBase(ABC):
                 notify("تمت الإضافة إلى التقرير", kind="success")
             else:
                 notify(r.get("error", "فشل الإرسال إلى التقرير"), kind="error")
+
     # ──────────────────────────────────────────────────────────
     #  الحفظ / الإفراغ — تتعامل مع ProjectDB كما هي الآن
     # ──────────────────────────────────────────────────────────
