@@ -29,11 +29,34 @@ core.data_manager.DataManager._coerce_filter_value إلى نوع العمود
 تُعرض الآن حسب نوع العمود الفعلي (رقمي/تاريخ/نصي) بدل فرض إحصاءات
 رقمية على كل الأعمدة (كانت تُظهر أرقاماً وهمية/فارغة على الأعمدة
 النصية وأعمدة التاريخ).
+
+🆕 تبويب واحد = عنصر إدخال واحد + زر بارز واحد:
+--------------------------------------------------
+كل تبويب من الخمسة أصبح يعرض حقل الإدخال الرئيسي وزر التنفيذ البارز
+(type="primary") فقط في المستوى الأول، وأي إعدادات ثانوية (استراتيجية
+تعبئة الفراغات، خيارات حذف الصفوف الفارغة) انتقلت إلى expander صغير
+قابل للطي. حقلا "القيمة" (تصفية الصفوف) و"القيمة البديلة" (تعبئة
+الفراغات) أصبحا داخل st.form محلي لكل تبويب — فيعمل Enter في الحقل
+كتنفيذ مباشر للعملية، مع بقاء منطق dm.filter_rows/dm.fill_nulls كما
+هو دون أي تغيير.
+
+🆕 معاينة الجدول العلوية:
+----------------------------
+هذه المعاينة عرض فقط (٥ أو ١٠ صفوف من جدول قد يحتوي عشرات الأعمدة)
+وليست بحاجة فرز/تصفية تفاعلية من المستخدم أثناء تنظيف البيانات —
+فاستُبدلت بـ render_themed_table المتوافقة بصرياً مع الثيم الحالي،
+اتساقاً مع معيار الاستخدام الموصوف في common.py (التفاعل الكامل
+لـ st.dataframe يُحفظ للحالات التي يحتاجها المستخدم فعلاً كفرز/بحث
+داخل الجدول، وهذه ليست إحداها).
 """
 
+import pandas as pd
 import streamlit as st
 
-from ui.common import apply_rtl, apply_theme_css, require_login, require_project, sidebar_header
+from ui.common import (
+    apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
+    notify, render_themed_table,
+)
 from core.file_manager import FileManager
 from core.data_manager import DataManager
 
@@ -42,7 +65,8 @@ def show_data():
     apply_rtl()
     require_login()
     db = require_project()
-    apply_theme_css(db.get_settings())
+    settings = db.get_settings()
+    apply_theme_css(settings)
     sidebar_header()
 
     fm = FileManager(st.session_state.user_id, st.session_state.project_id)
@@ -64,7 +88,13 @@ def show_data():
         return
 
     st.markdown(f"عدد الصفوف الكلي: **{preview['total']}**")
-    st.dataframe(preview["data"], width='stretch')
+    # 🆕 preview["data"] قد يعود كـ list[dict] من DataManager.get_preview بدل
+    # DataFrame مباشرة — render_themed_table تتوقع DataFrame تحديداً
+    # (تستدعي .empty/.columns/.iterrows)، فنحوّلها هنا فقط عند الحاجة
+    # بدل تعديل توقيع render_themed_table المستخدم في أماكن أخرى بقيم
+    # DataFrame فعلية أصلاً.
+    preview_df = preview["data"] if isinstance(preview["data"], pd.DataFrame) else pd.DataFrame(preview["data"])
+    render_themed_table(preview_df, settings, key="data_preview")
 
     column = st.selectbox("اختر العمود", preview["columns"])
 
@@ -73,54 +103,16 @@ def show_data():
     )
 
     with tab_type:
-        new_type = st.selectbox("النوع الجديد", ["int", "float", "str", "date", "bool"])
-        if st.button("تطبيق تغيير النوع"):
-            r = dm.change_dtype(table, column, new_type)
-            _report(r)
+        _render_type_tab(dm, table, column)
 
     with tab_filter:
-        op = st.selectbox("العملية", ["==", "!=", ">", "<", ">=", "<=", "contains"])
-        value = st.text_input("القيمة")
-        st.caption("القيمة تُحوَّل تلقائياً لنوع العمود (رقم/تاريخ) قبل المقارنة.")
-        if st.button("تطبيق التصفية"):
-            r = dm.filter_rows(table, column, op, value)
-            _report(r, extra=lambda r: st.caption(f"{r['before']} → {r['after']} صف"))
+        _render_filter_tab(dm, table, column)
 
     with tab_text:
-        c1, c2, c3, c4 = st.columns(4)
-        if c1.button("Strip"):
-            _report(dm.strip_text(table, column))
-        if c2.button("Capitalize"):
-            _report(dm.capitalize_text(table, column))
-        if c3.button("UPPER"):
-            _report(dm.uppercase_text(table, column))
-        if c4.button("lower"):
-            _report(dm.lowercase_text(table, column))
+        _render_text_tab(dm, table, column)
 
     with tab_nulls:
-        st.markdown("**تعبئة القيم الفارغة في عمود واحد**")
-        strategy = st.selectbox("الاستراتيجية", ["mean", "median", "mode", "zero", "value"])
-        value = None
-        if strategy == "value":
-            value = st.text_input("القيمة البديلة")
-        if st.button("معالجة القيم الفارغة"):
-            r = dm.fill_nulls(table, column, strategy, value)
-            _report(r, extra=lambda r: st.caption(f"تم ملء {r.get('filled', 0)} قيمة"))
-
-        st.divider()
-        st.markdown("**🆕 حذف الصفوف الفارغة**")
-        drop_mode = st.selectbox(
-            "طريقة الحذف",
-            ["all", "any", "column"],
-            format_func=lambda m: {
-                "all": "حذف الصف فقط لو كل أعمدته فارغة معاً",
-                "any": "حذف الصف لو أي عمود فيه فارغ (أكثر صرامة)",
-                "column": f"حذف الصف لو العمود المختار «{column}» فارغ فقط",
-            }[m],
-        )
-        if st.button("🗑️ حذف الصفوف الفارغة"):
-            r = dm.drop_empty_rows(table, mode=drop_mode, column=column if drop_mode == "column" else None)
-            _report(r, extra=lambda r: st.caption(f"{r['before']} → {r['after']} صف"))
+        _render_nulls_tab(dm, table, column)
 
     with tab_relations:
         _render_relations_tab(db, dm, aliases)
@@ -134,9 +126,86 @@ def show_data():
         _render_column_stats(stats)
 
 
+def _render_type_tab(dm: DataManager, table: str, column: str) -> None:
+    """عنصر إدخال واحد (النوع الجديد) + زر تنفيذ بارز واحد."""
+    new_type = st.selectbox("النوع الجديد", ["int", "float", "str", "date", "bool"])
+    if st.button("تطبيق تغيير النوع", type="primary", key="apply_dtype"):
+        r = dm.change_dtype(table, column, new_type)
+        _report(r)
+
+
+def _render_filter_tab(dm: DataManager, table: str, column: str) -> None:
+    """
+    العملية (== / != ...) إعداد ثانوي داخل expander صغير، والحقل
+    الرئيسي "القيمة" داخل st.form محلي — Enter فيه يُنفّذ التصفية
+    مباشرة بنفس استدعاء dm.filter_rows كما كان.
+    """
+    with st.expander("⚙️ العملية", expanded=False):
+        op = st.selectbox("العملية", ["==", "!=", ">", "<", ">=", "<=", "contains"], key="filter_op")
+
+    with st.form(key="filter_form", clear_on_submit=False):
+        value = st.text_input("القيمة", help="تُحوَّل تلقائياً لنوع العمود (رقم/تاريخ) قبل المقارنة.")
+        submitted = st.form_submit_button("تطبيق التصفية", type="primary", width='stretch')
+
+    if submitted:
+        r = dm.filter_rows(table, column, st.session_state.get("filter_op", "=="), value)
+        _report(r, extra=lambda r: st.caption(f"{r['before']} → {r['after']} صف"))
+
+
+def _render_text_tab(dm: DataManager, table: str, column: str) -> None:
+    """أربعة أفعال متكافئة القيمة (Strip/Capitalize/UPPER/lower) — تبقى صفاً واحداً من الأزرار."""
+    c1, c2, c3, c4 = st.columns(4)
+    if c1.button("Strip"):
+        _report(dm.strip_text(table, column))
+    if c2.button("Capitalize"):
+        _report(dm.capitalize_text(table, column))
+    if c3.button("UPPER"):
+        _report(dm.uppercase_text(table, column))
+    if c4.button("lower"):
+        _report(dm.lowercase_text(table, column))
+
+
+def _render_nulls_tab(dm: DataManager, table: str, column: str) -> None:
+    """
+    الاستراتيجية إعداد ثانوي داخل expander؛ حقل "القيمة البديلة" (يظهر
+    فقط عند اختيار strategy == value) داخل st.form محلي فيعمل معه
+    Enter — نفس استدعاء dm.fill_nulls كما هو. حذف الصفوف الفارغة
+    (إعداد ثانوي بحد ذاته) بقي في expander منفصل تحت الفعل الرئيسي.
+    """
+    with st.expander("⚙️ استراتيجية تعبئة القيم الفارغة", expanded=False):
+        strategy = st.selectbox("الاستراتيجية", ["mean", "median", "mode", "zero", "value"], key="null_strategy")
+
+    with st.form(key="fill_nulls_form", clear_on_submit=False):
+        value = None
+        if strategy == "value":
+            value = st.text_input("القيمة البديلة")
+        else:
+            st.caption(f"سيتم استخدام استراتيجية: **{strategy}**")
+        submitted = st.form_submit_button("معالجة القيم الفارغة", type="primary", width='stretch')
+
+    if submitted:
+        r = dm.fill_nulls(table, column, strategy, value)
+        _report(r, extra=lambda r: st.caption(f"تم ملء {r.get('filled', 0)} قيمة"))
+
+    with st.expander("🗑️ حذف الصفوف الفارغة", expanded=False):
+        drop_mode = st.selectbox(
+            "طريقة الحذف",
+            ["all", "any", "column"],
+            format_func=lambda m: {
+                "all": "حذف الصف فقط لو كل أعمدته فارغة معاً",
+                "any": "حذف الصف لو أي عمود فيه فارغ (أكثر صرامة)",
+                "column": f"حذف الصف لو العمود المختار «{column}» فارغ فقط",
+            }[m],
+            key="drop_empty_mode",
+        )
+        if st.button("حذف الصفوف الفارغة", key="drop_empty_btn", width='stretch'):
+            r = dm.drop_empty_rows(table, mode=drop_mode, column=column if drop_mode == "column" else None)
+            _report(r, extra=lambda r: st.caption(f"{r['before']} → {r['after']} صف"))
+
+
 def _render_column_stats(stats: dict):
     """
-    🆕 عرض إحصاءات مناسبة لنوع العمود الفعلي بدل قالب رقمي واحد يُفرض
+    عرض إحصاءات مناسبة لنوع العمود الفعلي بدل قالب رقمي واحد يُفرض
     على كل الأعمدة — راجع DataManager.get_stats للتفاصيل.
     """
     kind = stats.get("kind", "numeric")
@@ -168,14 +237,18 @@ def _render_column_stats(stats: dict):
 def _render_relations_tab(db, dm: DataManager, aliases: list[str]):
     """
     تبويب العلاقات: عرض العلاقات الحالية + إضافة علاقة جديدة عبر قوائم
-    منسدلة (جدول + عمود) بدل كتابة اسم العمود يدوياً.
+    منسدلة (جدول + عمود) بدل كتابة اسم العمود يدوياً. هذا التبويب
+    يحتوي أربعة عناصر اختيار مترابطة (من جدول/من عمود/إلى جدول/إلى
+    عمود) فأُبقيت كما هي بلا تغيير — لا معنى لطيّها في expander لأنها
+    كلها ضرورية لتكوين العلاقة نفسها، وزر "إضافة علاقة" يبقى الفعل
+    البارز الوحيد أسفلها.
     """
     st.caption("العلاقات الحالية:")
     relations = db.get_relations()
     for rel in relations:
         c1, c2 = st.columns([4, 1])
         c1.write(f"{rel['from_table']}.{rel['from_col']} = {rel['to_table']}.{rel['to_col']}")
-        if c2.button("حذف", key=f"del_rel_{rel['id']}"):
+        if c2.button("حذف", key=f"danger_del_rel_{rel['id']}"):
             db.remove_relation(rel["id"])
             st.rerun()
 
@@ -212,10 +285,10 @@ def _render_relations_tab(db, dm: DataManager, aliases: list[str]):
                 "تحقق من أن الربط صحيح قبل الإضافة."
             )
 
-    if st.button("➕ إضافة علاقة"):
+    if st.button("➕ إضافة علاقة", type="primary"):
         if from_col != "(اختر عموداً)" and to_col != "(اختر عموداً)":
             db.add_relation(from_table, from_col, to_table, to_col)
-            st.success("تمت إضافة العلاقة")
+            notify("تمت إضافة العلاقة", kind="success")
             st.rerun()
         else:
             st.error("الرجاء اختيار عمود من كل جدول")
@@ -223,7 +296,7 @@ def _render_relations_tab(db, dm: DataManager, aliases: list[str]):
 
 def _report(r: dict, extra=None):
     if r["ok"]:
-        st.success("تم التطبيق بنجاح")
+        notify("تم التطبيق بنجاح", kind="success")
         if extra:
             extra(r)
         st.rerun()

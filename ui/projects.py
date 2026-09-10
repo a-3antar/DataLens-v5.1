@@ -31,6 +31,9 @@ st.session_state["_jump_to_page"] (تُقرأ من main.py عبر _JUMP_TARGETS)
     إلى "dashboards".
 """
 
+from ai import prompt_builder
+from ai import prompt_builder
+from datetime import datetime
 from pathlib import Path
 import tempfile
 
@@ -42,8 +45,34 @@ from ui.common import (
 )
 from core.project_db import ProjectDB
 from core.auth import AuthManager
+from config import PROJECTS_DIR
 
 _CARDS_PER_ROW = 3
+
+
+def _project_last_modified(user_id: str, project_id: str) -> str | None:
+    """
+    🆕 بطاقة المشروع لا تملك عمود "آخر تحديث" في أي جدول (على عكس
+    source_files.uploaded_at للملفات) — فبدل إضافة عمود جديد وتحديثه
+    يدوياً من كل نقطة تعدّل project.db، نقرأ "تاريخ التعديل" من نظام
+    الملفات مباشرة لملف project.db نفسه (نفس ما يظهر في خصائص الملف
+    في ويندوز: Date modified) — يتحدّث تلقائياً مع أي كتابة فعلية على
+    القاعدة (إضافة ملف، تعديل بيانات، إلخ) دون أي كود إضافي لتتبعه.
+
+    ملاحظة: هذا وقت محلي لخادم التطبيق (os.path.getmtime + fromtimestamp
+    بلا منطقة زمنية) — يطابق "Date modified" كما يظهر في مستكشف
+    الملفات على نفس الجهاز.
+    """
+    db_path = PROJECTS_DIR / user_id / project_id / "project.db"
+    try:
+        mtime = db_path.stat().st_mtime
+    except OSError:
+        return None
+
+    dt = datetime.fromtimestamp(mtime)
+    hour12 = dt.hour % 12 or 12
+    period = "ص" if dt.hour < 12 else "م"
+    return f"آخر تحديث ({dt.day:02d}/{dt.month:02d}/{dt.year}) {hour12:02d}:{dt.minute:02d} {period}"
 
 
 def show_projects():
@@ -149,7 +178,13 @@ def _render_import_form(pm):
 def _render_project_card(pm, p: dict):
     """بطاقة مشروع واحدة: اسم + إحصائيات + فتح (رئيسي) + قائمة ⁝ للإجراءات الأخرى."""
     with st.container(border=True):
-        st.markdown(f"**{p['name']}**")
+        last_updated = _project_last_modified(st.session_state.user_id, p["project_id"])
+
+        st.markdown(
+            f"**{p['name']}**"
+            f"<span style='color:gray'>{last_updated}</span>",
+            unsafe_allow_html=True,
+            )
         st.caption(
             f"📄 {p['files_count']} ملفات · "
             f"📝 {p['reports_count']} تقارير · "
@@ -176,6 +211,7 @@ def _render_project_actions_menu(pm, p: dict):
     pid = p["project_id"]
 
     
+    st.divider()
 
     st.markdown("**إعادة تسمية**")
     with st.form(f"rename_form_{pid}"):
@@ -207,6 +243,7 @@ def _render_project_actions_menu(pm, p: dict):
                 )
             else:
                 st.error(r["error"])
+
 
     confirm_key = f"confirm_delete_{pid}"
     if st.session_state.get(confirm_key):

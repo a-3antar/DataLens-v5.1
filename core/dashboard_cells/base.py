@@ -469,15 +469,14 @@ class DashboardCellBase(ABC):
             if st.button("✏️ تعديل السؤال", key=f"edit_{dashboard_id}_{self.position}", width='stretch'):
                 st.session_state[edit_key] = True
                 st.rerun()
-
-            st.divider()
-            self._render_send_to_report_fields(db, dashboard_id)
-
-            st.divider()
             if st.button("🗑️ إفراغ الخلية", key=f"clear_{dashboard_id}_{self.position}", width='stretch'):
                 self.clear(db, dashboard_id)
                 st.session_state.pop(test_key, None)
                 st.rerun()
+            st.divider()
+            self._render_send_to_report_fields(db, dashboard_id)
+
+            
 
         if st.session_state.get(test_key):
             with st.container(border=True):

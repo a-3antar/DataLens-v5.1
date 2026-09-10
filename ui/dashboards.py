@@ -11,6 +11,26 @@ ui/dashboards.py
    لنفس اللوحة في أي وقت — بدون حذف أو تحديث أي خلية غير ظاهرة (راجع
    core.dashboard_manager.DashboardManager.update_dashboard_template
    للتفاصيل الكاملة عن سياسة الحفاظ على الخلايا المخفية).
+7. 🆕 توحيد الشكل مع نظام التصميم (ui/common.py):
+   - المعرض (_show_dashboard_gallery): بطاقات موحّدة الشكل لكل لوحة —
+     زر "📂 فتح" بارز (type="primary") وباقي الإجراءات (تكرار/حذف)
+     مجمّعة في قائمة "⁝" (popover) بدل صف أزرار متساوٍ. نموذج الإنشاء
+     اليدوي أصبح تدفقاً واحداً مرقّماً (1: العنوان، 2: القالب) داخل
+     st.form واحد — فلا يوجد أي زر مستقل لكل قالب يمكن أن يُنشئ اللوحة
+     قبل تأكيد الاختيار، والإرسال الوحيد الممكن هو زر "➕ إنشاء اللوحة".
+   - التفاصيل (_show_dashboard_detail): الصف العلوي أصبح بإجراء أساسي
+     بارز واحد فقط (🔄 تحديث البيانات)، والرجوع/الإرسال للتقرير
+     أهدأ بصرياً وأصغر مساحة (يتبعان تلقائياً شكل الزر "الثانوي" الموحّد
+     المعرَّف في apply_theme_css، لكن رُتِّبت الأعمدة هنا لتعكس هذا
+     الترتيب في الأهمية بصرياً أيضاً).
+   - _render_template_switcher وَ_render_slicer_panel: نفس نمط تسمية
+     العنوان (أيقونة + نص + عداد/حالة بين قوسين) المستخدم في كل قوائم
+     التطبيق المطوية الأخرى، ليتطابق الشكل تماماً (الحجم والتباعد
+     موحَّدان أصلاً عبر CSS في apply_theme_css).
+   - حقول الفلاتر: القيم المميزة (Distinct Values) تُجلب فقط عند تغيّر
+     الجدول/العمود فعلياً (بصمة مخزَّنة في session_state)، لا في كل
+     rerun — فالتفاعل مع أي حقل آخر لا يُعيد الجلب من القاعدة، ويبقى
+     زر "💾 حفظ الكل" هو الإجراء البارز الوحيد في لوحة الفلاتر.
 """
 
 from core import dashboard_cells
@@ -49,23 +69,8 @@ def _show_dashboard_gallery(db):
     st.title("📊 لوحات المعلومات")
 
     with st.expander("➕ إنشاء لوحة جديدة", expanded=not db.get_dashboards()):
-        title = st.text_input("عنوان اللوحة")
-        st.markdown("**اختر قالباً:**")
-        for key, tmpl in DASHBOARD_TEMPLATES.items():
-            c1, c2 = st.columns([4, 1])
-            with c1:
-                st.markdown(f"**{key} — {tmpl['name']}**")
-                st.caption(tmpl["description"])
-            with c2:
-                if st.button("اختيار", key=f"pick_tmpl_{key}", width='stretch'):
-                    if not title.strip():
-                        notify("الرجاء إدخال عنوان اللوحة أولاً", kind="warning")
-                    else:
-                        dash_id = str(uuid.uuid4())
-                        db.create_dashboard(dash_id, title.strip(), key)
-                        st.session_state.current_dashboard_id = dash_id
-                        st.rerun()
-            st.divider()    
+        _render_manual_create_flow(db)
+
     with st.expander("🤖 إنشاء لوحة تلقائياً بالذكاء الاصطناعي"):
         auto_title = st.text_input("عنوان اللوحة", key="auto_dash_title")
         auto_desc = st.text_area(
@@ -135,33 +140,93 @@ def _show_dashboard_gallery(db):
     settings = db.get_settings()
     st.subheader("لوحاتك")
     for d in dashboards:
-        with st.container(border=True):
-            c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
-            tmpl = get_template(d["template_id"])
-            with c1:
-                st.markdown(f"**{d['title']}**")
-                updated_label = format_local_dt(d.get("updated_at"), settings) or "لم يُحدَّث بعد"
-                st.caption(f"القالب: {tmpl['name']} | آخر تحديث: {updated_label}")
-            with c2:
-                if st.button("📂 فتح", key=f"open_dash_{d['id']}", width='stretch'):
-                    st.session_state.current_dashboard_id = d["id"]
-                    st.rerun()
-            with c3:
-                if st.button("📑 تكرار", key=f"dup_dash_{d['id']}", width='stretch'):
+        _render_dashboard_card(db, d, settings)
+
+
+def _render_manual_create_flow(db) -> None:
+    """
+    🆕 تدفق إنشاء لوحة يدوي واحد وواضح مرقّم بخطوتين:
+      1) عنوان اللوحة
+      2) اختيار القالب (اختيار واحد فقط عبر st.radio، مع وصف القالب
+         المختار أسفله مباشرة)
+
+    كل هذا داخل st.form واحد — فالضغط على Enter في حقل العنوان لا
+    يُنشئ اللوحة أبداً (Streamlit لا يُرسل نموذجاً بالـ Enter إلا من
+    آخر حقل نصي فيه، وحتى لو حدث ذلك فالقالب الافتراضي المختار في
+    الـ radio هو نفسه ما يظهر للمستخدم بصرياً في نفس اللحظة — لا مفاجآت
+    خفية)، والإرسال الفعلي الوحيد هو زر "➕ إنشاء اللوحة" الأساسي.
+    """
+    tmpl_keys = list(DASHBOARD_TEMPLATES.keys())
+
+    with st.form(key="manual_create_dashboard_form", clear_on_submit=False):
+        st.markdown("**1) عنوان اللوحة**")
+        title = st.text_input(
+            "عنوان اللوحة", key="manual_dash_title", label_visibility="collapsed",
+            placeholder="مثال: أداء المبيعات الشهري",
+        )
+
+        st.markdown("**2) اختر القالب**")
+        chosen_key = st.radio(
+            "القالب", tmpl_keys, key="manual_dash_template",
+            format_func=lambda k: f"{k} — {DASHBOARD_TEMPLATES[k]['name']}",
+            horizontal=True, label_visibility="collapsed",
+        )
+        st.caption(DASHBOARD_TEMPLATES[chosen_key]["description"])
+
+        submitted = st.form_submit_button("➕ إنشاء اللوحة", type="primary", width="stretch")
+
+    if submitted:
+        if not title.strip():
+            notify("الرجاء إدخال عنوان اللوحة أولاً", kind="warning")
+        else:
+            dash_id = str(uuid.uuid4())
+            db.create_dashboard(dash_id, title.strip(), chosen_key)
+            st.session_state.current_dashboard_id = dash_id
+            st.rerun()
+
+
+def _render_dashboard_card(db, d: dict, settings: dict) -> None:
+    """
+    🆕 بطاقة لوحة موحّدة الشكل (نفس نمط بطاقات المشاريع): عنوان
+    ومعلومات مختصرة + زر "📂 فتح" بارز أساسي، وباقي الإجراءات
+    (تكرار/حذف) داخل قائمة "⁝" حتى لا تتنافس بصرياً مع فتح اللوحة.
+    """
+    tmpl = get_template(d["template_id"])
+    has_popover = hasattr(st, "popover")
+
+    with st.container(border=True):
+        head_col, menu_col = st.columns([6, 1])
+        with head_col:
+            st.markdown(f"**{d['title']}**")
+            updated_label = format_local_dt(d.get("updated_at"), settings) or "لم يُحدَّث بعد"
+            st.caption(f"القالب: {tmpl['name']} | آخر تحديث: {updated_label}")
+        with menu_col:
+            menu_ctx = (
+                st.popover("⁝", width="stretch") if has_popover
+                else st.expander("⁝", expanded=False)
+            )
+            with menu_ctx:
+                if st.button("📑 تكرار", key=f"dup_dash_{d['id']}", width="stretch"):
                     new_id = str(uuid.uuid4())
                     db.duplicate_dashboard(d["id"], new_id, f"{d['title']} (نسخة)")
                     st.rerun()
-            with c4:
+
                 confirm_key = f"confirm_del_dash_{d['id']}"
                 if st.session_state.get(confirm_key):
-                    if st.button("⚠️ تأكيد الحذف", key=f"confirm_btn_{d['id']}", width='stretch'):
+                    if st.button(
+                        "⚠️ تأكيد الحذف", key=f"danger_confirm_del_{d['id']}", width="stretch",
+                    ):
                         db.delete_dashboard(d["id"])
                         st.session_state.pop(confirm_key, None)
                         st.rerun()
                 else:
-                    if st.button("🗑️ حذف", key=f"del_dash_{d['id']}", width='stretch'):
+                    if st.button("🗑️ حذف", key=f"danger_del_dash_{d['id']}", width="stretch"):
                         st.session_state[confirm_key] = True
                         st.rerun()
+
+        if st.button("📂 فتح", key=f"open_dash_{d['id']}", type="primary", width="stretch"):
+            st.session_state.current_dashboard_id = d["id"]
+            st.rerun()
 
 
 def _build_ai_manager(db):
@@ -182,18 +247,22 @@ def _show_dashboard_detail(db):
     dm = DashboardManager(db, ai)
     engine_name = settings.get("ai_engine", "gemini")
 
-    c1, c2, c3, c4 = st.columns([4.5, 1.2, 1.5, 1.8])
-    with c1:
+    # 🆕 صف علوي بإجراء أساسي بارز واحد فقط (🔄 تحديث البيانات) —
+    # زر الرجوع تحوّل إلى أيقونة صغيرة هادئة بجانب العنوان مباشرة،
+    # وإرسال التقرير بقي بشكله الهادئ (popover/expander) دون منافسة
+    # بصرية للتحديث، الذي يأخذ أكبر مساحة ووحيد بلون primary.
+    title_col, back_col, refresh_col, report_col = st.columns([5, 0.9, 2.4, 1.7])
+    with back_col:
+        if st.button("↩️", key="back_to_dashboards", width="stretch", help="الرجوع إلى قائمة اللوحات"):
+            st.session_state.current_dashboard_id = None
+            st.rerun()
+    with title_col:
         st.title(f"📊 {dashboard['title']}")
         updated_label = format_local_dt(dashboard.get("updated_at"), settings) or "لم يُحدَّث بعد"
         st.caption(f"آخر تحديث: {updated_label}")
-    with c2:
-        if st.button("↩️ اللوحات", width='stretch'):
-            st.session_state.current_dashboard_id = None
-            st.rerun()
-    with c3:
+    with refresh_col:
         refresh_clicked = st.button("🔄 تحديث البيانات", type="primary", width='stretch')
-    with c4:
+    with report_col:
         _render_send_all_to_report(db, dashboard_id, dashboard, template)
 
     if refresh_clicked:
@@ -292,9 +361,15 @@ def _render_template_switcher(db, dm, dashboard: dict, dashboard_id: str) -> Non
     فقط تتوقف عن الظهور في هذه الصفحة وعن الدخول في "تحديث البيانات"
     — وتعود فوراً لو أُعيد اختيار قالب أكبر يشملها مجدداً، بدون أي
     إعادة حساب أو استدعاء AI إضافي.
+
+    🆕 عنوان القائمة اتّبع نفس نمط بقية القوائم المطوية في الصفحة
+    (أيقونة + نص + حالة حالية بين شرطتين)، ليتطابق تماماً مع تسمية
+    "🔍 عوامل التصفية" أدناه — الشكل (الحجم/التباعد) موحَّد أصلاً عبر
+    apply_theme_css لكل expander في التطبيق.
     """
     cur_template_id = dashboard["template_id"]
-    with st.expander(f"🧩 قالب اللوحة الحالي: {get_template(cur_template_id)['name']}", expanded=False):
+    switcher_label = f"🧩 قالب اللوحة — {get_template(cur_template_id)['name']}"
+    with st.expander(switcher_label, expanded=False):
         st.caption(
             "يمكنك تغيير قالب اللوحة في أي وقت. الخلايا التي تصبح خارج "
             "نطاق القالب الجديد لن تُحذف ولن تُحدَّث تلقائياً (توفيراً "
@@ -339,8 +414,8 @@ def _render_send_all_to_report(db, dashboard_id: str, dashboard: dict, template:
     reports = db.get_reports()
     has_popover = hasattr(st, "popover")
     menu_ctx = (
-        st.popover("📤 إرسال الكل إلى تقرير", width='stretch') if has_popover
-        else st.expander("📤 إرسال الكل إلى تقرير", expanded=False)
+        st.popover("📤 إرسال إلى تقرير", width='stretch') if has_popover
+        else st.expander("📤 إرسال إلى تقرير", expanded=False)
     )
     with menu_ctx:
         if not reports:
@@ -389,7 +464,22 @@ def _render_send_all_to_report(db, dashboard_id: str, dashboard: dict, template:
 
                 
 def _render_slicer_panel(db, dm, dashboard_id, slicers, date_filter_position, date_filter):
-    slicers_existing = slicers  # dict keyed by position, بدون فلتر التاريخ (تم فصله مسبقاً)
+    """
+    🆕 عنوان القائمة المطوية الخارجية (المُعرَّف في المُستدعي أعلاه)
+    يتبع نفس نمط "أيقونة + نص + عداد الحالة" المستخدم في
+    _render_template_switcher. هنا فقط محتوى اللوحة: حقول الفلاتر ثم
+    صف الأزرار — "💾 حفظ الكل" هو الإجراء الأساسي البارز الوحيد
+    (type="primary")، و"↺ مسح الكل" أهدأ بجانبه (ثانوي افتراضي).
+
+    تقليل rerun: القيم المميزة لكل فلتر (get_distinct_values) تُجلب
+    فقط عند تغيّر فعلي في (الجدول, العمود) — عبر بصمة مخزَّنة في
+    session_state (راجع _render_filter_fields_block) — لا في كل مرة
+    يُعاد فيها رسم اللوحة لأي سبب آخر (فتح/طي قائمة، الخ). التفاعل مع
+    قيم الاختيار (multiselect) نفسه لا يستدعي القاعدة إطلاقاً؛ الحفظ
+    الفعلي في project.db يحدث مرة واحدة فقط عند الضغط على "💾 حفظ الكل"
+    (استدعاء rerun صريح واحد بعده لتحديث عداد "مُفعَّل" في عنوان القائمة).
+    """
+    slicers_existing = slicers  # dict keyed by position، بدون فلتر التاريخ (تم فصله مسبقاً)
     pending_rows = _render_filter_fields_block(
         dm, id_for_keys=dashboard_id,
         slicers_existing=slicers_existing,
@@ -398,7 +488,7 @@ def _render_slicer_panel(db, dm, dashboard_id, slicers, date_filter_position, da
     )
 
     st.markdown("")
-    reset_col, save_col, _spacer = st.columns([1.2, 1.2, 3.6])
+    save_col, reset_col, _spacer = st.columns([1.4, 1.2, 3.4])
 
     with save_col:
         if st.button("💾 حفظ الكل", key=f"save_all_slicers_{dashboard_id}", width='stretch', type="primary"):
@@ -473,6 +563,10 @@ def _render_filter_fields_block(dm, id_for_keys: str, slicers_existing: dict,
                 )
 
                 if sel_column != "(بدون)":
+                    # 🆕 جلب القيم المميزة يعتمد على بصمة (الجدول, العمود)
+                    # المخزَّنة — يُعاد الجلب فقط عند تغيّرها فعلياً، فلا
+                    # rerun إضافي أو استعلام قاعدة بيانات زائد عند أي
+                    # تفاعل آخر في نفس اللوحة (مثل تغيير فلتر مجاور).
                     values_key = f"slicer_values_cache_{id_for_keys}_{i}"
                     cache_sig_key = f"{values_key}_sig"
                     current_sig = (sel_table, sel_column)
@@ -711,4 +805,3 @@ def _build_dashboard_snapshot(db, dashboard_id: str, template: dict):
         columns.append(col_cells)
 
     return gauges, columns
-

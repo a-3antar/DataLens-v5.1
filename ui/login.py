@@ -42,8 +42,7 @@ from ui.common import notify
 
 def show_login():
     st.markdown(
-        f"<h1 style='text-align:center;'>{APP_ICON} {APP_NAME}</h1>"
-        "<p style='text-align:center; color:gray;'>تحليل بياناتك بلغة طبيعية</p>",
+        f"<h1 style='text-align:center;'>{APP_ICON} {APP_NAME}</h1>",
         unsafe_allow_html=True,
     )
     #st.write("")
@@ -64,6 +63,10 @@ def show_login():
 
         with tab_forgot:
             _render_forgot_password(auth)
+    st.markdown(
+        f"<p style='text-align:center; color:gray;'>تحليل بياناتك بلغة طبيعية</p>",
+        unsafe_allow_html=True,
+    )
 
 
 def _render_login_tab(auth: AuthManager):

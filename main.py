@@ -55,8 +55,8 @@ PAGES = {
     "📁 المشاريع": show_projects,
     "📄 الملفات": show_files,
     "🧹 تنظيف البيانات": show_data,
-    "💬 المحادثة": show_chat,
     "📊 لوحات المعلومات": show_dashboards,
+    "💬 المحادثة": show_chat,
     "📝 التقارير": show_reports,
     "⚙️ الإعدادات": show_settings,
 }
@@ -79,13 +79,31 @@ _JUMP_TARGETS = {
     "dashboards": "📊 لوحات المعلومات",
     "files": "📄 الملفات",
 }
-default_index = 0
+
+# 🆕 إصلاح مشكلة "يرجع لصفحة المشاريع تلقائياً":
+# -----------------------------------------------
+# الراديو أدناه كان بلا key صريح، فـ Streamlit يبني معرّفه الداخلي
+# جزئياً من قيمة index الممرَّرة له. بما أن default_index كانت تُحسب
+# من جديد كل تشغيل (0 ما لم يوجد jump_to)، فأي رجوع لـ 0 بعد أن كانت
+# مثلاً 1 (لوحات المعلومات) يجعل Streamlit يعامل الراديو كعنصر جديد
+# تماماً ويفقد اختيار المستخدم الفعلي — فيرتد فوراً لصفحة المشاريع
+# عند أي rerun لاحق لا علاقة له بالتنقل (كالضغط على أي زر داخل صفحة
+# لوحات المعلومات نفسها، مثلاً فتح لوحة). الحل: key ثابت صريح على
+# الراديو، وضبط القيمة في session_state مباشرة بدل الاعتماد على index
+# متغيّر — بهذا يحافظ الراديو على حالته عبر أي rerun لا علاقة له
+# بالتنقل، وينتقل فقط عندما نضبط session_state["_current_page"] نحن.
+if "_current_page" not in st.session_state:
+    st.session_state["_current_page"] = _PAGE_KEYS[0]
+
 jump_to = st.session_state.pop("_jump_to_page", None)
 if jump_to in _JUMP_TARGETS:
-    default_index = _PAGE_KEYS.index(_JUMP_TARGETS[jump_to])
+    st.session_state["_current_page"] = _JUMP_TARGETS[jump_to]
 
 with st.sidebar:
     st.markdown(f"## {APP_ICON} {APP_NAME} V{APP_VERSION}")
-    choice = st.radio("الانتقال إلى", _PAGE_KEYS, index=default_index, label_visibility="collapsed")
+    choice = st.radio(
+        "الانتقال إلى", _PAGE_KEYS,
+        key="_current_page", label_visibility="collapsed",
+    )
 
 PAGES[choice]()

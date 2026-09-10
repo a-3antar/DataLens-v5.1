@@ -30,6 +30,29 @@ core.dashboard_cells.cells._build_chart_figure/_apply_chart_layout_tweaks
 عمود قيمة واحد بسبب دمج Plotly الداخلي، وعنوان محور رأسي "value" غير
 ضروري) في مكانين منفصلين. أي تحسين مستقبلي على شكل الرسم يكفي تطبيقه
 مرة واحدة في core/dashboard_cells/cells.py ليسري هنا تلقائياً.
+
+🆕 نموذج سؤال واحد (st.form) بدل حقول حرة:
+------------------------------------------------
+سؤال + نوع النتيجة + نوع الرسم + زر الإرسال أصبحوا كلهم داخل st.form
+واحد ("ask_form"):
+  • أي widget عادي (text_area/selectbox) خارج st.form في Streamlit
+    يُعيد تشغيل السكربت بالكامل فور تغييره — وهذا لا يسبب "إرسالاً"
+    فعلياً هنا لأن التنفيذ كان مربوطاً أصلاً بزر "▶️ إرسال" فقط، لكنه
+    كان يعيد رسم الصفحة بدون داعٍ عند كل تغيير في نوع النتيجة/الرسم.
+  • st.form يُجمّع كل تغييرات الحقول الداخلية (بما فيها الكتابة في
+    text_area) ولا يُرسل أي شيء للسيرفر حتى الضغط الصريح على
+    st.form_submit_button — هذا هو ما يمنع "الإرسال العرضي": الضغط
+    على Enter داخل text_area لا يُنشئ سطراً جديداً فقط (السلوك
+    الافتراضي لـ text_area نفسه، سواء كان داخل form أو خارجه) ولا
+    يُرسل النموذج بأي شكل؛ الإرسال الوحيد الممكن هو الضغط الصريح على
+    زر "▶️ إرسال" المعروض بجانب الحقل مباشرة.
+  • ملاحظة تقنية مهمة: widgets داخل st.form لا تُعيد تشغيل السكربت
+    عند تغييرها (فقط زر الإرسال يفعل ذلك) — لذلك لا يمكن إخفاء/إظهار
+    قائمة "نوع الرسم" ديناميكياً بناءً على اختيار "نوع النتيجة" داخل
+    نفس الـ form (تغيير selectbox الأول لن يُحدّث الواجهة فوراً).
+    لذلك نُبقي قائمة "نوع الرسم" ظاهرة دائماً في نفس الصف المضغوط،
+    مع توضيح أنها تُستخدم فقط عند اختيار "رسم بياني" — بدل إخفائها
+    بشكل غير موثوق.
 """
 
 import uuid
@@ -47,6 +70,11 @@ from ui.common import (
 from ai.ai_manager import build_ai_manager
 from core.dashboard_cells.cells import _build_chart_figure, _apply_chart_layout_tweaks
 from config import CHART_TYPES
+
+_RESULT_TYPE_LABELS = {
+    "table": "جدول", "chart": "رسم بياني", "gauge": "مقياس (Gauge)",
+    "kpi": "بطاقة مؤشر (KPI)", "story": "تحليل نصي (Story Telling)",
+}
 
 
 def show_chat():
@@ -68,25 +96,35 @@ def show_chat():
         notify("محرك AI غير معروف. راجع الإعدادات.", kind="error")
         return
 
-    c1, c2 = st.columns([3, 1])
-    with c1:
-        question = st.text_area("اكتب سؤالك بالعربية أو الإنجليزية", height=90)
-    with c2:
-        result_type = st.selectbox(
-            "نوع النتيجة", ["table", "chart", "gauge", "kpi", "story"],
-            format_func=lambda t: {
-                "table": "جدول", "chart": "رسم بياني", "gauge": "مقياس (Gauge)",
-                "kpi": "بطاقة مؤشر (KPI)", "story": "تحليل نصي (Story Telling)",
-            }.get(t, t),
+    # 🆕 نموذج واحد موحّد: منطقة الكتابة هي العنصر الأكبر بصرياً، وصف
+    # مضغوط أسفلها لـ "نوع النتيجة" + "نوع الرسم" + زر الإرسال — بدل
+    # عمود جانبي منفصل كان يُصغّر بصرياً مساحة السؤال. راجع الشرح في
+    # أعلى الملف حول سبب اختيار st.form هنا.
+    with st.form("ask_form", border=False):
+        question = st.text_area(
+            "اكتب سؤالك بالعربية أو الإنجليزية", height=110,
+            placeholder="مثال: ما إجمالي إنتاج الفالف الشهر الماضي؟",
         )
-        chart_type = "bar"
-        if result_type == "chart":
+
+        row1, row2, row3 = st.columns([2, 2, 1.2])
+        with row1:
+            result_type = st.selectbox(
+                "نوع النتيجة", list(_RESULT_TYPE_LABELS.keys()),
+                format_func=lambda t: _RESULT_TYPE_LABELS.get(t, t),
+            )
+        with row2:
+            # ظاهرة دائماً (راجع الملاحظة التقنية أعلى الملف) — تُستخدَم
+            # فقط فعلياً عند اختيار "رسم بياني" في العمود المجاور.
             chart_type = st.selectbox(
-                "نوع الرسم",
+                "نوع الرسم (عند اختيار رسم بياني)",
                 list(CHART_TYPES.keys()),
                 format_func=lambda t: CHART_TYPES[t],
             )
-        run_clicked = st.button("▶️ إرسال", width='stretch', type="primary")
+        with row3:
+            st.markdown("&nbsp;")  # محاذاة رأسية بسيطة مع الحقلين المجاورين
+            run_clicked = st.form_submit_button(
+                "▶️ إرسال", width='stretch', type="primary",
+            )
 
     if run_clicked:
         if not question.strip():
@@ -127,15 +165,32 @@ def show_chat():
     st.divider()
     with st.expander("🕓 سجل المحادثة"):
         history = db.get_chat_history(limit=20)
+        if not history:
+            st.caption("لا توجد محادثات سابقة بعد.")
         for h in history:
-            status = "✅" if not h.get("error") else "❌"
-            st.markdown(f"{status} **{h['question']}**")
-            if h.get("sql_query"):
+            _render_history_card(h, settings)
+
+
+def _render_history_card(h: dict, settings: dict) -> None:
+    """
+    عنصر واحد من سجل المحادثة بنمط "بطاقة" موحّد: عنوان مطوٍ يجمع
+    حالة النجاح/الفشل + نص السؤال، وبداخله SQL (مطوي فرعياً عبر
+    st.code) والتاريخ — بدل الخط الأفقي المتكرر (st.markdown("---"))
+    الذي كان يفصل العناصر سابقاً دون أي تجميع بصري حقيقي بينها.
+    """
+    status_icon = "✅" if not h.get("error") else "❌"
+    title = h["question"].strip()
+    if len(title) > 70:
+        title = title[:70].rstrip() + "…"
+
+    with st.container(border=True):
+        st.markdown(f"{status_icon} **{title}**")
+        if h.get("sql_query"):
+            with st.expander("💻 SQL", expanded=False):
                 st.code(h["sql_query"], language="sql")
-            if h.get("error"):
-                st.caption(f"خطأ: {h['error']}")
-            st.caption(format_local_dt(h["created_at"], settings))
-            st.markdown("---")
+        if h.get("error"):
+            st.caption(f"⚠️ خطأ: {h['error']}")
+        st.caption(format_local_dt(h["created_at"], settings))
 
 
 def _render_result(db, settings, result: dict, result_type: str, chart_type: str = "bar"):
@@ -210,19 +265,35 @@ def _render_result(db, settings, result: dict, result_type: str, chart_type: str
         st.caption(f"الهدف: {target}")
 
     elif result_type == "story":
+        # 🆕 وُحِّد الترتيب والشكل هنا مع core/dashboard_cells/cells.py::
+        # StoryCell.render_result بالضبط: النص التحليلي أولاً عبر
+        # st.markdown مباشرة، ثم استعلامات البيانات المُستخدَمة مجمّعة
+        # داخل expander واحد بعنوان "📊 البيانات المستخدمة" (بدل
+        # expander منفصل لكل استعلام كما كان سابقاً هنا) — نفس البنية
+        # البصرية تماماً في المكانين، بلا أي CSS إضافي محيط بها لأن
+        # apply_rtl()/apply_theme_css() تُطبَّقان عاماً على .stMarkdown
+        # وعلى الـ expander في كل الصفحات.
+        story_text = result.get("story", "")
+        st.markdown(story_text)
+
         queries = result.get("queries", [])
         if queries:
-            for q in queries:
-                with st.expander(f"📊 {q.get('title', 'بيانات')}", expanded=False):
-                    st.code(q.get("sql", ""), language="sql")
+            with st.expander("📊 البيانات المستخدمة"):
+                for q in queries:
+                    st.markdown(f"**{q.get('title', 'بيانات')}**")
                     if q.get("ok") and q.get("df") is not None:
                         render_themed_table(q["df"], settings)
                     elif not q.get("ok"):
                         st.caption(f"⚠️ فشل هذا الاستعلام: {q.get('error')}")
-        story_text = result.get("story", "")
-        st.markdown(story_text)
+                    st.divider()
 
     st.divider()
+    # 🆕 نموذج الإرسال للتقرير: كان أصلاً st.form (سلوك آمن بالفعل) —
+    # الضغط على Enter داخل حقل "عنوان/تسمية" لا يُرسل النموذج تلقائياً
+    # لأن أي widget نصي داخل st.form لا يُطلق submit عبر Enter، الإرسال
+    # الوحيد هو الضغط الصريح على زر "إرسال" (st.form_submit_button)،
+    # وعندها تُقرأ كل الحقول (بما فيها اختيار التقرير) معاً دفعة واحدة
+    # فلا يوجد احتمال إرسال بيانات ناقصة بسبب ترتيب أحداث غير متزامن.
     with st.form("send_to_report_form"):
         st.markdown("**📤 إرسال إلى تقرير**")
         reports = db.get_reports()
