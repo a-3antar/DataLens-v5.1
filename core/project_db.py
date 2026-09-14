@@ -581,6 +581,28 @@ class ProjectDB:
             logger.error("get_chat_history error: %s", e)
             return []
 
+    def delete_chat_result(self, chat_id: str) -> None:
+        """حذف سجل محادثة واحد من المشروع الحالي."""
+        try:
+            with _connect(self.db_path) as conn:
+                conn.execute("DELETE FROM chat_history WHERE id = ?", (chat_id,))
+                conn.commit()
+            logger.info("Chat history deleted: %s", chat_id)
+        except sqlite3.Error as e:
+            logger.error("delete_chat_result error: %s", e)
+            raise
+
+    def clear_chat_history(self) -> None:
+        """حذف جميع سجلات المحادثة للمشروع الحالي."""
+        try:
+            with _connect(self.db_path) as conn:
+                conn.execute("DELETE FROM chat_history")
+                conn.commit()
+            logger.info("Chat history cleared for project: %s", self.project_id)
+        except sqlite3.Error as e:
+            logger.error("clear_chat_history error: %s", e)
+            raise
+
     # ──────────────────────────────────────────────────────────
     #  التقارير
     # ──────────────────────────────────────────────────────────
