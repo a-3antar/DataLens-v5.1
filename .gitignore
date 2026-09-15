@@ -182,3 +182,4 @@ cython_debug/
 /data/logs
 core/mail_param.py
 /project_backup
+data/secret.key
