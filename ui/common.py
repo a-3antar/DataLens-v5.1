@@ -1304,3 +1304,206 @@ def cleanup_stale_temp_dirs(max_age_hours: int = 2) -> int:
     if removed:
         logger.info("cleanup_stale_temp_dirs: removed %d stale export dir(s)", removed)
     return removed
+
+
+# ══════════════════════════════════════════════════════════════
+#  Chat Design System
+# ══════════════════════════════════════════════════════════════
+
+def chat_ui_css(settings: dict) -> str:
+    """طبقة التصميم المشتركة لواجهة المحادثة، معتمدة على الثيم المركزي للمشروع.
+
+    لا تغيّر منطق Streamlit أو نتائج AI؛ مهمتها تحويل الصفحة إلى تجربة
+    محادثة حديثة مع الحفاظ على ألوان الثيم الحالية، بما فيها custom.
+    """
+    colors = get_theme_colors(settings)
+    bg = colors["bg"]
+    card = colors["card"]
+    text = colors["text"]
+    primary = colors["primary"]
+    accent = colors["accent"]
+
+    return f"""
+    <style>
+        /* ==========================================================
+           DataLens Chat — Modern AI workspace
+           ========================================================== */
+        .chat-page-header {{
+            padding: 0.35rem 0 1.15rem 0;
+        }}
+        .chat-page-title {{
+            display: flex;
+            align-items: center;
+            gap: 0.65rem;
+            font-size: 1.65rem;
+            font-weight: 750;
+            letter-spacing: -0.02em;
+            color: {text};
+            margin: 0;
+        }}
+        .chat-page-title .chat-logo {{
+            width: 2.25rem;
+            height: 2.25rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 0.8rem;
+            background: {primary};
+            color: #fff;
+            box-shadow: 0 7px 22px {primary}33;
+            font-size: 1.15rem;
+        }}
+        .chat-page-subtitle {{
+            margin: 0.35rem 0 0 2.9rem;
+            color: {text}B3;
+            font-size: 0.9rem;
+        }}
+
+        /* لا نعرض إطار Streamlit الافتراضي للبطاقة؛ كل سؤال/إجابة
+           يصبح جزءاً من سجل محادثة نظيف مثل Claude/Gemini/DeepSeek. */
+        [class*="st-key-chat_item_"] {{
+            background: transparent !important;
+            border: 0 !important;
+            border-radius: 0 !important;
+            padding: 0.75rem 0 1.25rem 0 !important;
+            margin: 0 !important;
+            box-shadow: none !important;
+        }}
+        [class*="st-key-chat_item_"] + [class*="st-key-chat_item_"] {{
+            border-top: 1px solid {accent}20 !important;
+            padding-top: 1.35rem !important;
+        }}
+        [class*="st-key-chat_item_"] .stMarkdown {{
+            line-height: 1.85;
+        }}
+
+        /* سؤال المستخدم */
+        .chat-user-row {{
+            display: flex;
+            justify-content: flex-start;
+            margin: 0 0 1rem 0;
+        }}
+        .chat-user-bubble {{
+            max-width: min(78%, 760px);
+            padding: 0.78rem 1rem;
+            border-radius: 1.05rem 1.05rem 0.3rem 1.05rem;
+            background: {primary}18;
+            border: 1px solid {primary}35;
+            color: {text};
+            font-size: 0.98rem;
+            line-height: 1.8;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }}
+        .chat-user-label {{
+            display: block;
+            color: {accent};
+            font-size: 0.73rem;
+            font-weight: 700;
+            margin-bottom: 0.2rem;
+            opacity: 0.9;
+        }}
+
+        /* إجابة المساعد */
+        .chat-answer-head {{
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin: 0 0 0.35rem 0;
+            color: {text};
+            font-size: 0.86rem;
+            font-weight: 700;
+        }}
+        .chat-assistant-icon {{
+            width: 1.7rem;
+            height: 1.7rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 0.6rem;
+            background: {accent}20;
+            border: 1px solid {accent}35;
+            color: {accent};
+            font-size: 0.82rem;
+        }}
+        [class*="st-key-chat_item_"] .stCaption {{
+            font-size: 0.76rem !important;
+        }}
+
+        /* معلومات التنفيذ تكون هادئة وليست جزءاً من مركز الإجابة */
+        [class*="st-key-chat_item_"] div[data-testid="stExpander"] {{
+            margin: 0.45rem 0 0.8rem 0 !important;
+            background: {card}88 !important;
+        }}
+
+        /* شريط إرسال النتيجة للتقرير */
+        [class*="st-key-chat_item_"] form {{
+            margin-top: 0.7rem;
+            padding: 0.7rem 0.8rem 0.35rem 0.8rem;
+            background: {card}88;
+            border: 1px solid {accent}20;
+            border-radius: 0.9rem;
+        }}
+
+        /* Composer ثابت بأسلوب ChatGPT/Claude */
+        [class*="st-key-chat_composer"] {{
+            background: {card}F5 !important;
+            border: 1px solid {accent}45 !important;
+            border-radius: 1.25rem !important;
+            padding: 0.65rem 0.75rem 0.6rem 0.75rem !important;
+            box-shadow: 0 -8px 30px {bg}66, 0 8px 28px {bg}44 !important;
+        }}
+        [class*="st-key-chat_composer"] textarea {{
+            min-height: 56px !important;
+            border: 0 !important;
+            box-shadow: none !important;
+            background: transparent !important;
+            padding: 0.55rem 0.65rem !important;
+            font-size: 0.98rem !important;
+            line-height: 1.65 !important;
+            resize: none !important;
+        }}
+        [class*="st-key-chat_composer"] .stTextArea > label {{
+            display: none !important;
+        }}
+        [class*="st-key-chat_composer"] .stButton > button,
+        [class*="st-key-chat_composer"] [data-testid="stPopover"] > button {{
+            min-height: 38px !important;
+            border-radius: 0.75rem !important;
+            font-size: 0.84rem !important;
+        }}
+        [class*="st-key-chat_composer"] .stButton > button[kind="primary"] {{
+            min-width: 92px;
+            box-shadow: 0 5px 16px {primary}35;
+        }}
+        [data-testid="stBottom"] > div,
+        [data-testid="stBottomBlockContainer"] {{
+            background: {bg}EE !important;
+            border-top: 1px solid {accent}20 !important;
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            padding-top: 0.55rem !important;
+            padding-bottom: 0.65rem !important;
+        }}
+
+        /* المرجع العلوي */
+        [class*="st-key-chat_history_ref"] {{
+            margin-bottom: 0.35rem;
+        }}
+        [class*="st-key-chat_history_ref"] .stButton > button {{
+            text-align: right !important;
+            justify-content: flex-start !important;
+            border: 0 !important;
+            background: transparent !important;
+        }}
+
+        /* مساحة أقل على الشاشات الصغيرة */
+        @media (max-width: 768px) {{
+            .chat-page-title {{ font-size: 1.35rem; }}
+            .chat-page-subtitle {{ margin-right: 0; margin-left: 0; }}
+            .chat-user-bubble {{ max-width: 92%; }}
+            [class*="st-key-chat_composer"] {{ border-radius: 1rem !important; }}
+        }}
+    </style>
+    """
+

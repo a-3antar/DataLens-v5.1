@@ -36,10 +36,10 @@ core.query_engine — فقط طبقة العرض.
 """
 
 import uuid
+import html
 
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 from contextlib import contextmanager
 
@@ -57,8 +57,8 @@ else:
     from streamlit_extras.bottom_container import bottom
 
 from ui.common import (
-    apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
-    format_local_dt, notify, get_chart_theme, apply_plotly_theme, get_theme_colors,
+    apply_rtl, apply_theme_css, chat_ui_css, require_login, require_project, sidebar_header,
+    format_local_dt, notify, get_chart_theme, apply_plotly_theme,
     render_themed_table,
 )
 from ai.ai_manager import build_ai_manager
@@ -75,41 +75,8 @@ _PREFILL_KEY = "_chat_question_prefill"
 _THREAD_KEY = "chat_thread"
 
 
-def _bottom_bar_css(settings: dict) -> str:
-    """
-    🆕 تلوين الشريط السفلي الثابت بألوان الثيم الحالي (بما فيه المخصص)
-    بدل خلفية Streamlit الافتراضية (بيضاء/رمادية ثابتة بغض النظر عن
-    الثيم) — st.bottom يبني حاوية خاصة به بخلفية مستقلة عن .stApp، فلا
-    تتأثر تلقائياً بألوان apply_theme_css العامة، لذا نضبطها هنا صراحة.
-    """
-    colors = get_theme_colors(settings)
-    card = colors["card"]
-    accent = colors["accent"]
-    return f"""
-    <style>
-        [data-testid="stBottom"] > div,
-        [data-testid="stBottomBlockContainer"] {{
-            background-color: {card} !important;
-            border-top: 1px solid {accent}55 !important;
-            padding-top: 0.4rem !important;
-            padding-bottom: 0.4rem !important;
-            gap: 0.3rem !important;
-        }}
-        [data-testid="stBottom"] [data-testid="stVerticalBlock"] {{
-            gap: 0.3rem !important;
-        }}
-        [data-testid="stBottom"] .stButton > button {{
-            padding-top: 0.25rem !important;
-            padding-bottom: 0.25rem !important;
-            min-height: 0 !important;
-        }}
-        [data-testid="stBottom"] [data-testid="stPopover"] > button {{
-            padding-top: 0.25rem !important;
-            padding-bottom: 0.25rem !important;
-            min-height: 0 !important;
-        }}
-    </style>
-    """
+
+
 
 
 def show_chat():
@@ -119,12 +86,20 @@ def show_chat():
     settings = db.get_settings()
     apply_theme_css(settings.get("theme", "ocean_dark"))
     sidebar_header()
-    st.markdown(_bottom_bar_css(settings), unsafe_allow_html=True)
+    st.markdown(chat_ui_css(settings), unsafe_allow_html=True)
 
     if _THREAD_KEY not in st.session_state:
         st.session_state[_THREAD_KEY] = []
 
-    st.title("💬 اسأل بياناتك")
+    st.markdown(
+        """
+        <div class="chat-page-header">
+            <div class="chat-page-title"><span class="chat-logo">✦</span><span>اسأل بياناتك</span></div>
+            <div class="chat-page-subtitle">اسأل بيانات مشروعك بلغة طبيعية واحصل على إجابة مدعومة بالبيانات.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     if not db.get_files():
         st.caption("لا توجد جداول بعد. ارفع ملفاً أولاً من صفحة الملفات.")
@@ -137,12 +112,19 @@ def show_chat():
 
     _render_question_reference(db)
 
-    st.divider()
-
     # ── سجل الأسئلة/الإجابات (بطاقات متتالية) ──────────────────
     thread = st.session_state[_THREAD_KEY]
     if not thread:
-        st.caption("لا توجد أسئلة في هذه الجلسة بعد — اكتب سؤالك في الأسفل وابدأ.")
+        st.markdown(
+            """
+            <div style="text-align:center; padding:4rem 1rem 7rem 1rem; opacity:.72;">
+                <div style="font-size:2rem; margin-bottom:.5rem;">✦</div>
+                <div style="font-size:1.05rem; font-weight:650;">ابدأ بسؤال عن بياناتك</div>
+                <div style="font-size:.88rem; margin-top:.35rem;">مثال: ما إجمالي الإنتاج لكل شهر خلال هذا العام؟</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     else:
         for item in thread:
             _render_qa_card(db, settings, item)
@@ -161,37 +143,38 @@ def show_chat():
 
 def _render_question_reference(db) -> None:
     has_popover = hasattr(st, "popover")
-    menu_ctx = (
-        st.popover("🕓 مرجع الأسئلة", width="stretch") if has_popover
-        else st.expander("🕓 مرجع الأسئلة", expanded=False)
-    )
-    with menu_ctx:
-        thread = st.session_state.get(_THREAD_KEY, [])
-        history = db.get_chat_history(limit=30)
+    with st.container(key="chat_history_ref", border=False):
+        menu_ctx = (
+            st.popover("🕘 المحادثات السابقة", width="stretch") if has_popover
+            else st.expander("🕘 المحادثات السابقة", expanded=False)
+        )
+        with menu_ctx:
+            thread = st.session_state.get(_THREAD_KEY, [])
+            history = db.get_chat_history(limit=30)
 
-        seen = set()
-        entries = []
-        for item in reversed(thread):
-            q = item["question"].strip()
-            if q and q not in seen:
-                seen.add(q)
-                entries.append(q)
-        for h in history:
-            q = (h.get("question") or "").strip()
-            if q and q not in seen:
-                seen.add(q)
-                entries.append(q)
+            seen = set()
+            entries = []
+            for item in reversed(thread):
+                q = item["question"].strip()
+                if q and q not in seen:
+                    seen.add(q)
+                    entries.append(q)
+            for h in history:
+                q = (h.get("question") or "").strip()
+                if q and q not in seen:
+                    seen.add(q)
+                    entries.append(q)
 
-        if not entries:
-            st.caption("لا توجد أسئلة سابقة بعد")
-            return
+            if not entries:
+                st.caption("لا توجد أسئلة سابقة بعد")
+                return
 
-        st.caption("اضغط على أي سؤال لإعادته إلى مربع الكتابة")
-        for i, q in enumerate(entries):
-            label = q if len(q) <= 60 else q[:60].rstrip() + "…"
-            if st.button(label, key=f"ref_q_{i}", width="stretch"):
-                st.session_state[_PREFILL_KEY] = q
-                st.rerun()
+            st.caption("اضغط على أي سؤال لإعادته إلى مربع الكتابة")
+            for i, q in enumerate(entries):
+                label = q if len(q) <= 60 else q[:60].rstrip() + "…"
+                if st.button(label, key=f"ref_q_{i}", width="stretch"):
+                    st.session_state[_PREFILL_KEY] = q
+                    st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -203,26 +186,25 @@ def _render_input_area(db, ai, settings: dict) -> None:
     if _PREFILL_KEY in st.session_state:
         st.session_state[_QUESTION_BOX_KEY] = st.session_state.pop(_PREFILL_KEY)
 
-    # قيم افتراضية لأول تشغيل
     st.session_state.setdefault("_chat_result_type", "table")
     st.session_state.setdefault("_chat_chart_type", "bar")
 
-    try:
-        col_text, col_side = st.columns([5, 1.3], vertical_alignment="bottom")
-    except TypeError:
-        # إصدار Streamlit أقدم لا يدعم vertical_alignment بعد
-        col_text, col_side = st.columns([5, 1.3])
+    with st.container(key="chat_composer", border=False):
+        try:
+            col_text, col_side = st.columns([5, 1.25], vertical_alignment="bottom")
+        except TypeError:
+            col_text, col_side = st.columns([5, 1.25])
 
-    with col_text:
-        question = st.text_area(
-            "اكتب سؤالك بالعربية أو الإنجليزية", height=68,
-            placeholder="مثال: ما إجمالي إنتاج الفالف الشهر الماضي؟",
-            key=_QUESTION_BOX_KEY, label_visibility="collapsed",
-        )
+        with col_text:
+            question = st.text_area(
+                "اكتب سؤالك بالعربية أو الإنجليزية", height=62,
+                placeholder="اسأل عن المبيعات، الإنتاج، المخزون، الأداء...",
+                key=_QUESTION_BOX_KEY, label_visibility="collapsed",
+            )
 
-    with col_side:
-        _render_options_popover(db)
-        run_clicked = st.button("▶️ إرسال", type="primary", width="stretch")
+        with col_side:
+            _render_options_popover(db)
+            run_clicked = st.button("إرسال  ➤", type="primary", width="stretch", key="chat_send")
 
     if run_clicked:
         _handle_submit(db, ai, settings, question)
@@ -326,16 +308,27 @@ def _render_qa_card(db, settings: dict, item: dict) -> None:
     result = item["result"]
     result_type = item["result_type"]
     chart_type = item.get("chart_type", "bar")
-    status_icon = "✅" if result.get("ok") else "❌"
+    status_icon = "✓" if result.get("ok") else "!"
+    safe_question = html.escape(item["question"].strip())
 
-    title = item["question"]
-    if len(title) > 90:
-        title = title[:90].rstrip() + "…"
+    with st.container(key=f"chat_item_{item['id']}", border=False):
+        st.markdown(
+            f"""
+            <div class="chat-user-row">
+                <div class="chat-user-bubble">
+                    <span class="chat-user-label">أنت</span>{safe_question}
+                </div>
+            </div>
+            <div class="chat-answer-head">
+                <span class="chat-assistant-icon">✦</span>
+                <span>DataLens</span>
+                <span style="opacity:.55; font-weight:500;">{status_icon}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-    with st.container(border=True):
-        st.markdown(f"{status_icon} **{title}**")
-
-        with st.expander("💻 السؤال وSQL", expanded=False):
+        with st.expander("السؤال وSQL", expanded=False):
             st.markdown(f"**السؤال الكامل:**\n\n{item['question']}")
             if result.get("sql"):
                 st.code(result["sql"], language="sql")
@@ -352,7 +345,6 @@ def _render_qa_card(db, settings: dict, item: dict) -> None:
 
             _render_answer_body(settings, result, result_type, chart_type, key_prefix=item["id"])
 
-        st.divider()
         _render_send_to_report_form(db, item)
 
 
