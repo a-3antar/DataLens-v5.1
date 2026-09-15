@@ -1,58 +1,38 @@
 """
 ui/chat.py
 ==========
-واجهة المحادثة: كتابة سؤال بلغة طبيعية → SQL من AI → تنفيذ → عرض النتيجة
-كـ جدول / رسم بياني / gauge / KPI، مع إمكانية الإرسال للتقرير.
+واجهة المحادثة بأسلوب برامج AI Chat: كل سؤال وإجابته يظهران كبطاقة
+مستقلة في سجل عمودي يسهل التمرير فيه، ومنطقة كتابة السؤال في أسفل
+الصفحة (آخر عنصر يُرسم دائماً) مع عمودين: عمود واسع لمربع النص، وعمود
+ضيق بجانبه يحتوي صفين — قائمة "⁝" منسدلة (نوع النتيجة/نوع الرسم/مسح
+المحادثة) في الأعلى، وزر "▶️ إرسال" الأساسي أسفلها مباشرة.
 
-🆕 عرض Story Telling:
-------------------------
-النص التحليلي (story) أصبح يُعرض عبر st.markdown مباشرة بدل لفّه داخل
-<div> خام — لأن Streamlit يفسّر عناصر الماركداون الكتلية (### عناوين،
-- نقاط، **bold**) فقط عندما تكون خارج أي وسم HTML مفتوح على نفس
-السطر؛ محتوى داخل <div>...</div> يُعرض كنص حرفي بدل ماركداون. الاتجاه
-RTL ولون النص مضبوطان أصلاً بشكل عام عبر ui.common.apply_rtl() و
-apply_theme_css() (تُستدعيان في بداية كل صفحة)، فلا حاجة لأي لفّ HTML
-إضافي هنا — راجع ai/prompt_builder.py::build_story للقواعد التي تجعل
-AI يُنتج هذه البنية فعلياً.
+🆕 هذا الإصدار (Chat UX — 5):
+------------------------------------------------------------------
+- كل الأسئلة في هذه الجلسة تُعرض كبطاقات متتالية (st.session_state
+  ["chat_thread"]) بدل استبدال آخر نتيجة فقط بكل سؤال جديد — تماماً
+  كسجل محادثة حقيقي يسهل الرجوع لأي سؤال سابق فيه بالتمرير لأعلى.
+- السؤال الكامل + الـ SQL المُنفَّذ داخل expander مطوي فوق الإجابة
+  مباشرة في كل بطاقة (بدل expander منفصل للـ SQL فقط كما كان سابقاً).
+- منطقة الكتابة بلا st.form هذه المرة عمداً: st.popover/st.button غير
+  مسموحين داخل st.form في Streamlit، وبما أن نوع النتيجة/الرسم أصبحا
+  داخل قائمة "⁝" منسدلة (popover)، لا بد أن تكون خارج أي form. مربع
+  النص (st.text_area) لا يُرسل تلقائياً بالضغط على Enter (فقط ينشئ
+  سطراً جديداً)، لذا لا خطر "إرسال عرضي" حتى بدون form — الإرسال
+  الوحيد الممكن يبقى الضغط الصريح على زر "▶️ إرسال". ميزة إضافية غير
+  مقصودة: قائمة "نوع الرسم" أصبحت تظهر فقط فعلياً عند اختيار "رسم
+  بياني" (كانت تظهر دائماً سابقاً بسبب قيود st.form).
+- 🆕 مرجع الأسئلة: st.popover أعلى الصفحة يسرد كل أسئلة الجلسة الحالية
+  + سجل المحادثة المحفوظ سابقاً (db.get_chat_history) — الضغط على أي
+  سؤال يعيد نصّه إلى مربع الكتابة مباشرة (لا يوجد Scroll-to-element
+  موثوق في Streamlit، فهذا أقرب سلوك عملي متاح: يمكن تعديل السؤال أو
+  إرساله كما هو من جديد).
+- 🆕 زر "🗑️ مسح تاريخ المحادثة" داخل نفس قائمة "⁝" — يمسح كلاً من بطاقات
+  الجلسة الحالية (session_state) وسجل project.db (db.clear_chat_history)
+  معاً، بتأكيد ثنائي الضغط (نفس نمط "danger_" المتّبع في بقية المشروع).
 
-🧹 تنظيف: بناء المحرك/AIManager من إعدادات المشروع كان يتكرر هنا يدوياً
-رغم وجود ai.ai_manager.build_ai_manager() الموحَّدة (تُستخدم فعلياً في
-ui/dashboards.py وcore/dashboard_cells/base.py) — استُبدل بالكامل
-باستدعاء build_ai_manager(db) دون أي تغيير في السلوك أو الإعدادات
-المُستخدَمة.
-
-🆕 بناء الرسم البياني (chart result_type):
-----------------------------------------------
-استُبدل بناء px.bar/line/area/scatter اليدوي هنا باستدعاء
-core.dashboard_cells.cells._build_chart_figure/_apply_chart_layout_tweaks
-— نفس الدالتين المستخدمتين فعلياً في خلايا لوحات المعلومات (ChartCell)،
-بدل تكرار نفس المنطق (ومشاكله: legend بعنوان "variable" وقيمة "y" عند
-عمود قيمة واحد بسبب دمج Plotly الداخلي، وعنوان محور رأسي "value" غير
-ضروري) في مكانين منفصلين. أي تحسين مستقبلي على شكل الرسم يكفي تطبيقه
-مرة واحدة في core/dashboard_cells/cells.py ليسري هنا تلقائياً.
-
-🆕 نموذج سؤال واحد (st.form) بدل حقول حرة:
-------------------------------------------------
-سؤال + نوع النتيجة + نوع الرسم + زر الإرسال أصبحوا كلهم داخل st.form
-واحد ("ask_form"):
-  • أي widget عادي (text_area/selectbox) خارج st.form في Streamlit
-    يُعيد تشغيل السكربت بالكامل فور تغييره — وهذا لا يسبب "إرسالاً"
-    فعلياً هنا لأن التنفيذ كان مربوطاً أصلاً بزر "▶️ إرسال" فقط، لكنه
-    كان يعيد رسم الصفحة بدون داعٍ عند كل تغيير في نوع النتيجة/الرسم.
-  • st.form يُجمّع كل تغييرات الحقول الداخلية (بما فيها الكتابة في
-    text_area) ولا يُرسل أي شيء للسيرفر حتى الضغط الصريح على
-    st.form_submit_button — هذا هو ما يمنع "الإرسال العرضي": الضغط
-    على Enter داخل text_area لا يُنشئ سطراً جديداً فقط (السلوك
-    الافتراضي لـ text_area نفسه، سواء كان داخل form أو خارجه) ولا
-    يُرسل النموذج بأي شكل؛ الإرسال الوحيد الممكن هو الضغط الصريح على
-    زر "▶️ إرسال" المعروض بجانب الحقل مباشرة.
-  • ملاحظة تقنية مهمة: widgets داخل st.form لا تُعيد تشغيل السكربت
-    عند تغييرها (فقط زر الإرسال يفعل ذلك) — لذلك لا يمكن إخفاء/إظهار
-    قائمة "نوع الرسم" ديناميكياً بناءً على اختيار "نوع النتيجة" داخل
-    نفس الـ form (تغيير selectbox الأول لن يُحدّث الواجهة فوراً).
-    لذلك نُبقي قائمة "نوع الرسم" ظاهرة دائماً في نفس الصف المضغوط،
-    مع توضيح أنها تُستخدم فقط عند اختيار "رسم بياني" — بدل إخفائها
-    بشكل غير موثوق.
+لا تغيير على أي من ai.ai_manager.AIManager.ask/tell_story ولا على
+core.query_engine — فقط طبقة العرض.
 """
 
 import uuid
@@ -61,6 +41,20 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from contextlib import contextmanager
+
+# 🆕 st.bottom في إصدارات Streamlit الحديثة كائن حاوية جاهز (proxy) —
+# يُستخدم مباشرة كـ context manager (`with st.bottom:` بدون استدعاء/
+# أقواس)، على عكس streamlit_extras.bottom_container.bottom() القديمة
+# التي هي دالة تُستدعى فترجع الحاوية (`with bottom():`). نوحّد الاثنين
+# هنا خلف نفس الواجهة (`with bottom():`) حتى لا يتغيّر باقي الكود.
+if hasattr(st, "bottom"):
+    @contextmanager
+    def bottom():
+        with st.bottom:
+            yield
+else:
+    from streamlit_extras.bottom_container import bottom
 
 from ui.common import (
     apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
@@ -76,6 +70,47 @@ _RESULT_TYPE_LABELS = {
     "kpi": "بطاقة مؤشر (KPI)", "story": "تحليل نصي (Story Telling)",
 }
 
+_QUESTION_BOX_KEY = "chat_question_box"
+_PREFILL_KEY = "_chat_question_prefill"
+_THREAD_KEY = "chat_thread"
+
+
+def _bottom_bar_css(settings: dict) -> str:
+    """
+    🆕 تلوين الشريط السفلي الثابت بألوان الثيم الحالي (بما فيه المخصص)
+    بدل خلفية Streamlit الافتراضية (بيضاء/رمادية ثابتة بغض النظر عن
+    الثيم) — st.bottom يبني حاوية خاصة به بخلفية مستقلة عن .stApp، فلا
+    تتأثر تلقائياً بألوان apply_theme_css العامة، لذا نضبطها هنا صراحة.
+    """
+    colors = get_theme_colors(settings)
+    card = colors["card"]
+    accent = colors["accent"]
+    return f"""
+    <style>
+        [data-testid="stBottom"] > div,
+        [data-testid="stBottomBlockContainer"] {{
+            background-color: {card} !important;
+            border-top: 1px solid {accent}55 !important;
+            padding-top: 0.4rem !important;
+            padding-bottom: 0.4rem !important;
+            gap: 0.3rem !important;
+        }}
+        [data-testid="stBottom"] [data-testid="stVerticalBlock"] {{
+            gap: 0.3rem !important;
+        }}
+        [data-testid="stBottom"] .stButton > button {{
+            padding-top: 0.25rem !important;
+            padding-bottom: 0.25rem !important;
+            min-height: 0 !important;
+        }}
+        [data-testid="stBottom"] [data-testid="stPopover"] > button {{
+            padding-top: 0.25rem !important;
+            padding-bottom: 0.25rem !important;
+            min-height: 0 !important;
+        }}
+    </style>
+    """
+
 
 def show_chat():
     apply_rtl()
@@ -84,6 +119,10 @@ def show_chat():
     settings = db.get_settings()
     apply_theme_css(settings.get("theme", "ocean_dark"))
     sidebar_header()
+    st.markdown(_bottom_bar_css(settings), unsafe_allow_html=True)
+
+    if _THREAD_KEY not in st.session_state:
+        st.session_state[_THREAD_KEY] = []
 
     st.title("💬 اسأل بياناتك")
 
@@ -96,151 +135,254 @@ def show_chat():
         notify("محرك AI غير معروف. راجع الإعدادات.", kind="error")
         return
 
-    # 🆕 نموذج واحد موحّد: منطقة الكتابة هي العنصر الأكبر بصرياً، وصف
-    # مضغوط أسفلها لـ "نوع النتيجة" + "نوع الرسم" + زر الإرسال — بدل
-    # عمود جانبي منفصل كان يُصغّر بصرياً مساحة السؤال. راجع الشرح في
-    # أعلى الملف حول سبب اختيار st.form هنا.
-    with st.form("ask_form", border=False):
-        question = st.text_area(
-            "اكتب سؤالك بالعربية أو الإنجليزية", height=110,
-            placeholder="مثال: ما إجمالي إنتاج الفالف الشهر الماضي؟",
-        )
-
-        row1, row2, row3 = st.columns([2, 2, 1.2])
-        with row1:
-            result_type = st.selectbox(
-                "نوع النتيجة", list(_RESULT_TYPE_LABELS.keys()),
-                format_func=lambda t: _RESULT_TYPE_LABELS.get(t, t),
-            )
-        with row2:
-            # ظاهرة دائماً (راجع الملاحظة التقنية أعلى الملف) — تُستخدَم
-            # فقط فعلياً عند اختيار "رسم بياني" في العمود المجاور.
-            chart_type = st.selectbox(
-                "نوع الرسم (عند اختيار رسم بياني)",
-                list(CHART_TYPES.keys()),
-                format_func=lambda t: CHART_TYPES[t],
-            )
-        with row3:
-            st.markdown("&nbsp;")  # محاذاة رأسية بسيطة مع الحقلين المجاورين
-            run_clicked = st.form_submit_button(
-                "▶️ إرسال", width='stretch', type="primary",
-            )
-
-    if run_clicked:
-        if not question.strip():
-            notify("الرجاء كتابة سؤال", kind="warning")
-        else:
-            spinner_msg = (
-                "جاري تحليل البيانات وكتابة التقرير..." if result_type == "story"
-                else "جاري التفكير..."
-            )
-            with st.spinner(spinner_msg):
-                if result_type == "story":
-                    result = ai.tell_story(question, ai_rules=settings.get("ai_rules"))
-                else:
-                    result = ai.ask(question, result_type=result_type, ai_rules=settings.get("ai_rules"))
-            st.session_state.last_result = result
-            st.session_state.last_result_type = result_type
-            st.session_state.last_chart_type = chart_type
-            st.session_state.last_question = question
-            chat_id = str(uuid.uuid4())
-            db.save_chat_result(
-                chat_id, question,
-                sql_query=result.get("sql"),
-                result_type=result_type,
-                result_data={"rows": result.get("rows")} if result["ok"] else None,
-                error=None if result["ok"] else result.get("error"),
-            )
-            if not result["ok"]:
-                notify(f"فشل الاستعلام: {result.get('error')}", kind="error")
-
-    result = st.session_state.get("last_result")
-    if result:
-        _render_result(
-            db, settings, result,
-            st.session_state.get("last_result_type", "table"),
-            st.session_state.get("last_chart_type", "bar"),
-        )
+    _render_question_reference(db)
 
     st.divider()
-    with st.expander("🕓 سجل المحادثة"):
-        history = db.get_chat_history(limit=20)
-        if not history:
-            st.caption("لا توجد محادثات سابقة بعد.")
+
+    # ── سجل الأسئلة/الإجابات (بطاقات متتالية) ──────────────────
+    thread = st.session_state[_THREAD_KEY]
+    if not thread:
+        st.caption("لا توجد أسئلة في هذه الجلسة بعد — اكتب سؤالك في الأسفل وابدأ.")
+    else:
+        for item in thread:
+            _render_qa_card(db, settings, item)
+
+    # ── منطقة الكتابة — مثبَّتة فعلياً أسفل الصفحة عبر
+    # streamlit_extras.bottom.bottom()، بدل الاعتماد على كونها آخر
+    # عنصر في تدفق الصفحة (الذي لا يُبقيها ظاهرة إن طال السجل أعلاها).
+    # يتطلب أن تكون حزمة streamlit-extras مضافة إلى requirements.txt.
+    with bottom():
+        _render_input_area(db, ai, settings)
+
+
+# ══════════════════════════════════════════════════════════════
+#  🆕 مرجع الأسئلة — popover يسرد أسئلة الجلسة + السجل المحفوظ
+# ══════════════════════════════════════════════════════════════
+
+def _render_question_reference(db) -> None:
+    has_popover = hasattr(st, "popover")
+    menu_ctx = (
+        st.popover("🕓 مرجع الأسئلة", width="stretch") if has_popover
+        else st.expander("🕓 مرجع الأسئلة", expanded=False)
+    )
+    with menu_ctx:
+        thread = st.session_state.get(_THREAD_KEY, [])
+        history = db.get_chat_history(limit=30)
+
+        seen = set()
+        entries = []
+        for item in reversed(thread):
+            q = item["question"].strip()
+            if q and q not in seen:
+                seen.add(q)
+                entries.append(q)
         for h in history:
-            _render_history_card(h, settings)
+            q = (h.get("question") or "").strip()
+            if q and q not in seen:
+                seen.add(q)
+                entries.append(q)
+
+        if not entries:
+            st.caption("لا توجد أسئلة سابقة بعد")
+            return
+
+        st.caption("اضغط على أي سؤال لإعادته إلى مربع الكتابة")
+        for i, q in enumerate(entries):
+            label = q if len(q) <= 60 else q[:60].rstrip() + "…"
+            if st.button(label, key=f"ref_q_{i}", width="stretch"):
+                st.session_state[_PREFILL_KEY] = q
+                st.rerun()
 
 
-def _render_history_card(h: dict, settings: dict) -> None:
+# ══════════════════════════════════════════════════════════════
+#  منطقة الكتابة — عمودان: مربع النص | (قائمة ⁝ + زر إرسال)
+# ══════════════════════════════════════════════════════════════
+
+def _render_input_area(db, ai, settings: dict) -> None:
+    # تطبيق أي سؤال مُختار من "مرجع الأسئلة" قبل رسم مربع النص
+    if _PREFILL_KEY in st.session_state:
+        st.session_state[_QUESTION_BOX_KEY] = st.session_state.pop(_PREFILL_KEY)
+
+    # قيم افتراضية لأول تشغيل
+    st.session_state.setdefault("_chat_result_type", "table")
+    st.session_state.setdefault("_chat_chart_type", "bar")
+
+    try:
+        col_text, col_side = st.columns([5, 1.3], vertical_alignment="bottom")
+    except TypeError:
+        # إصدار Streamlit أقدم لا يدعم vertical_alignment بعد
+        col_text, col_side = st.columns([5, 1.3])
+
+    with col_text:
+        question = st.text_area(
+            "اكتب سؤالك بالعربية أو الإنجليزية", height=68,
+            placeholder="مثال: ما إجمالي إنتاج الفالف الشهر الماضي؟",
+            key=_QUESTION_BOX_KEY, label_visibility="collapsed",
+        )
+
+    with col_side:
+        _render_options_popover(db)
+        run_clicked = st.button("▶️ إرسال", type="primary", width="stretch")
+
+    if run_clicked:
+        _handle_submit(db, ai, settings, question)
+
+
+def _render_options_popover(db) -> None:
     """
-    عنصر واحد من سجل المحادثة بنمط "بطاقة" موحّد: عنوان مطوٍ يجمع
-    حالة النجاح/الفشل + نص السؤال، وبداخله SQL (مطوي فرعياً عبر
-    st.code) والتاريخ — بدل الخط الأفقي المتكرر (st.markdown("---"))
-    الذي كان يفصل العناصر سابقاً دون أي تجميع بصري حقيقي بينها.
+    قائمة "⁝" منسدلة: نوع النتيجة، نوع الرسم (فقط عند اختيار "رسم
+    بياني")، ثم زر مسح تاريخ المحادثة. القيم المُختارة تُخزَّن في
+    session_state مباشرة (بدون form) فتُقرأ وقت الإرسال.
     """
-    status_icon = "✅" if not h.get("error") else "❌"
-    title = h["question"].strip()
-    if len(title) > 70:
-        title = title[:70].rstrip() + "…"
+    has_popover = hasattr(st, "popover")
+    ctx = (
+        st.popover("⁝ خيارات", width="stretch") if has_popover
+        else st.expander("⁝ خيارات", expanded=False)
+    )
+    with ctx:
+        result_type = st.selectbox(
+            "نوع النتيجة", list(_RESULT_TYPE_LABELS.keys()),
+            format_func=lambda t: _RESULT_TYPE_LABELS.get(t, t),
+            key="_chat_result_type",
+        )
+        if result_type == "chart":
+            st.selectbox(
+                "نوع الرسم", list(CHART_TYPES.keys()),
+                format_func=lambda t: CHART_TYPES[t],
+                key="_chat_chart_type",
+            )
+
+        st.divider()
+        _render_clear_history_button(db)
+
+
+def _render_clear_history_button(db) -> None:
+    confirm_key = "confirm_clear_chat_history"
+    if st.session_state.get(confirm_key):
+        st.caption("⚠️ سيُحذف كل سجل المحادثة نهائياً.")
+        if st.button("⚠️ تأكيد المسح", key="danger_confirm_clear_chat", width="stretch"):
+            db.clear_chat_history()
+            st.session_state[_THREAD_KEY] = []
+            st.session_state.pop(confirm_key, None)
+            notify("تم مسح تاريخ المحادثة", kind="success")
+            st.rerun()
+        if st.button("إلغاء", key="cancel_clear_chat", width="stretch"):
+            st.session_state.pop(confirm_key, None)
+            st.rerun()
+    else:
+        if st.button("🗑️ مسح تاريخ المحادثة", key="danger_clear_chat", width="stretch"):
+            st.session_state[confirm_key] = True
+            st.rerun()
+
+
+def _handle_submit(db, ai, settings: dict, question: str) -> None:
+    if not question.strip():
+        notify("الرجاء كتابة سؤال", kind="warning")
+        return
+
+    result_type = st.session_state.get("_chat_result_type", "table")
+    chart_type = st.session_state.get("_chat_chart_type", "bar")
+
+    spinner_msg = (
+        "جاري تحليل البيانات وكتابة التقرير..." if result_type == "story"
+        else "جاري التفكير..."
+    )
+    with st.spinner(spinner_msg):
+        if result_type == "story":
+            result = ai.tell_story(question, ai_rules=settings.get("ai_rules"))
+        else:
+            result = ai.ask(question, result_type=result_type, ai_rules=settings.get("ai_rules"))
+
+    chat_id = str(uuid.uuid4())
+    db.save_chat_result(
+        chat_id, question,
+        sql_query=result.get("sql"),
+        result_type=result_type,
+        result_data={"rows": result.get("rows")} if result["ok"] else None,
+        error=None if result["ok"] else result.get("error"),
+    )
+
+    st.session_state[_THREAD_KEY].append({
+        "id": chat_id,
+        "question": question.strip(),
+        "result_type": result_type,
+        "chart_type": chart_type,
+        "result": result,
+    })
+
+    if not result["ok"]:
+        notify(f"فشل الاستعلام: {result.get('error')}", kind="error")
+
+    # تفريغ مربع الكتابة بعد الإرسال — نمسح القيمة قبل rerun التالي
+    st.session_state.pop(_QUESTION_BOX_KEY, None)
+    st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════
+#  بطاقة سؤال/إجابة واحدة
+# ══════════════════════════════════════════════════════════════
+
+def _render_qa_card(db, settings: dict, item: dict) -> None:
+    result = item["result"]
+    result_type = item["result_type"]
+    chart_type = item.get("chart_type", "bar")
+    status_icon = "✅" if result.get("ok") else "❌"
+
+    title = item["question"]
+    if len(title) > 90:
+        title = title[:90].rstrip() + "…"
 
     with st.container(border=True):
         st.markdown(f"{status_icon} **{title}**")
-        if h.get("sql_query"):
-            with st.expander("💻 SQL", expanded=False):
-                st.code(h["sql_query"], language="sql")
-        if h.get("error"):
-            st.caption(f"⚠️ خطأ: {h['error']}")
-        st.caption(format_local_dt(h["created_at"], settings))
 
-
-def _render_result(db, settings, result: dict, result_type: str, chart_type: str = "bar"):
-    if not result["ok"]:
-        if result.get("sql"):
-            with st.expander("SQL الأخير"):
+        with st.expander("💻 السؤال وSQL", expanded=False):
+            st.markdown(f"**السؤال الكامل:**\n\n{item['question']}")
+            if result.get("sql"):
                 st.code(result["sql"], language="sql")
-        return
+            elif not result.get("ok"):
+                st.caption("لم يُولَّد SQL قبل حدوث الخطأ")
 
-    with st.expander("💻 SQL المُنفذ", expanded=False):
-        st.code(result["sql"], language="sql")
-    st.caption(f"عدد المحاولات: {result['tries']} | عدد الصفوف: {result['rows']}")
+        if not result.get("ok"):
+            st.error(f"فشل الاستعلام: {result.get('error')}")
+        else:
+            st.caption(f"عدد المحاولات: {result.get('tries')} | عدد الصفوف: {result.get('rows')}")
+            if result.get("auto_fixes"):
+                fixes_text = "، ".join(f"«{f['from']}» → «{f['to']}»" for f in result["auto_fixes"])
+                st.caption(f"✏️ تم تصحيح اسم عمود تلقائياً: {fixes_text}")
 
-    if result.get("auto_fixes"):
-        fixes_text = "، ".join(f"«{f['from']}» → «{f['to']}»" for f in result["auto_fixes"])
-        st.caption(f"✏️ تم تصحيح اسم عمود تلقائياً: {fixes_text}")
+            _render_answer_body(settings, result, result_type, chart_type, key_prefix=item["id"])
 
-    df: pd.DataFrame = result["df"]
+        st.divider()
+        _render_send_to_report_form(db, item)
+
+
+def _render_answer_body(settings, result: dict, result_type: str, chart_type: str, key_prefix: str) -> None:
+    df: pd.DataFrame = result.get("df")
     chart_theme = get_chart_theme(settings)
 
     if result_type == "table":
         render_themed_table(df, settings)
 
     elif result_type == "chart":
-        if df.shape[1] < 2:
+        if df is None or df.shape[1] < 2:
             st.caption("النتيجة لا تحتوي أعمدة كافية لرسم بياني")
-            render_themed_table(df, settings)
+            if df is not None:
+                render_themed_table(df, settings)
         else:
             x_col = df.columns[0]
             y_cols = list(df.columns[1:3])
             try:
-                # 🆕 بناء الرسم عبر الدالة المشتركة — تتولى تمرير اسم
-                # العمود مباشرة (وليس كقائمة من عنصر واحد) عند وجود
-                # عمود قيمة واحد فقط، فيختفي legend الزائد بعنوان عام
-                # "variable" وقيمة "y" تلقائياً بدل ظهوره بلا فائدة.
                 fig = _build_chart_figure(df, x_col, y_cols, chart_type)
                 fig.update_layout(margin=dict(l=10, r=10, t=30, b=10))
-                # legend أعلى الرسم أفقياً (عند وجود عمودي قيمة أو أكثر)
-                # وإخفاء عنوان المحور الرأسي لتوفير مساحة العرض.
                 _apply_chart_layout_tweaks(fig, chart_type)
-                # 🆕 يفرض ألوان الثيم فعلياً على الأعمدة/الخطوط/الشرائح
-                # (وليس فقط الخلفية والنص) — راجع ui/common.py للتفاصيل.
                 apply_plotly_theme(fig, settings)
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, width="stretch", key=f"chart_{key_prefix}")
             except Exception as e:
                 st.error(f"تعذر رسم البيانات بنوع «{chart_type}»: {e}")
-                st.dataframe(df, width='stretch', hide_index=True)
+                st.dataframe(df, width="stretch", hide_index=True)
 
     elif result_type == "gauge":
-        row = df.iloc[0].to_dict() if not df.empty else {}
+        row = df.iloc[0].to_dict() if df is not None and not df.empty else {}
         current = row.get("current_value", 0)
         mn = row.get("min_value", 0)
         mx = row.get("max_value", 100)
@@ -251,28 +393,18 @@ def _render_result(db, settings, result: dict, result_type: str, chart_type: str
                 "axis": {"range": [mn, mx], "tickfont": {"color": chart_theme["font_color"]}},
             },
         ))
-        # 🆕 apply_plotly_theme تضبط شريط الـ Gauge نفسه بلون التمييز
-        # (accent) الخاص بالثيم الحالي بدل تركه بلون افتراضي ثابت.
         apply_plotly_theme(fig, settings)
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, width="stretch", key=f"gauge_{key_prefix}")
 
     elif result_type == "kpi":
-        row = df.iloc[0].to_dict() if not df.empty else {}
+        row = df.iloc[0].to_dict() if df is not None and not df.empty else {}
         actual = row.get("actual_value", 0)
         target = row.get("target_value", 0)
-        delta = actual - target
-        st.metric("القيمة", actual, delta=round(delta, 2) if isinstance(delta, (int, float)) else None)
+        delta = actual - target if isinstance(actual, (int, float)) and isinstance(target, (int, float)) else None
+        st.metric("القيمة", actual, delta=round(delta, 2) if delta is not None else None)
         st.caption(f"الهدف: {target}")
 
     elif result_type == "story":
-        # 🆕 وُحِّد الترتيب والشكل هنا مع core/dashboard_cells/cells.py::
-        # StoryCell.render_result بالضبط: النص التحليلي أولاً عبر
-        # st.markdown مباشرة، ثم استعلامات البيانات المُستخدَمة مجمّعة
-        # داخل expander واحد بعنوان "📊 البيانات المستخدمة" (بدل
-        # expander منفصل لكل استعلام كما كان سابقاً هنا) — نفس البنية
-        # البصرية تماماً في المكانين، بلا أي CSS إضافي محيط بها لأن
-        # apply_rtl()/apply_theme_css() تُطبَّقان عاماً على .stMarkdown
-        # وعلى الـ expander في كل الصفحات.
         story_text = result.get("story", "")
         st.markdown(story_text)
 
@@ -287,22 +419,36 @@ def _render_result(db, settings, result: dict, result_type: str, chart_type: str
                         st.caption(f"⚠️ فشل هذا الاستعلام: {q.get('error')}")
                     st.divider()
 
-    st.divider()
-    # 🆕 نموذج الإرسال للتقرير: كان أصلاً st.form (سلوك آمن بالفعل) —
-    # الضغط على Enter داخل حقل "عنوان/تسمية" لا يُرسل النموذج تلقائياً
-    # لأن أي widget نصي داخل st.form لا يُطلق submit عبر Enter، الإرسال
-    # الوحيد هو الضغط الصريح على زر "إرسال" (st.form_submit_button)،
-    # وعندها تُقرأ كل الحقول (بما فيها اختيار التقرير) معاً دفعة واحدة
-    # فلا يوجد احتمال إرسال بيانات ناقصة بسبب ترتيب أحداث غير متزامن.
-    with st.form("send_to_report_form"):
+
+# ══════════════════════════════════════════════════════════════
+#  إرسال إلى تقرير — نموذج (form) مستقل لكل بطاقة
+# ══════════════════════════════════════════════════════════════
+
+def _render_send_to_report_form(db, item: dict) -> None:
+    result = item["result"]
+    if not result.get("ok"):
+        return
+
+    result_type = item["result_type"]
+    chart_type = item.get("chart_type", "bar")
+    df = result.get("df")
+
+    reports = db.get_reports()
+    key_base = item["id"]
+
+    with st.form(f"send_to_report_form_{key_base}"):
         st.markdown("**📤 إرسال إلى تقرير**")
-        reports = db.get_reports()
         report_options = {r["title"]: r["id"] for r in reports}
-        report_choice = st.selectbox("اختر تقريراً", list(report_options.keys()) or ["لا يوجد تقارير"])
-        label = st.text_input("عنوان/تسمية (لـ KPI أو Gauge)", value="")
+        report_choice = st.selectbox(
+            "اختر تقريراً", list(report_options.keys()) or ["لا يوجد تقارير"],
+            key=f"report_choice_{key_base}",
+        )
+        label = st.text_input("عنوان/تسمية (لـ KPI أو Gauge)", value="", key=f"report_label_{key_base}")
         include_data_table = False
         if result_type == "story":
-            include_data_table = st.checkbox("إرفاق جدول البيانات مع التحليل النصي", value=False)
+            include_data_table = st.checkbox(
+                "إرفاق جدول البيانات مع التحليل النصي", value=False, key=f"report_incl_{key_base}",
+            )
         submitted = st.form_submit_button("إرسال")
         if submitted:
             if not reports:
