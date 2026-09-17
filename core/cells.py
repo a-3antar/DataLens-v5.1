@@ -38,9 +38,20 @@ ui.common.apply_rtl()/apply_theme_css() فلا حاجة لأي HTML إضافي �
 فقط عند وجود عمودين. بالإضافة لذلك: legend يُنقَل أفقياً أعلى الرسم
 (بدل يمينه/أسفله)، وعنوان المحور الرأسي (كان "value" افتراضياً من
 Plotly) يُخفى تماماً لتوفير مساحة العرض.
+
+🆕 حماية GaugeCell من قيم غير رقمية:
+------------------------------------------
+لاحظنا فعلياً انهيار الصفحة بالكامل (ValueError من Plotly) عندما
+يُرجع AI عن طريق الخطأ عموداً غير رقمي (مثل تاريخ) كـ current_value/
+min_value/max_value — Plotly go.Indicator يرمي استثناءً صريحاً بدل
+تجاهل القيمة بصمت، لأن gauge.axis.range يقبل أرقاماً فقط. الحل:
+GaugeCell._to_number() تُحوّل كل قيمة بأمان (تدعم أرقاماً كنص أيضاً،
+مثل "1,234" القادمة أحياناً من AI)، ولو تعذّر التحويل نعرض رسالة خطأ
+واضحة للمستخدم بدل ترك الاستثناء يصعد حتى main.py ويُسقط الصفحة.
 """
 
 import json
+import uuid
 
 import streamlit as st
 import pandas as pd
@@ -104,6 +115,14 @@ class TableCell(DashboardCellBase):
 
     def to_stored_dict(self, raw_result: dict) -> dict:
         return self._base_stored_dict(raw_result)
+
+    def send_to_report(self, rm, report_id, label, include_data=False):
+        if not self.last_result:
+            return {"ok": False, "error": "لا توجد نتيجة لإرسالها"}
+        return rm.add_table(
+            report_id, str(uuid.uuid4()),
+            self.last_result.get("rows", []), self.last_result.get("columns", []),
+        )
 
     def render_result(self, settings: dict, dashboard_id: str) -> None:
         if self._render_error_or_empty():
@@ -181,6 +200,21 @@ class ChartCell(DashboardCellBase):
         stored["chart_type"] = self.chart_type or "bar"
         return stored
 
+    def send_to_report(self, rm, report_id, label, include_data=False):
+        if not self.last_result:
+            return {"ok": False, "error": "لا توجد نتيجة لإرسالها"}
+        columns = self.last_result.get("columns", [])
+        if len(columns) < 2:
+            return {"ok": False, "error": "لا توجد بيانات كافية لإرسال الرسم"}
+        x_col = columns[0]
+        y_cols = columns[1:3]
+        return rm.add_chart(
+            report_id, str(uuid.uuid4()),
+            self.last_result.get("chart_type", "bar"),
+            self.last_result.get("rows", []), x_col, y_cols,
+            title=label or self.title or "",
+        )
+        
     def render_type_specific_fields(self, dashboard_id: str) -> dict:
         ctype_options = list(CHART_TYPES.keys())
         cur_ctype = self.chart_type or "bar"
@@ -225,6 +259,13 @@ class GaugeCell(DashboardCellBase):
     """
     خلية "مقياس" (Gauge) — تُعرض عبر go.Indicator، وشريط التقدم يأخذ
     لون التمييز (accent) الخاص بالثيم فعلياً عبر ui.common.apply_plotly_theme.
+
+    🆕 القيم الثلاث (current_value/min_value/max_value) قد تصل من AI
+    غير رقمية فعلياً (اختيار عمود خاطئ يُرجع تاريخاً أو نصاً بدل رقم)
+    — Plotly يرمي ValueError صريحاً في هذه الحالة بدل تجاهلها بصمت،
+    مما كان يُسقط الصفحة بالكامل. _to_number() تُحوّل كل قيمة بأمان
+    (تقبل أرقاماً كنص، بما فيها بفاصلة آلاف مثل "1,234")، ولو تعذّر
+    ذلك يُعرض خطأ واضح بدل الانهيار (راجع render_result أدناه).
     """
 
     display_type = "gauge"
@@ -233,15 +274,60 @@ class GaugeCell(DashboardCellBase):
     def to_stored_dict(self, raw_result: dict) -> dict:
         return self._base_stored_dict(raw_result)
 
+    def send_to_report(self, rm, report_id, label, include_data=False):
+        if not self.last_result:
+            return {"ok": False, "error": "لا توجد نتيجة لإرسالها"}
+        rows = self.last_result.get("rows", [])
+        row = rows[0] if rows else {}
+        return rm.add_gauge(
+            report_id, str(uuid.uuid4()),
+            current_value=row.get("current_value", 0),
+            min_value=row.get("min_value", 0),
+            max_value=row.get("max_value", 100),
+            label=label or self.title or "",
+        )
+
+    @staticmethod
+    def _to_number(value):
+        """
+        تحويل آمن لأي قيمة قادمة من نتيجة AI إلى float، يقبل الأرقام
+        الفعلية مباشرة، والنصوص الرقمية (بما فيها فاصلة آلاف "1,234")،
+        ويرجع None لأي قيمة لا يمكن تفسيرها كرقم فعلياً (تاريخ، نص حر،
+        None...) بدل رمي استثناء يُسقط الصفحة بالكامل.
+        """
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            return float(str(value).replace(",", "").strip())
+        except (TypeError, ValueError):
+            return None
+
     def render_result(self, settings: dict, dashboard_id: str) -> None:
         if self._render_error_or_empty():
             return
 
         df = pd.DataFrame(self.last_result.get("rows", []))
         row = df.iloc[0].to_dict() if not df.empty else {}
-        current = row.get("current_value", 0)
-        mn = row.get("min_value", 0)
-        mx = row.get("max_value", 100)
+
+        # 🆕 تحويل آمن قبل تمرير القيم لـ Plotly — راجع توثيق الكلاس
+        # أعلاه وGaugeCell._to_number للتفاصيل الكاملة عن سبب الحاجة
+        # لهذا التحويل تحديداً هنا (وليس في طبقة التخزين، حتى تبقى
+        # القيمة الخام كما أرجعها AI محفوظة في project.db دون تعديل).
+        current = self._to_number(row.get("current_value", 0))
+        mn = self._to_number(row.get("min_value", 0))
+        mx = self._to_number(row.get("max_value", 100))
+
+        if current is None or mn is None or mx is None:
+            st.error(
+                "تعذر عرض المقياس: القيم المُرجَعة من السؤال غير رقمية "
+                "(تأكد أن السؤال يطلب رقماً محدداً وليس تاريخاً أو نصاً)."
+            )
+            self._render_updated_caption(settings)
+            return
 
         chart_theme = get_chart_theme(settings)
         fig = go.Figure(go.Indicator(
@@ -270,6 +356,18 @@ class KpiCell(DashboardCellBase):
 
     def to_stored_dict(self, raw_result: dict) -> dict:
         return self._base_stored_dict(raw_result)
+
+    def send_to_report(self, rm, report_id, label, include_data=False):
+        if not self.last_result:
+            return {"ok": False, "error": "لا توجد نتيجة لإرسالها"}
+        rows = self.last_result.get("rows", [])
+        row = rows[0] if rows else {}
+        return rm.add_kpi(
+            report_id, str(uuid.uuid4()),
+            actual_value=row.get("actual_value", 0),
+            target_value=row.get("target_value", 0),
+            label=label or self.title or "",
+        )
 
     def render_result(self, settings: dict, dashboard_id: str) -> None:
         if self._render_error_or_empty():
@@ -343,6 +441,19 @@ class StoryCell(DashboardCellBase):
             "story": raw_result.get("story", ""),
             "queries": queries,
         }
+
+    def send_to_report(self, rm, report_id, label, include_data=False):
+        if not self.last_result:
+            return {"ok": False, "error": "لا توجد نتيجة لإرسالها"}
+        text = self.last_result.get("story", "")
+        if label:
+            text = f"## {label}\n\n{text}"
+        result = rm.add_paragraph(report_id, text)
+        if result["ok"] and include_data:
+            for q in self.last_result.get("queries", []):
+                if q.get("ok") and q.get("rows"):
+                    rm.add_table(report_id, str(uuid.uuid4()), q["rows"], q.get("columns", []))
+        return result
 
     def render_result(self, settings: dict, dashboard_id: str) -> None:
         if self._render_error_or_empty():

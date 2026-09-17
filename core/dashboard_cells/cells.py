@@ -38,6 +38,16 @@ ui.common.apply_rtl()/apply_theme_css() فلا حاجة لأي HTML إضافي �
 فقط عند وجود عمودين. بالإضافة لذلك: legend يُنقَل أفقياً أعلى الرسم
 (بدل يمينه/أسفله)، وعنوان المحور الرأسي (كان "value" افتراضياً من
 Plotly) يُخفى تماماً لتوفير مساحة العرض.
+
+🆕 حماية GaugeCell من قيم غير رقمية:
+------------------------------------------
+لاحظنا فعلياً انهيار الصفحة بالكامل (ValueError من Plotly) عندما
+يُرجع AI عن طريق الخطأ عموداً غير رقمي (مثل تاريخ) كـ current_value/
+min_value/max_value — Plotly go.Indicator يرمي استثناءً صريحاً بدل
+تجاهل القيمة بصمت، لأن gauge.axis.range يقبل أرقاماً فقط. الحل:
+GaugeCell._to_number() تُحوّل كل قيمة بأمان (تدعم أرقاماً كنص أيضاً،
+مثل "1,234" القادمة أحياناً من AI)، ولو تعذّر التحويل نعرض رسالة خطأ
+واضحة للمستخدم بدل ترك الاستثناء يصعد حتى main.py ويُسقط الصفحة.
 """
 
 import json
@@ -249,6 +259,13 @@ class GaugeCell(DashboardCellBase):
     """
     خلية "مقياس" (Gauge) — تُعرض عبر go.Indicator، وشريط التقدم يأخذ
     لون التمييز (accent) الخاص بالثيم فعلياً عبر ui.common.apply_plotly_theme.
+
+    🆕 القيم الثلاث (current_value/min_value/max_value) قد تصل من AI
+    غير رقمية فعلياً (اختيار عمود خاطئ يُرجع تاريخاً أو نصاً بدل رقم)
+    — Plotly يرمي ValueError صريحاً في هذه الحالة بدل تجاهلها بصمت،
+    مما كان يُسقط الصفحة بالكامل. _to_number() تُحوّل كل قيمة بأمان
+    (تقبل أرقاماً كنص، بما فيها بفاصلة آلاف مثل "1,234")، ولو تعذّر
+    ذلك يُعرض خطأ واضح بدل الانهيار (راجع render_result أدناه).
     """
 
     display_type = "gauge"
@@ -270,6 +287,24 @@ class GaugeCell(DashboardCellBase):
             label=label or self.title or "",
         )
 
+    @staticmethod
+    def _to_number(value):
+        """
+        تحويل آمن لأي قيمة قادمة من نتيجة AI إلى float، يقبل الأرقام
+        الفعلية مباشرة، والنصوص الرقمية (بما فيها فاصلة آلاف "1,234")،
+        ويرجع None لأي قيمة لا يمكن تفسيرها كرقم فعلياً (تاريخ، نص حر،
+        None...) بدل رمي استثناء يُسقط الصفحة بالكامل.
+        """
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            return float(str(value).replace(",", "").strip())
+        except (TypeError, ValueError):
+            return None
 
     def render_result(self, settings: dict, dashboard_id: str) -> None:
         if self._render_error_or_empty():
@@ -277,9 +312,22 @@ class GaugeCell(DashboardCellBase):
 
         df = pd.DataFrame(self.last_result.get("rows", []))
         row = df.iloc[0].to_dict() if not df.empty else {}
-        current = row.get("current_value", 0)
-        mn = row.get("min_value", 0)
-        mx = row.get("max_value", 100)
+
+        # 🆕 تحويل آمن قبل تمرير القيم لـ Plotly — راجع توثيق الكلاس
+        # أعلاه وGaugeCell._to_number للتفاصيل الكاملة عن سبب الحاجة
+        # لهذا التحويل تحديداً هنا (وليس في طبقة التخزين، حتى تبقى
+        # القيمة الخام كما أرجعها AI محفوظة في project.db دون تعديل).
+        current = self._to_number(row.get("current_value", 0))
+        mn = self._to_number(row.get("min_value", 0))
+        mx = self._to_number(row.get("max_value", 100))
+
+        if current is None or mn is None or mx is None:
+            st.error(
+                "تعذر عرض المقياس: القيم المُرجَعة من السؤال غير رقمية "
+                "(تأكد أن السؤال يطلب رقماً محدداً وليس تاريخاً أو نصاً)."
+            )
+            self._render_updated_caption(settings)
+            return
 
         chart_theme = get_chart_theme(settings)
         fig = go.Figure(go.Indicator(
