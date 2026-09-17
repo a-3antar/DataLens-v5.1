@@ -384,7 +384,13 @@ def _render_answer_body(settings, result: dict, result_type: str, chart_type: st
     chart_theme = get_chart_theme(settings)
 
     if result_type == "table":
-        render_themed_table(df, settings)
+        # 🆕 احتياط: result.get("df") قد يعود list[dict] وليس DataFrame
+        # جاهزاً في بعض حالات ai.ask() — render_themed_table تتوقع
+        # DataFrame حصراً (تستدعي .empty/.columns/.iterrows)، وبدون هذا
+        # التحويل كان أي شكل غير DataFrame يُسقط الجدول المُنسَّق ويظهر
+        # بدلاً منه كنص/خطأ خام بدل جدول HTML مُلوَّن بالثيم.
+        table_df = df if isinstance(df, pd.DataFrame) else pd.DataFrame(df or [])
+        render_themed_table(table_df, settings)
 
     elif result_type == "chart":
         if df is None or df.shape[1] < 2:
