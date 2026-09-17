@@ -282,6 +282,12 @@ _REQUIRED_COLOR_KEYS = ("primary", "accent", "bg", "text", "card")
 _DANGER_COLOR = "#DC2626"
 _DANGER_COLOR_HOVER = "#B91C1C"
 
+# 🆕 لون نجاح ثابت (نفس فلسفة _DANGER_COLOR أعلاه) — يُستخدم لتمييز
+# حالة "نجاح" بصرياً في مؤشرات مصغّرة (مثل حالة كل بطاقة سؤال/إجابة
+# في ui/chat.py) بلون واضح بغض النظر عن الثيم النشط، بدل الاعتماد على
+# شكل الرمز فقط (✓ مقابل !) الذي لا يكفي وحده للتمييز السريع بصرياً.
+_SUCCESS_COLOR = "#16A34A"
+
 
 def apply_rtl():
     st.markdown(RTL_CSS, unsafe_allow_html=True)
@@ -1384,23 +1390,31 @@ def chat_ui_css(settings: dict) -> str:
             margin: 0 0 1rem 0;
         }}
         .chat-user-bubble {{
-            max-width: min(78%, 760px);
-            padding: 0.78rem 1rem;
-            border-radius: 1.05rem 1.05rem 0.3rem 1.05rem;
+            width: fit-content;
+            max-width: min(60%, 480px);
+            padding: 0.35rem 0.7rem;
+            border-radius: 0.85rem 0.85rem 0.3rem 0.85rem;
             background: {primary}18;
             border: 1px solid {primary}35;
             color: {text};
             font-size: 0.98rem;
-            line-height: 1.8;
+            line-height: 1.5;
             white-space: pre-wrap;
             overflow-wrap: anywhere;
+            /* عرض 3 أسطر كحد أقصى — نص أطول يُقتَطع بـ "..." بدل تمدد
+            البطاقة إلى ارتفاع كبير؛ النص الكامل متاح دوماً داخل
+            "السؤال وSQL" أسفل البطاقة */
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
         }}
         .chat-user-label {{
-            display: block;
+            display: inline;
             color: {accent};
-            font-size: 0.73rem;
+            font-size: 0.68rem;
             font-weight: 700;
-            margin-bottom: 0.2rem;
+            margin-inline-end: 0.4rem;
             opacity: 0.9;
         }}
 
@@ -1428,6 +1442,17 @@ def chat_ui_css(settings: dict) -> str:
         }}
         [class*="st-key-chat_item_"] .stCaption {{
             font-size: 0.76rem !important;
+        }}
+        /* 🆕 حالة كل بطاقة (نجاح/فشل) — لون ثابت بغض النظر عن الثيم
+           (نفس فلسفة _DANGER_COLOR)، لأن الرمز وحده (✓ مقابل !) لا
+           يكفي للتمييز البصري السريع عند تصفّح سجل طويل. */
+        .chat-status-ok {{
+            color: {_SUCCESS_COLOR};
+            font-weight: 600;
+        }}
+        .chat-status-fail {{
+            color: {_DANGER_COLOR};
+            font-weight: 600;
         }}
 
         /* معلومات التنفيذ تكون هادئة وليست جزءاً من مركز الإجابة */
@@ -1476,6 +1501,11 @@ def chat_ui_css(settings: dict) -> str:
             min-width: 92px;
             box-shadow: 0 5px 16px {primary}35;
         }}
+        /* ⚠️ [data-testid="stBottom"]/"stBottomBlockContainer"، مثل
+           متغيرات --gdg-* أعلاه في apply_theme_css، عناصر داخلية غير
+           موثّقة رسمياً من Streamlit وقد تتغيّر أسماؤها بين الإصدارات
+           المستقبلية — أفضل حل عملي متاح حالياً لتنسيق شريط الكتابة
+           الثابت أسفل الصفحة (st.bottom). */
         [data-testid="stBottom"] > div,
         [data-testid="stBottomBlockContainer"] {{
             background: {bg}EE !important;
@@ -1501,7 +1531,7 @@ def chat_ui_css(settings: dict) -> str:
         @media (max-width: 768px) {{
             .chat-page-title {{ font-size: 1.35rem; }}
             .chat-page-subtitle {{ margin-right: 0; margin-left: 0; }}
-            .chat-user-bubble {{ max-width: 92%; }}
+            .chat-user-bubble {{ max-width: 85%; }}
             [class*="st-key-chat_composer"] {{ border-radius: 1rem !important; }}
         }}
     </style>

@@ -32,7 +32,6 @@ st.session_state["_jump_to_page"] (تُقرأ من main.py عبر _JUMP_TARGETS)
 """
 
 from ai import prompt_builder
-from ai import prompt_builder
 from datetime import datetime
 from pathlib import Path
 import tempfile
@@ -210,7 +209,6 @@ def _render_project_actions_menu(pm, p: dict):
     """محتوى قائمة "⁝": تصدير / إعادة تسمية / حذف — مجمّعة بدل أزرار متجاورة."""
     pid = p["project_id"]
 
-    
     st.divider()
 
     st.markdown("**إعادة تسمية**")
@@ -231,7 +229,6 @@ def _render_project_actions_menu(pm, p: dict):
             else:
                 st.error(r["error"])
 
-
     if st.button("⬇️ تصدير المشروع", key=f"export_{pid}", width="stretch"):
         with temp_export_dir() as out_dir:
             out_path = out_dir / f"{p['name']}.db"
@@ -243,7 +240,6 @@ def _render_project_actions_menu(pm, p: dict):
                 )
             else:
                 st.error(r["error"])
-
 
     confirm_key = f"confirm_delete_{pid}"
     if st.session_state.get(confirm_key):

@@ -37,6 +37,7 @@ core.query_engine — فقط طبقة العرض.
 
 import uuid
 import html
+import hashlib
 
 import streamlit as st
 import pandas as pd
@@ -94,7 +95,7 @@ def show_chat():
     st.markdown(
         """
         <div class="chat-page-header">
-            <div class="chat-page-title"><span class="chat-logo">✦</span><span>اسأل بياناتك</span></div>
+            <div class="chat-page-title"><span class="chat-logo">✨</span><span>اسأل بياناتك</span></div>
             <div class="chat-page-subtitle">اسأل بيانات مشروعك بلغة طبيعية واحصل على إجابة مدعومة بالبيانات.</div>
         </div>
         """,
@@ -118,7 +119,7 @@ def show_chat():
         st.markdown(
             """
             <div style="text-align:center; padding:4rem 1rem 7rem 1rem; opacity:.72;">
-                <div style="font-size:2rem; margin-bottom:.5rem;">✦</div>
+                <div style="font-size:2rem; margin-bottom:.5rem;">✨</div>
                 <div style="font-size:1.05rem; font-weight:650;">ابدأ بسؤال عن بياناتك</div>
                 <div style="font-size:.88rem; margin-top:.35rem;">مثال: ما إجمالي الإنتاج لكل شهر خلال هذا العام؟</div>
             </div>
@@ -150,7 +151,6 @@ def _render_question_reference(db) -> None:
         )
         with menu_ctx:
             thread = st.session_state.get(_THREAD_KEY, [])
-            history = db.get_chat_history(limit=30)
 
             seen = set()
             entries = []
@@ -159,20 +159,32 @@ def _render_question_reference(db) -> None:
                 if q and q not in seen:
                     seen.add(q)
                     entries.append(q)
-            for h in history:
-                q = (h.get("question") or "").strip()
-                if q and q not in seen:
-                    seen.add(q)
-                    entries.append(q)
+
+            # 🆕 تفادي استعلام db.get_chat_history (يُنفَّذ في كل rerun
+            # لأن محتوى popover يُبنى دائماً بغض النظر عن كونه مفتوحاً
+            # فعلياً أم لا — قيد Streamlit في طريقة عمل الـ popover) لو
+            # أسئلة الجلسة الحالية وحدها كافية أصلاً لملء الحد الأقصى.
+            if len(entries) < 30:
+                history = db.get_chat_history(limit=30)
+                for h in history:
+                    q = (h.get("question") or "").strip()
+                    if q and q not in seen:
+                        seen.add(q)
+                        entries.append(q)
 
             if not entries:
                 st.caption("لا توجد أسئلة سابقة بعد")
                 return
 
             st.caption("اضغط على أي سؤال لإعادته إلى مربع الكتابة")
-            for i, q in enumerate(entries):
+            for q in entries:
                 label = q if len(q) <= 60 else q[:60].rstrip() + "…"
-                if st.button(label, key=f"ref_q_{i}", width="stretch"):
+                # 🆕 مفتاح ثابت مبني على hash نص السؤال بدل index وحده
+                # — يمنع أي التباس بصري لو تغيّر ترتيب/محتوى القائمة
+                # بين إعادتي رسم متتاليتين (مثلاً سؤال جديد يُضاف أعلى
+                # القائمة فيزيح كل الـ index القديمة بمقدار واحد).
+                q_hash = hashlib.md5(q.encode("utf-8")).hexdigest()[:10]
+                if st.button(label, key=f"ref_q_{q_hash}", width="stretch"):
                     st.session_state[_PREFILL_KEY] = q
                     st.rerun()
 
@@ -197,9 +209,10 @@ def _render_input_area(db, ai, settings: dict) -> None:
 
         with col_text:
             question = st.text_area(
-                "اكتب سؤالك بالعربية أو الإنجليزية", height=62,
+                "اكتب سؤالك بالعربية أو الإنجليزية", height=100,
                 placeholder="اسأل عن المبيعات، الإنتاج، المخزون، الأداء...",
-                key=_QUESTION_BOX_KEY, label_visibility="collapsed",
+                key=_QUESTION_BOX_KEY, 
+                label_visibility="collapsed",
             )
 
         with col_side:
@@ -217,9 +230,15 @@ def _render_options_popover(db) -> None:
     session_state مباشرة (بدون form) فتُقرأ وقت الإرسال.
     """
     has_popover = hasattr(st, "popover")
+    # 🆕 fallback الـ expander (نسخ Streamlit القديمة بلا st.popover)
+    # فقط: نحافظ على حالة الفتح عبر session_state، وإلا فأي ضغط على
+    # زر تأكيد المسح بالأسفل يُعيد رسم الصفحة والـ expander يرتد
+    # مغلقاً تلقائياً (expanded ثابتة False) قبل أن يرى المستخدم نتيجة
+    # الضغط. غير مطلوب مع st.popover لأنه لا "يُغلق" بنفس المنطق.
+    _EXPANDED_KEY = "_chat_options_expander_open"
     ctx = (
         st.popover("⁝ خيارات", width="stretch") if has_popover
-        else st.expander("⁝ خيارات", expanded=False)
+        else st.expander("⁝ خيارات", expanded=st.session_state.get(_EXPANDED_KEY, False))
     )
     with ctx:
         result_type = st.selectbox(
@@ -239,6 +258,12 @@ def _render_options_popover(db) -> None:
 
 
 def _render_clear_history_button(db) -> None:
+    """
+    🆕 كل مسار يؤدي لإعادة رسم القائمة (فتح التأكيد، تنفيذه، أو
+    الإلغاء) يضبط _chat_options_expander_open=True قبل rerun — فقط
+    ليبقى fallback الـ expander (نسخ Streamlit القديمة بلا popover)
+    مفتوحاً عبر كل هذه الخطوات؛ لا تأثير له مع st.popover الحديث.
+    """
     confirm_key = "confirm_clear_chat_history"
     if st.session_state.get(confirm_key):
         st.caption("⚠️ سيُحذف كل سجل المحادثة نهائياً.")
@@ -250,12 +275,13 @@ def _render_clear_history_button(db) -> None:
             st.rerun()
         if st.button("إلغاء", key="cancel_clear_chat", width="stretch"):
             st.session_state.pop(confirm_key, None)
+            st.session_state["_chat_options_expander_open"] = True
             st.rerun()
     else:
         if st.button("🗑️ مسح تاريخ المحادثة", key="danger_clear_chat", width="stretch"):
             st.session_state[confirm_key] = True
+            st.session_state["_chat_options_expander_open"] = True
             st.rerun()
-
 
 def _handle_submit(db, ai, settings: dict, question: str) -> None:
     if not question.strip():
@@ -269,11 +295,14 @@ def _handle_submit(db, ai, settings: dict, question: str) -> None:
         "جاري تحليل البيانات وكتابة التقرير..." if result_type == "story"
         else "جاري التفكير..."
     )
-    with st.spinner(spinner_msg):
-        if result_type == "story":
-            result = ai.tell_story(question, ai_rules=settings.get("ai_rules"))
-        else:
-            result = ai.ask(question, result_type=result_type, ai_rules=settings.get("ai_rules"))
+    
+    # 🆕 إظهار الرسالة في مربع طائر (Toast)
+    st.toast(f"⏳ {spinner_msg}", icon="💡")
+
+    if result_type == "story":
+        result = ai.tell_story(question, ai_rules=settings.get("ai_rules"))
+    else:
+        result = ai.ask(question, result_type=result_type, ai_rules=settings.get("ai_rules"))
 
     chat_id = str(uuid.uuid4())
     db.save_chat_result(
@@ -295,10 +324,8 @@ def _handle_submit(db, ai, settings: dict, question: str) -> None:
     if not result["ok"]:
         notify(f"فشل الاستعلام: {result.get('error')}", kind="error")
 
-    # تفريغ مربع الكتابة بعد الإرسال — نمسح القيمة قبل rerun التالي
     st.session_state.pop(_QUESTION_BOX_KEY, None)
     st.rerun()
-
 
 # ══════════════════════════════════════════════════════════════
 #  بطاقة سؤال/إجابة واحدة
@@ -308,7 +335,11 @@ def _render_qa_card(db, settings: dict, item: dict) -> None:
     result = item["result"]
     result_type = item["result_type"]
     chart_type = item.get("chart_type", "bar")
-    status_icon = "✓" if result.get("ok") else "!"
+    # 🆕 حالة البطاقة بلون ثابت (chat-status-ok/fail معرَّفة في
+    # ui/common.py::chat_ui_css) بدل رمز نصي بلا لون — الفرق بين ✓ و !
+    # لا يكفي وحده للتمييز السريع عند تصفّح سجل طويل بالتمرير.
+    status_class = "chat-status-ok" if result.get("ok") else "chat-status-fail"
+    status_icon = "✓ تم" if result.get("ok") else "! فشل"
     safe_question = html.escape(item["question"].strip())
 
     with st.container(key=f"chat_item_{item['id']}", border=False):
@@ -320,9 +351,9 @@ def _render_qa_card(db, settings: dict, item: dict) -> None:
                 </div>
             </div>
             <div class="chat-answer-head">
-                <span class="chat-assistant-icon">✦</span>
+                <span class="chat-assistant-icon">✨</span>
                 <span>DataLens</span>
-                <span style="opacity:.55; font-weight:500;">{status_icon}</span>
+                <span class="{status_class}" style="opacity:.9;">{status_icon}</span>
             </div>
             """,
             unsafe_allow_html=True,
