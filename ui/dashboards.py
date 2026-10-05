@@ -13,9 +13,9 @@ ui/dashboards.py
    للتفاصيل الكاملة عن سياسة الحفاظ على الخلايا المخفية).
 7. 🆕 توحيد الشكل مع نظام التصميم (ui/common.py):
    - المعرض (_show_dashboard_gallery): بطاقات موحّدة الشكل لكل لوحة —
-     زر "📂 فتح" بارز (type="primary") وباقي الإجراءات (تكرار/حذف)
-     مجمّعة في قائمة "⁝" (popover) بدل صف أزرار متساوٍ. نموذج الإنشاء
-     اليدوي أصبح تدفقاً واحداً مرقّماً (1: العنوان، 2: القالب) داخل
+     زر "📂 فتح" بارز (type="primary") وباقي الإجراءات (إعادة تسمية/
+     تكرار/حذف) مجمّعة في قائمة "⁝" (popover) بدل صف أزرار متساوٍ. نموذج
+     الإنشاء اليدوي أصبح تدفقاً واحداً مرقّماً (1: العنوان، 2: القالب) داخل
      st.form واحد — فلا يوجد أي زر مستقل لكل قالب يمكن أن يُنشئ اللوحة
      قبل تأكيد الاختيار، والإرسال الوحيد الممكن هو زر "➕ إنشاء اللوحة".
    - التفاصيل (_show_dashboard_detail): الصف العلوي أصبح بإجراء أساسي
@@ -31,6 +31,11 @@ ui/dashboards.py
      الجدول/العمود فعلياً (بصمة مخزَّنة في session_state)، لا في كل
      rerun — فالتفاعل مع أي حقل آخر لا يُعيد الجلب من القاعدة، ويبقى
      زر "💾 حفظ الكل" هو الإجراء البارز الوحيد في لوحة الفلاتر.
+8. 🆕 إعادة تسمية لوحة بعد إنشائها (_render_rename_dashboard_form): نموذج
+   st.form صغير داخل قائمة "⁝" في بطاقة اللوحة (نفس نمط إعادة تسمية
+   المشاريع في ui/projects.py) — Enter في الحقل يحفظ الاسم مباشرة. التنفيذ
+   الفعلي في core.dashboard_manager.DashboardManager.rename_dashboard
+   (لا يمس الخلايا ولا الفلاتر ولا القالب ولا وقت "آخر تحديث").
 """
 
 from core import dashboard_cells
@@ -185,11 +190,46 @@ def _render_manual_create_flow(db) -> None:
             st.rerun()
 
 
+def _render_rename_dashboard_form(db, d: dict) -> None:
+    """
+    🆕 نموذج إعادة تسمية لوحة موجودة — يُرسم داخل قائمة "⁝" الخاصة
+    ببطاقة اللوحة في المعرض (نفس نمط _render_project_actions_menu في
+    ui/projects.py). st.form واحد بحقل الاسم وزر الحفظ، فالضغط على
+    Enter في الحقل يُنفّذ الحفظ مباشرة. الاسم الحالي يُعرض كقيمة
+    ابتدائية ليسهل تعديله بدل الكتابة من الصفر.
+
+    التنفيذ الفعلي عبر DashboardManager.rename_dashboard (لا حاجة لـ
+    AI هنا، فيُمرَّر None). لا يُغيّر الخلايا ولا الفلاتر ولا وقت
+    "آخر تحديث" — راجع توثيق تلك الدالة.
+    """
+    st.markdown("**✏️ إعادة تسمية**")
+    with st.form(f"rename_dash_form_{d['id']}"):
+        new_title = st.text_input(
+            "اسم جديد", value=d["title"], key=f"rename_dash_input_{d['id']}",
+            label_visibility="collapsed", placeholder="اسم جديد للوحة",
+        )
+        submitted = st.form_submit_button("💾 حفظ الاسم", width="stretch")
+
+    if submitted:
+        if not new_title.strip():
+            notify("الرجاء إدخال اسم جديد", kind="warning")
+        elif new_title.strip() == d["title"]:
+            notify("لم يتغيّر اسم اللوحة", kind="info")
+        else:
+            r = DashboardManager(db, None).rename_dashboard(d["id"], new_title)
+            if r["ok"]:
+                notify("تم تحديث اسم اللوحة", kind="success")
+                st.rerun()
+            else:
+                notify(r.get("error", "فشلت إعادة التسمية"), kind="error")
+
+
 def _render_dashboard_card(db, d: dict, settings: dict) -> None:
     """
     🆕 بطاقة لوحة موحّدة الشكل (نفس نمط بطاقات المشاريع): عنوان
     ومعلومات مختصرة + زر "📂 فتح" بارز أساسي، وباقي الإجراءات
-    (تكرار/حذف) داخل قائمة "⁝" حتى لا تتنافس بصرياً مع فتح اللوحة.
+    (إعادة تسمية/تكرار/حذف) داخل قائمة "⁝" حتى لا تتنافس بصرياً مع
+    فتح اللوحة.
     """
     tmpl = get_template(d["template_id"])
     has_popover = hasattr(st, "popover")
@@ -206,6 +246,9 @@ def _render_dashboard_card(db, d: dict, settings: dict) -> None:
                 else st.expander("⁝", expanded=False)
             )
             with menu_ctx:
+                _render_rename_dashboard_form(db, d)
+                st.divider()
+
                 if st.button("📑 تكرار", key=f"dup_dash_{d['id']}", width="stretch"):
                     new_id = str(uuid.uuid4())
                     db.duplicate_dashboard(d["id"], new_id, f"{d['title']} (نسخة)")
@@ -462,7 +505,7 @@ def _render_send_all_to_report(db, dashboard_id: str, dashboard: dict, template:
                 else:
                     notify("لا توجد خلايا محدَّثة (بنتيجة محفوظة) لإرسالها", kind="warning")
 
-                
+
 def _render_slicer_panel(db, dm, dashboard_id, slicers, date_filter_position, date_filter):
     """
     🆕 عنوان القائمة المطوية الخارجية (المُعرَّف في المُستدعي أعلاه)
@@ -605,7 +648,7 @@ def _render_filter_fields_block(dm, id_for_keys: str, slicers_existing: dict,
     })
 
     return pending_rows
-# ---------------------------------------------- 
+# ----------------------------------------------
 
 def _render_date_filter_fields_generic(dm, id_for_keys: str, existing: dict, db=None):
     """
@@ -701,7 +744,7 @@ def _render_dashboard_cell(db, dm, settings, dashboard_id, position, cell_row):
                 cell_obj.render_actions_menu(db, dm, settings, dashboard_id, edit_key)
 
             cell_obj.render_result(settings, dashboard_id)
-            
+
         else:
             cell_obj.render_editor(db, dm, settings, dashboard_id, is_gauge_row, edit_key)
 

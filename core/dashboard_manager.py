@@ -3,7 +3,7 @@ core/dashboard_manager.py
 ===========================
 المنطق البرمجي للوحات المعلومات: خيارات الـ Slicers، تنفيذ "تحديث
 البيانات" (متوازٍ عبر Threads)، بناء خطة لوحة كاملة تلقائياً بالذكاء
-الاصطناعي، وتغيير قالب لوحة موجودة بعد إنشائها.
+الاصطناعي، وتعديل خصائص لوحة موجودة بعد إنشائها (القالب، العنوان).
 
 🆕 إعادة هيكلة (خلايا OOP):
 ------------------------------
@@ -58,15 +58,18 @@ thread، حيث لا تزال القيمة الصحيحة متاحة)، ثم ن�
 بدون أي حاجة لمعرفة تفاصيله هنا (هذا الملف لا يستورد ui/ أو
 streamlit، ويبقى كذلك — راجع _submit_with_context أدناه).
 
-🆕 تغيير قالب لوحة موجودة (update_dashboard_template):
-------------------------------------------------------------
+🆕 تعديل خصائص لوحة موجودة (update_dashboard_template / rename_dashboard):
+------------------------------------------------------------------------------
 core/project_db.py ممنوع تعديله بموجب قرار معماري صريح، ولا توجد فيه
-دالة لتحديث template_id للوحة موجودة (create_dashboard يضبطها فقط
-وقت الإنشاء). لذا — بنفس النمط المُستخدَم فعلياً في
+دوال لتحديث template_id أو title للوحة موجودة (create_dashboard يضبطهما
+فقط وقت الإنشاء). لذا — بنفس النمط المُستخدَم فعلياً في
 exporters/report_manager.py::rename وcore/project_manager.py::rename
-لأعمدة لا تغطيها ProjectDB — نُحدّث عمود dashboards.template_id مباشرة
-عبر sqlite3 على ملف project.db، دون أي تعديل على project_db.py نفسه.
+لأعمدة لا تغطيها ProjectDB — نُحدّث أعمدة جدول dashboards مباشرة
+عبر sqlite3 على ملف project.db، دون أي تعديل على project_db.py نفسه
+(راجع _update_dashboard_columns أدناه: نقطة التنفيذ المشتركة لكل
+تحديث مباشر من هذا النوع).
 
+أ) تغيير القالب (update_dashboard_template):
 الخلايا التي تقع خارج نطاق القالب الجديد (position >=
 DASHBOARD_GAUGE_COUNT + cell_count الجديد) لا تُحذف ولا تُعدَّل أبداً —
 تبقى مخزَّنة كما هي بالكامل (سؤالها، base_sql، آخر نتيجة محفوظة). هي
@@ -76,6 +79,11 @@ DASHBOARD_GAUGE_COUNT + cell_count الجديد) لا تُحذف ولا تُعد
 الحسابات واستدعاءات AI على خلايا غير مرئية أصلاً. لو أُعيد اختيار
 قالب أكبر لاحقاً (أو نفس القالب القديم)، تعود هذه الخلايا للظهور
 ببياناتها المحفوظة فوراً بدون أي إعادة حساب.
+
+ب) إعادة التسمية (rename_dashboard):
+تغيير dashboards.title فقط. لا يلمس updated_at عمداً — هذا العمود يُمثّل
+"آخر تحديث للبيانات" الذي تعرضه الواجهة، ولا ينبغي أن يتغير بمجرد
+تعديل الاسم دون أي تحديث فعلي للخلايا.
 
 لا تحديث تلقائي أو فوري لأي خلية — كل شيء يحدث فقط عند استدعاء
 refresh_dashboard() أو refresh_single_cell() (المرتبطين بأزرار صريحة
@@ -153,8 +161,60 @@ class DashboardManager:
         self.db.reset_dashboard_slicers(dashboard_id)
 
     # ──────────────────────────────────────────────────────────
-    #  🆕 تغيير قالب لوحة موجودة — بدون حذف أو تحديث الخلايا المخفية
+    #  🆕 تعديل خصائص لوحة موجودة (قالب / عنوان) — sqlite3 مباشر
     # ──────────────────────────────────────────────────────────
+
+    def _update_dashboard_columns(self, dashboard_id: str, columns: dict, touch_updated_at: bool) -> None:
+        """
+        نقطة التنفيذ المشتركة لأي تحديث مباشر على جدول dashboards عبر
+        sqlite3 (بدل ProjectDB الممنوع تعديله). أسماء الأعمدة تأتي دائماً
+        من الكود الداخلي (ثوابت في الدوال المستدعية) وليس من مدخلات
+        المستخدم، فبناء جملة SET منها آمن؛ القيم نفسها تُمرَّر كمعاملات
+        (?) فلا خطر حقن SQL.
+
+        touch_updated_at: لو True يُحدَّث updated_at أيضاً (تغيير القالب
+        مثلاً)، وإلا يبقى كما هو (إعادة التسمية — راجع توثيق الوحدة).
+        """
+        db_path = PROJECTS_DIR / self.db.user_id / self.db.project_id / "project.db"
+        assignments = list(columns.keys())
+        values = list(columns.values())
+        if touch_updated_at:
+            assignments.append("updated_at")
+            values.append(_now())
+
+        set_clause = ", ".join(f"{name} = ?" for name in assignments)
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute(
+                f"UPDATE dashboards SET {set_clause} WHERE id = ?",
+                (*values, dashboard_id),
+            )
+            conn.commit()
+
+    def rename_dashboard(self, dashboard_id: str, new_title: str) -> dict:
+        """
+        🆕 تغيير عنوان لوحة موجودة — لا يمس الخلايا ولا الـ Slicers ولا
+        القالب، ولا يُحدّث updated_at (آخر تحديث للبيانات، لا للاسم).
+
+        يرجع: {"ok": True} أو {"ok": False, "error": "..."}
+        """
+        new_title = (new_title or "").strip()
+        if not new_title:
+            return {"ok": False, "error": "الاسم الجديد مطلوب"}
+
+        dashboard = self.db.get_dashboard(dashboard_id)
+        if not dashboard:
+            return {"ok": False, "error": "اللوحة غير موجودة"}
+
+        try:
+            self._update_dashboard_columns(dashboard_id, {"title": new_title}, touch_updated_at=False)
+            logger.info(
+                "Dashboard renamed: %s ('%s' -> '%s')",
+                dashboard_id, dashboard.get("title"), new_title
+            )
+            return {"ok": True}
+        except Exception as e:
+            logger.error("rename_dashboard error: %s", e)
+            return {"ok": False, "error": str(e)}
 
     def _visible_cell_limit(self, dashboard: dict) -> int:
         """
@@ -173,8 +233,7 @@ class DashboardManager:
         الخلايا المعروضة (راجع توثيق الوحدة أعلاه للتفاصيل الكاملة).
 
         core/project_db.py لا يُلمس هنا — التحديث مباشر عبر sqlite3
-        على نفس ملف project.db، بنفس نمط exporters/report_manager.py
-        ::rename وcore/project_manager.py::rename.
+        على نفس ملف project.db (راجع _update_dashboard_columns).
 
         يرجع: {"ok": True} أو {"ok": False, "error": "..."}
         """
@@ -186,13 +245,9 @@ class DashboardManager:
             return {"ok": False, "error": "اللوحة غير موجودة"}
 
         try:
-            db_path = PROJECTS_DIR / self.db.user_id / self.db.project_id / "project.db"
-            with sqlite3.connect(str(db_path)) as conn:
-                conn.execute(
-                    "UPDATE dashboards SET template_id = ?, updated_at = ? WHERE id = ?",
-                    (new_template_id, _now(), dashboard_id)
-                )
-                conn.commit()
+            self._update_dashboard_columns(
+                dashboard_id, {"template_id": new_template_id}, touch_updated_at=True
+            )
             logger.info(
                 "Dashboard template changed: %s (%s -> %s) — no cells deleted or modified",
                 dashboard_id, dashboard.get("template_id"), new_template_id
@@ -495,8 +550,7 @@ class DashboardManager:
                     "values": values,
                 })
         return filters
-    
-    
+
     # ──────────────────────────────────────────────────────────
     #  🆕 بناء خطة لوحة كاملة تلقائياً بالذكاء الاصطناعي
     # ──────────────────────────────────────────────────────────

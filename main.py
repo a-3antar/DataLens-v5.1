@@ -21,7 +21,8 @@ from config import APP_NAME, APP_VERSION, APP_ICON
 from core.logger_config import setup_logging
 import logging
 
-setup_logging(logging.DEBUG)
+setup_logging(logging.INFO)
+
 
 st.set_page_config(
     page_title=APP_NAME,
