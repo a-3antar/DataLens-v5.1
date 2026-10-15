@@ -19,7 +19,7 @@ ui/chat.py وcore/dashboard_cells/cells.py/base.py).
 ---------------------------
 sidebar_header() تستدعي الآن core.logger_config.set_log_username()
 بمجرد معرفة اسم المستخدم من session_state — هذه هي نقطة الدخول
-المركزية الوحيدة (تُستدعى في بداية كل صفحة محمية بعد تسجيل الدخول)،
+المركزية الوحيدة (تُستدعى في بداية كل صفحة محمية بعد تسجيل الدخول),
 فيكفي ضبطها هنا مرة واحدة حتى يظهر اسم المستخدم تلقائياً في كل سطر
 log يُكتب لاحقاً من أي مكان في المشروع (بما في ذلك threads تحديث
 لوحات المعلومات، التي ترث نفس القيمة تلقائياً عبر contextvars —
@@ -28,7 +28,7 @@ log يُكتب لاحقاً من أي مكان في المشروع (بما في 
 
 🆕 الثيمات:
 ------------
-بالإضافة إلى الثيمات الجاهزة (THEME_COLORS)، يدعم التطبيق ثيماً
+بالإضافة إلى الثيمات الجاهزة (THEME_COLORS), يدعم التطبيق ثيماً
 "مخصصاً" (custom) يختار فيه المستخدم الألوان الخمسة بحرّية كاملة من
 صفحة الإعدادات — تُخزَّن في project settings تحت مفتاح
 "custom_theme_colors" ولا تُستخدم إلا لو settings["theme"] == "custom"
@@ -69,7 +69,7 @@ _story_writing_rules قاعدة رقم 7) يُبني أحياناً رسماً �
 الفارغ إلى <thead> حقيقي يأخذ لون خلفية primary (من قاعدة
 .stMarkdown thead أدناه) فيظهر كشريط ملوّن فارغ فوق الجدول. قاعدة
 CSS جديدة (`.stMarkdown thead tr:has(th:empty):not(:has(th:not(:empty)))`)
-تُخفي هذا الصف بالكامل فقط عندما تكون كل خلاياه فارغة معاً — أي
+تُخفي هذا الصف بالكامل فقط عندما تكون كل خلاياه فارغاً معاً — أي
 جدول آخر له رأس نصي فعلي (جداول المقارنة العادية، قاعدة رقم 6) لا
 يتأثر إطلاقاً ويستمر بالظهور كما هو.
 
@@ -133,37 +133,10 @@ RTL_CSS = """
     .stSelectbox div[data-baseweb="select"] { direction: rtl; text-align: right; }
     .stButton button { width: 100%; }
     div[data-testid="stMetricValue"] { direction: ltr; }
-    .stDataFrame { direction: rtl; }
+    .stDataFrame { direction: ltr; }
     thead tr th { text-align: center !important; }
-
-    /* ─────────────────────────────────────────────────────────
-       تثبيت الشريط الجانبي على أقصى اليمين (حالتي الفتح والطي).
-       Streamlit يضع الشريط افتراضياً على اليسار (left:0) ويُخفيه
-       عند الطي عبر transform: translateX(-100%) — وهذا لا ينعكس
-       تلقائياً بمجرد ضبط direction:rtl على الحاوية، فيظهر شريط
-       الطي عالقاً في المنتصف. نُثبّت الموضع والانزلاق يدوياً هنا.
-       ───────────────────────────────────────────────── */
-    [data-testid="stSidebar"] {
-        direction: rtl;
-        text-align: right;
-        right: 0 !important;
-        left: auto !important;
-    }
-    [data-testid="stSidebar"][aria-expanded="true"] {
-        transform: translateX(0) !important;
-    }
-    [data-testid="stSidebar"][aria-expanded="false"] {
-        transform: translateX(100%) !important;
-    }
-    /* زر إظهار/إخفاء الشريط (السهم الصغير) — يثبت في أقصى اليمين دائماً */
-    [data-testid="collapsedControl"] {
-        right: 0 !important;
-        left: auto !important;
-    }
-    /* منطقة المحتوى الرئيسي: نضمن عدم بقاء مساحة فارغة يسارية بعد نقل الشريط لليمين */
-    section.main {
-        direction: rtl;
-    }
+    [data-testid="stAppViewContainer"] { direction: ltr; }
+   [data-testid="stMain"], [data-testid="stMainBlockContainer"] { direction: rtl; }
 
     /* ─────────────────────────────────────────────────────────
        🆕 تنسيق القوائم النقطية (ul/li) والعناوين الفرعية والفقرات
@@ -362,6 +335,25 @@ def apply_theme_css(theme_key_or_settings="ocean_dark"):
         }}
 
         /* ─────────────────────────────────────────────────────
+           تلوين زر إخفاء/إظهار الشريط الجانبي (<< / >>) 
+           بنفس لون نص الثيم أو لون accent
+           ───────────────────────────────────────────────────── */
+        [data-testid="stSidebarCollapseButton"] button,
+        [data-testid="stSidebarCollapsedControl"] button,
+        [data-testid="stSidebarCollapseButton"] svg,
+        [data-testid="stSidebarCollapsedControl"] svg {{
+            color: {text} !important;
+            fill: {text} !important;
+        }}
+
+        [data-testid="stSidebarCollapseButton"] button:hover,
+        [data-testid="stSidebarCollapsedControl"] button:hover {{
+            color: {accent} !important;
+            fill: {accent} !important;
+            background-color: {accent}1A !important;
+        }}
+
+        /* ─────────────────────────────────────────────────────
            🆕 نظام الأزرار الموحّد — ثلاث درجات أهمية بصرية واضحة:
 
            1) ثانوي (الافتراضي — أي st.button بدون type="primary"):
@@ -479,9 +471,9 @@ def apply_theme_css(theme_key_or_settings="ocean_dark"):
            صف الفاصل '---' المطلوب لصحة صيغة Markdown). بدون هذا،
            كان الرأس الفارغ يظهر كشريط ملوّن (لون primary) بلا نص —
            مربكاً بصرياً. الشرط
-           :has(th:empty):not(:has(th:not(:empty))) يعني: كل خلايا
+           :has(th:empty):not(:has(th:not(:empty))) یعنی: كل خلايا
            هذا الصف فارغة معاً — جداول المقارنة العادية (برأس نصي
-           فعلي، مثل قاعدة رقم 6 في الـ prompt) لا تتأثر إطلاقاً
+           فعلي، مثل قاعدة رقم 6 في الـ prompt) لا تتأثر إصولاً
            وتستمر بالظهور بلون primary كما هو.
            ───────────────────────────────────────────────────── */
         .stMarkdown thead tr:has(th:empty):not(:has(th:not(:empty))) {{
@@ -619,7 +611,7 @@ def apply_page_style(theme_key: str = None):
     ملاحظة: تمرير theme_key كنص فقط (وليس settings كاملة) لا يفعّل
     الثيم المخصص (custom) لأن ألوانه مخزَّنة داخل settings — الصفحات
     التي تحتاج دعم custom بالكامل يجب أن تستدعي apply_theme_css
-    مباشرة وتمرر settings الكاملة (وهو ما تفعله كل صفحات المشروع
+    مباشرة وتمرر settings الكاملة (وهو ما tفعله كل صفحات المشروع
     الحالية فعلياً).
     """
     apply_rtl()
@@ -1227,7 +1219,7 @@ def notify(message: str, kind: str = "info", icon: str = None) -> None:
 # كل التواريخ تُخزَّن داخلياً بصيغة ISO بتوقيت UTC (راجع
 # core/project_db.py::_now()). طبقة العرض فقط هي المسؤولة عن التحويل
 # للمنطقة الزمنية المفضّلة للمستخدم (محفوظة في project settings تحت
-# مفتاح "timezone")، حتى لا نُغيّر أي شيء في طريقة التخزين نفسها.
+# مفتاح "timezone"), حتى لا نُغيّر أي شيء في طريقة التخزين نفسها.
 
 def format_local_dt(iso_str, settings: dict, fmt: str = "%Y-%m-%d %H:%M") -> str:
     """
@@ -1269,7 +1261,7 @@ _TEMP_PREFIX = APP_NAME + "_export_"
 def temp_export_dir():
     """
     Context manager يُنشئ مجلداً مؤقتاً بادئته مميزة (لسهولة التنظيف
-    الاحتياطي لاحقاً)، ويضمن حذفه فور الخروج من الـ block — بغض النظر
+    الاحتياطي لاحقاً), ويضمن حذفه فور الخروج من الـ block — بغض النظر
     عن نجاح العملية أو فشلها.
     """
     out_dir = Path(tempfile.mkdtemp(prefix=_TEMP_PREFIX))
@@ -1444,7 +1436,7 @@ def chat_ui_css(settings: dict) -> str:
             font-size: 0.76rem !important;
         }}
         /* 🆕 حالة كل بطاقة (نجاح/فشل) — لون ثابت بغض النظر عن الثيم
-           (نفس فلسفة _DANGER_COLOR)، لأن الرمز وحده (✓ مقابل !) لا
+           (نفس فلسفة _DANGER_COLOR), لأن الرمز وحده (✓ مقابل !) لا
            يكفي للتمييز البصري السريع عند تصفّح سجل طويل. */
         .chat-status-ok {{
             color: {_SUCCESS_COLOR};
@@ -1501,8 +1493,8 @@ def chat_ui_css(settings: dict) -> str:
             min-width: 92px;
             box-shadow: 0 5px 16px {primary}35;
         }}
-        /* ⚠️ [data-testid="stBottom"]/"stBottomBlockContainer"، مثل
-           متغيرات --gdg-* أعلاه في apply_theme_css، عناصر داخلية غير
+        /* ⚠️ [data-testid="stBottom"]/"stBottomBlockContainer", مثل
+           متغيرات --gdg-* أعلاه في apply_theme_css, عناصر الداخلية غير
            موثّقة رسمياً من Streamlit وقد تتغيّر أسماؤها بين الإصدارات
            المستقبلية — أفضل حل عملي متاح حالياً لتنسيق شريط الكتابة
            الثابت أسفل الصفحة (st.bottom). */
@@ -1536,4 +1528,3 @@ def chat_ui_css(settings: dict) -> str:
         }}
     </style>
     """
-
