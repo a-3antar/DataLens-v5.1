@@ -8,14 +8,28 @@ ai/prompt_builder.py
   - Sample Data: عينة بيانات
   - User Question: سؤال المستخدم
   - Error Context: سياق الخطأ عند إعادة المحاولة
+
+🆕 سؤال وجواب (Q&A / رؤى):
+-----------------------------
+build_qa_plan / build_qa_answer (في نهاية الكلاس) — مرحلتان مثل
+Story Telling (خطة استعلامات ثم كتابة)، لكن الإجابة هنا تبدأ بالجواب
+المباشر على سؤال المستخدم ثم الرؤى ثم رأي AI وتوصيته، بدل تقرير
+سردي ثابت الهيكل. لا يوجد سقف لعدد صفوف البيانات المُرسَلة في
+مرحلة الإجابة (تظهر كاملة)، ويُطلب من AI في مرحلة التخطيط استخدام
+التجميع (Aggregate) كلما كانت النتيجة كبيرة. الفلاتر يحددها المستخدم
+داخل نص السؤال نفسه (لا Slicers في المحادثة).
 """
 
 import logging
 from typing import Optional
 
-from config import SAMPLE_ROWS, STORY_MAX_QUERIES
+from config import SAMPLE_ROWS, STORY_MAX_QUERIES, QA_MAX_QUERIES, QA_ANSWER_LENGTHS
 
 logger = logging.getLogger(__name__)
+
+# أقصى طول لجواب سابق يُضمَّن كسياق في prompt سؤال وجواب (الجواب
+# الكامل غير ضروري لفهم سؤال المتابعة، والاقتطاع يُبقي الـ prompt صغيراً).
+_QA_HISTORY_ANSWER_MAX_CHARS = 700
 
 # ── System Prompt الثابت ──────────────────────────────────────
 DEFAULT_AI_RULES = """أنت محلل بيانات محترف. مهمتك الوحيدة هي كتابة SQL query صحيح.
@@ -428,7 +442,7 @@ CREATE)، متوافقاً مع DuckDB، ويستخدم فقط الجداول و
 6. لا تُرجع أكثر من 200 صف لكل استعلام (استخدم GROUP BY مناسب).
 7. إذا لم تكن متأكدًا تماماً من وجود عمود معين، لا تستخدمه في الاستعلام.
 8.  استخدم فقط أسماء الجداول من غير alias المذكورة في الـ Schema.
-"""    
+"""
 
     # ──────────────────────────────────────────────────────────
     #  🆕 بناء Prompt السرد من عدة مجموعات بيانات (نتائج عدة استعلامات)
@@ -474,4 +488,185 @@ CREATE)، متوافقاً مع DuckDB، ويستخدم فقط الجداول و
         ]
         prompt = "\n\n".join(parts)
         logger.debug("Story-multi prompt built: %d chars, %d dataset(s)", len(prompt), len(datasets))
+        return prompt
+
+    # ══════════════════════════════════════════════════════════
+    #  🆕 سؤال وجواب (Q&A / رؤى)
+    # ══════════════════════════════════════════════════════════
+
+    @staticmethod
+    def _format_qa_history(history: Optional[list]) -> str:
+        """
+        صياغة آخر أسئلة/أجوبة الجلسة كسياق مختصر. كل عنصر:
+        {"question": "...", "answer": "..."} — الجواب يُقتطع (راجع
+        _QA_HISTORY_ANSWER_MAX_CHARS) لأن المطلوب فقط فهم مراجع أسئلة
+        المتابعة، وليس إعادة إرسال الإجابات الكاملة.
+        """
+        if not history:
+            return ""
+        lines = []
+        for i, turn in enumerate(history, 1):
+            q = str(turn.get("question", "")).strip()
+            a = str(turn.get("answer", "")).strip()
+            if len(a) > _QA_HISTORY_ANSWER_MAX_CHARS:
+                a = a[:_QA_HISTORY_ANSWER_MAX_CHARS].rstrip() + " …"
+            lines.append(f"[{i}] سؤال: {q}\n    جواب: {a}")
+        return "\n".join(lines)
+
+    def build_qa_plan(self, question: str, history: Optional[list] = None) -> str:
+        """
+        بناء Prompt يطلب من AI خطة استعلامات SQL تجيب على سؤال
+        المستخدم (بحث/فلترة/تجميع/مقارنة) — الفلاتر يحددها المستخدم في
+        نص السؤال نفسه ويترجمها AI إلى شروط WHERE. history (اختياري):
+        آخر أسئلة/أجوبة الجلسة لحل مراجع أسئلة المتابعة.
+        """
+        parts = [
+            self._section("RULES", self._qa_plan_rules()),
+            self._section("SCHEMA", self._build_schema()),
+        ]
+        if self.relations:
+            parts.append(self._section("RELATIONS", self._build_relations()))
+        sample_text = self._build_samples()
+        if sample_text:
+            parts.append(self._section("SAMPLE DATA", sample_text))
+        history_text = self._format_qa_history(history)
+        if history_text:
+            parts.append(self._section("PREVIOUS Q&A", history_text))
+        parts.append(self._section("QUESTION", question))
+        parts.append("JSON PLAN:")
+        prompt = "\n\n".join(parts)
+        logger.debug("QA plan prompt built: %d chars", len(prompt))
+        return prompt
+
+    def _qa_plan_rules(self) -> str:
+        return f"""أنت محلل بيانات محترف. سيسألك المستخدم سؤالاً حراً عن بياناته، ومهمتك الآن
+فقط تحديد استعلامات SQL التي تجلب كل ما يلزم للإجابة عليه بدقة، ثم استخراج
+رؤى (Insights) منه لاحقاً.
+
+القواعد الصارمة:
+1. أجب فقط بصيغة JSON صالحة — بدون أي شرح أو نص إضافي أو Markdown code fences.
+2. الشكل المطلوب بالضبط (بدون أي مفاتيح إضافية):
+{{"queries": [{{"title": "عنوان قصير يصف البيانات", "sql": "SELECT ..."}}]}}
+3. عدد الاستعلامات بين 1 و {QA_MAX_QUERIES}. سؤال بسيط (رقم محدد/قائمة) يكفيه
+استعلام واحد. سؤال عن "رؤى/تحليل/رأيك" يحتاج عدة زوايا: الإجمالي كأساس
+للمقارنة، التوزيع حسب فئة، الاتجاه الزمني إن وُجد عمود تاريخ، أعلى وأدنى القيم.
+4. كل SQL يجب أن يكون SELECT فقط (ممنوع DROP/DELETE/INSERT/UPDATE/ALTER/CREATE)،
+متوافقاً مع DuckDB، ويستخدم فقط الجداول والأعمدة المذكورة في الـ Schema
+بأسمائها كما هي بالضبط (من غير alias للجداول في الـ Schema).
+5. أي شرط أو فلتر ذكره المستخدم في سؤاله (منتج، فترة، قسم، حالة...) يجب ترجمته
+إلى WHERE دقيق. للقيم النصية استخدم ILIKE '%قيمة%' بدل التطابق الحرفي
+= حتى لا تفشل المطابقة بسبب اختلاف بسيط في الكتابة. للتواريخ استخدم
+عمود التاريخ الفعلي مع BETWEEN أو دوال DuckDB مثل DATE_TRUNC/EXTRACT.
+6. إذا كان السؤال يشير لقيمة قد لا تعرف كتابتها الدقيقة في البيانات، أضف
+استعلام بحث إضافي (SELECT DISTINCT ... WHERE ... ILIKE ... ) بدل التخمين.
+7. لا يوجد حد أقصى لعدد الصفوف — أعد كل الصفوف المطلوبة كاملة عندما يطلب
+السؤال قائمة أو تفاصيل. لكن لو كانت النتيجة المتوقعة كبيرة جداً ولا تفيد
+قراءتها صفاً صفاً (مثل "حلل بياناتي" على آلاف الصفوف)، استخدم التجميع
+(GROUP BY مع SUM/AVG/COUNT/MIN/MAX) بدل إرجاع الصفوف الخام.
+8. أعطِ كل عمود ناتج من تجميع اسماً واضحاً (AS) يصف معناه.
+9. إذا كان السؤال متابعة لسؤال سابق (يستخدم "وماذا عن..."، "نفس الشيء لـ...")،
+استخدم قسم PREVIOUS Q&A لفهم المقصود.
+10. لا تكرر استعلاماً بصياغة مختلفة — كل استعلام يضيف زاوية مختلفة فعلاً.
+11. إذا لم تكن متأكداً من وجود عمود، لا تستخدمه."""
+
+    def _qa_answer_rules(self, answer_length: str) -> str:
+        if answer_length not in QA_ANSWER_LENGTHS:
+            answer_length = "short"
+
+        if answer_length == "short":
+            length_rules = (
+                "طول الإجابة: **مختصرة**.\n"
+                "• ### الإجابة: جملة أو جملتان تجيبان مباشرة على السؤال بالرقم أو الاسم المطلوب.\n"
+                "• ### أبرز الرؤى: من 2 إلى 3 نقاط فقط، كل نقطة جملة واحدة مدعومة برقم.\n"
+                "• ### رأيي وتوصيتي: جملة إلى جملتين.\n"
+                "• لا تضف جداول إلا إذا طلب السؤال قائمة أو مقارنة صراحةً."
+            )
+        else:
+            length_rules = (
+                "طول الإجابة: **مفصّلة**.\n"
+                "• ### الإجابة: فقرة قصيرة تجيب مباشرة على السؤال مع الأرقام الأساسية.\n"
+                "• ### أبرز الرؤى: من 4 إلى 7 نقاط مدعومة بالأرقام (مقارنات، نسب، اتجاهات، "
+                "أعلى/أدنى القيم، قيم شاذة).\n"
+                "• أضف جدول Markdown واحداً أو أكثر عند وجود مقارنة بين فئات (رأس جدول حقيقي "
+                "بأسماء أعمدة + صف فاصل '---' + الصفوف).\n"
+                "• ### رأيي وتوصيتي: من 3 إلى 5 نقاط عملية: تفسير محتمل لما تظهره البيانات، "
+                "مخاطر أو فرص، وخطوات مقترحة."
+            )
+
+        return (
+            "أنت محلل بيانات خبير تجيب على سؤال مدير عن بياناته بالعربية الواضحة، بصيغة "
+            "Markdown منظَّمة. البيانات أدناه هي نتائج استعلامات SQL نُفِّذت فعلاً على "
+            "بياناته، وهي مصدرك الوحيد للحقائق.\n\n"
+            "قواعد الدقة (الأهم):\n"
+            "1. استخدم فقط الأرقام والأسماء الموجودة حرفياً في البيانات — لا تخترع ولا "
+            "تقدّر ولا تُكمل أرقاماً ناقصة. الحسابات البسيطة (فرق، نسبة، مجموع صفوف ظاهرة) "
+            "مسموحة بشرط أن تكون صحيحة.\n"
+            "2. إذا كانت نتيجة استعلام فارغة (0 صف)، قل صراحةً إنه لا توجد بيانات مطابقة "
+            "للسؤال، واذكر الشرط/الفلتر الذي طُبِّق (كما فهمته من السؤال) بدل تخمين إجابة.\n"
+            "3. إذا فشل بعض الاستعلامات (مذكورة في قسم FAILED QUERIES)، لا تبنِ عليها أي "
+            "رقم، واذكر في ### ملاحظات أن جزءاً من التحليل لم يكتمل.\n"
+            "4. افصل بوضوح بين الحقائق (ما تقوله البيانات) والرأي (تفسيرك وتوصيتك). "
+            "الأسباب المحتملة لظاهرة ما تُكتب كاحتمالات ('يبدو أن'، 'قد يعود إلى') وليس كحقائق "
+            "مؤكدة، لأن البيانات لا تثبت السببية.\n"
+            "5. لا تستخدم أي معلومة خارج البيانات (أسعار سوق، منافسون...) كأنها حقيقة عن بياناته.\n\n"
+            "قواعد الشكل:\n"
+            "6. ابدأ مباشرة بأول '### عنوان' — لا مقدمة ولا عنواناً رئيسياً بـ '#' أو '##'.\n"
+            "7. العناوين بالترتيب: '### الإجابة' ثم '### أبرز الرؤى' ثم '### رأيي وتوصيتي'، "
+            "وأضف '### ملاحظات' في النهاية فقط عند وجود قيد حقيقي (بيانات ناقصة، قيم فارغة، "
+            "فترة زمنية محدودة، استعلام فشل...) — لا تضفه لمجرد الإضافة.\n"
+            "8. ⚠️ لا تستخدم إطلاقاً قوائم Markdown القياسية ('- ' أو '* ' أو '1. ' في بداية "
+            "السطر). لعرض نقطة منفصلة اكتب سطراً مستقلاً يبدأ بالحرف '•' ثم مسافة ثم النص، "
+            "واترك سطراً فارغاً بين كل نقطة وأختها.\n"
+            "9. ضع الأرقام والقيم المهمة داخل '**تنسيق عريض**'.\n"
+            "10. لا تستخدم كتل الكود (```) إطلاقاً، ولا تذكر SQL أو أسماء الجداول التقنية.\n"
+            "11. لا تذكر أنك 'نموذج' ولا تصف عملية التحليل نفسها — اكتب النتيجة مباشرة.\n"
+            "12. أجب بنفس لغة سؤال المستخدم (العربية افتراضياً).\n\n"
+            + length_rules
+        )
+
+    def build_qa_answer(
+        self,
+        question     : str,
+        datasets     : list,
+        answer_length: str = "short",
+        history      : Optional[list] = None,
+        failed       : Optional[list] = None,
+    ) -> str:
+        """
+        بناء Prompt كتابة الإجابة النهائية (إجابة مباشرة + رؤى + رأي).
+
+        datasets : [{"title": "...", "df": DataFrame}] — كل البيانات تُضمَّن
+                   كاملة بلا اقتطاع (قرار صريح: لا سقف للصفوف هنا).
+        failed   : [{"title": "...", "error": "..."}] — استعلامات فشلت
+                   ولم تدخل التحليل، لتُذكر كقيد في الإجابة.
+        """
+        data_parts = []
+        for i, ds in enumerate(datasets, 1):
+            df = ds["df"]
+            cols = list(df.columns)
+            header = f"-- بيانات {i}: {ds['title']} ({len(df)} صف) --"
+            if df.empty:
+                data_parts.append(f"{header}\n(لا توجد صفوف مطابقة)")
+                continue
+            lines = [" | ".join(str(c) for c in cols)]
+            for row in df.to_dict(orient="records"):
+                lines.append(" | ".join(str(row.get(c, "")) for c in cols))
+            data_parts.append(header + "\n" + "\n".join(lines))
+
+        parts = [self._section("RULES", self._qa_answer_rules(answer_length))]
+        history_text = self._format_qa_history(history)
+        if history_text:
+            parts.append(self._section("PREVIOUS Q&A", history_text))
+        parts.append(self._section("DATA", "\n\n".join(data_parts)))
+        if failed:
+            failed_text = "\n".join(f"- {f['title']}: {f.get('error', '')}" for f in failed)
+            parts.append(self._section("FAILED QUERIES", failed_text))
+        parts.append(self._section("QUESTION", question))
+        parts.append("الإجابة (Markdown):")
+
+        prompt = "\n\n".join(parts)
+        logger.debug(
+            "QA answer prompt built: %d chars, %d dataset(s), length=%s",
+            len(prompt), len(datasets), answer_length,
+        )
         return prompt

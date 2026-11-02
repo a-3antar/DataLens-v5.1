@@ -31,6 +31,18 @@ ui/chat.py
   الجلسة الحالية (session_state) وسجل project.db (db.clear_chat_history)
   معاً، بتأكيد ثنائي الضغط (نفس نمط "danger_" المتّبع في بقية المشروع).
 
+🆕 نوع نتيجة جديد "qa" — سؤال وجواب (رؤى):
+----------------------------------------------
+نوع إضافي بجانب الجدول/الرسم/Gauge/KPI/Story: يسأل المستخدم عن أي
+شيء يخص بياناته (والفلاتر يكتبها في نص السؤال نفسه)، فيبحث AI ويفلتر
+ويلخّص ويستخرج Insights ويكتب رأيه (ai.ai_manager.AIManager.answer_question).
+عند اختيار هذا النوع يظهر في قائمة "⁝" خيار "طول الإجابة" (مختصرة/مفصّلة).
+ذاكرة المحادثة: تُبنى من أسئلة/أجوبة "qa" الناجحة في هذه الجلسة
+(_build_qa_history) ويقتطعها AIManager إلى آخر config.QA_HISTORY_TURNS.
+البيانات المستخدمة تظهر كاملة داخل expander (جدول مُنسَّق بالثيم لو
+≤ _QA_THEMED_TABLE_MAX_ROWS صفاً، وإلا st.dataframe التفاعلي لسلاسة
+التمرير). الإرسال للتقرير يمر كفقرة Markdown مثل Story تماماً.
+
 لا تغيير على أي من ai.ai_manager.AIManager.ask/tell_story ولا على
 core.query_engine — فقط طبقة العرض.
 """
@@ -64,16 +76,23 @@ from ui.common import (
 )
 from ai.ai_manager import build_ai_manager
 from core.dashboard_cells.cells import _build_chart_figure, _apply_chart_layout_tweaks
-from config import CHART_TYPES
+from config import CHART_TYPES, QA_ANSWER_LENGTHS, QA_DEFAULT_ANSWER_LENGTH
 
 _RESULT_TYPE_LABELS = {
     "table": "جدول", "chart": "رسم بياني", "gauge": "مقياس (Gauge)",
     "kpi": "بطاقة مؤشر (KPI)", "story": "تحليل نصي (Story Telling)",
+    "qa": "💡 سؤال وجواب (رؤى)",
 }
 
 _QUESTION_BOX_KEY = "chat_question_box"
 _PREFILL_KEY = "_chat_question_prefill"
 _THREAD_KEY = "chat_thread"
+
+# 🆕 أقصى عدد صفوف يُعرض به جدول بيانات Q&A كجدول HTML مُنسَّق
+# (render_themed_table) — أعلى من ذلك يُستخدم st.dataframe التفاعلي
+# لأن بناء HTML يدوي لآلاف الصفوف بطيء (راجع معيار الاستخدام في
+# ui/common.py). لا يقتطع أي صف — فقط يغيّر طريقة العرض.
+_QA_THEMED_TABLE_MAX_ROWS = 200
 
 
 
@@ -200,6 +219,7 @@ def _render_input_area(db, ai, settings: dict) -> None:
 
     st.session_state.setdefault("_chat_result_type", "table")
     st.session_state.setdefault("_chat_chart_type", "bar")
+    st.session_state.setdefault("_chat_answer_length", QA_DEFAULT_ANSWER_LENGTH)
 
     with st.container(key="chat_composer", border=False):
         try:
@@ -226,8 +246,9 @@ def _render_input_area(db, ai, settings: dict) -> None:
 def _render_options_popover(db) -> None:
     """
     قائمة "⁝" منسدلة: نوع النتيجة، نوع الرسم (فقط عند اختيار "رسم
-    بياني")، ثم زر مسح تاريخ المحادثة. القيم المُختارة تُخزَّن في
-    session_state مباشرة (بدون form) فتُقرأ وقت الإرسال.
+    بياني")، طول الإجابة (فقط عند اختيار "سؤال وجواب")، ثم زر مسح
+    تاريخ المحادثة. القيم المُختارة تُخزَّن في session_state مباشرة
+    (بدون form) فتُقرأ وقت الإرسال.
     """
     has_popover = hasattr(st, "popover")
     # 🆕 fallback الـ expander (نسخ Streamlit القديمة بلا st.popover)
@@ -251,6 +272,12 @@ def _render_options_popover(db) -> None:
                 "نوع الرسم", list(CHART_TYPES.keys()),
                 format_func=lambda t: CHART_TYPES[t],
                 key="_chat_chart_type",
+            )
+        if result_type == "qa":
+            st.selectbox(
+                "طول الإجابة", list(QA_ANSWER_LENGTHS.keys()),
+                format_func=lambda t: QA_ANSWER_LENGTHS[t],
+                key="_chat_answer_length",
             )
 
         st.divider()
@@ -283,6 +310,21 @@ def _render_clear_history_button(db) -> None:
             st.session_state["_chat_options_expander_open"] = True
             st.rerun()
 
+
+def _build_qa_history() -> list:
+    """
+    🆕 ذاكرة محادثة نوع "qa": أسئلة/أجوبة "qa" الناجحة فقط من هذه
+    الجلسة بالترتيب الزمني. الاقتطاع إلى آخر config.QA_HISTORY_TURNS
+    عنصر يتم داخل AIManager.answer_question (مكان واحد لهذا القرار).
+    """
+    turns = []
+    for item in st.session_state.get(_THREAD_KEY, []):
+        r = item.get("result") or {}
+        if item.get("result_type") == "qa" and r.get("ok") and r.get("answer"):
+            turns.append({"question": item["question"], "answer": r["answer"]})
+    return turns
+
+
 def _handle_submit(db, ai, settings: dict, question: str) -> None:
     if not question.strip():
         notify("الرجاء كتابة سؤال", kind="warning")
@@ -290,17 +332,25 @@ def _handle_submit(db, ai, settings: dict, question: str) -> None:
 
     result_type = st.session_state.get("_chat_result_type", "table")
     chart_type = st.session_state.get("_chat_chart_type", "bar")
+    answer_length = st.session_state.get("_chat_answer_length", QA_DEFAULT_ANSWER_LENGTH)
 
-    spinner_msg = (
-        "جاري تحليل البيانات وكتابة التقرير..." if result_type == "story"
-        else "جاري التفكير..."
-    )
+    if result_type == "story":
+        spinner_msg = "جاري تحليل البيانات وكتابة التقرير..."
+    elif result_type == "qa":
+        spinner_msg = "جاري البحث في البيانات واستخراج الرؤى..."
+    else:
+        spinner_msg = "جاري التفكير..."
     
     # 🆕 إظهار الرسالة في مربع طائر (Toast)
     st.toast(f"⏳ {spinner_msg}", icon="💡")
 
     if result_type == "story":
         result = ai.tell_story(question, ai_rules=settings.get("ai_rules"))
+    elif result_type == "qa":
+        result = ai.answer_question(
+            question, ai_rules=settings.get("ai_rules"),
+            answer_length=answer_length, history=_build_qa_history(),
+        )
     else:
         result = ai.ask(question, result_type=result_type, ai_rules=settings.get("ai_rules"))
 
@@ -379,6 +429,29 @@ def _render_qa_card(db, settings: dict, item: dict) -> None:
         _render_send_to_report_form(db, item)
 
 
+def _render_query_data_block(settings, q: dict) -> None:
+    """
+    🆕 عرض بيانات استعلام واحد (نوع "qa") كاملة بلا اقتطاع — جدول
+    مُنسَّق بالثيم لو ≤ _QA_THEMED_TABLE_MAX_ROWS صفاً، وإلا
+    st.dataframe التفاعلي (تمرير/فرز سلس لبيانات كبيرة).
+    """
+    st.markdown(f"**{q.get('title', 'بيانات')}**")
+    if not q.get("ok"):
+        st.caption(f"⚠️ فشل هذا الاستعلام: {q.get('error')}")
+        return
+
+    qdf = q.get("df")
+    if qdf is None or qdf.empty:
+        st.caption("لا توجد صفوف مطابقة")
+        return
+
+    st.caption(f"{len(qdf)} صف")
+    if len(qdf) <= _QA_THEMED_TABLE_MAX_ROWS:
+        render_themed_table(qdf, settings)
+    else:
+        st.dataframe(qdf, width="stretch", hide_index=True)
+
+
 def _render_answer_body(settings, result: dict, result_type: str, chart_type: str, key_prefix: str) -> None:
     df: pd.DataFrame = result.get("df")
     chart_theme = get_chart_theme(settings)
@@ -448,6 +521,18 @@ def _render_answer_body(settings, result: dict, result_type: str, chart_type: st
                         st.caption(f"⚠️ فشل هذا الاستعلام: {q.get('error')}")
                     st.divider()
 
+    elif result_type == "qa":
+        # 🆕 الإجابة (Markdown: الإجابة / الرؤى / الرأي / ملاحظات) ثم
+        # البيانات المستخدمة كاملة داخل expander.
+        st.markdown(result.get("answer", ""))
+
+        queries = result.get("queries", [])
+        if queries:
+            with st.expander("📊 البيانات المستخدمة"):
+                for q in queries:
+                    _render_query_data_block(settings, q)
+                    st.divider()
+
 
 # ══════════════════════════════════════════════════════════════
 #  إرسال إلى تقرير — نموذج (form) مستقل لكل بطاقة
@@ -474,9 +559,11 @@ def _render_send_to_report_form(db, item: dict) -> None:
         )
         label = st.text_input("عنوان/تسمية (لـ KPI أو Gauge)", value="", key=f"report_label_{key_base}")
         include_data_table = False
-        if result_type == "story":
+        if result_type in ("story", "qa"):
             include_data_table = st.checkbox(
-                "إرفاق جدول البيانات مع التحليل النصي", value=False, key=f"report_incl_{key_base}",
+                "إرفاق جدول البيانات مع التحليل النصي" if result_type == "story"
+                else "إرفاق جداول البيانات مع الإجابة",
+                value=False, key=f"report_incl_{key_base}",
             )
         submitted = st.form_submit_button("إرسال")
         if submitted:
@@ -489,7 +576,8 @@ def _render_send_to_report_form(db, item: dict) -> None:
                 result_id = str(uuid.uuid4())
                 r = _add_block_for_type(
                     rm, report_id, result_id, result_type, df, label,
-                    story_text=result.get("story"), include_data_table=include_data_table,
+                    story_text=result.get("story") or result.get("answer"),
+                    include_data_table=include_data_table,
                     chart_type=chart_type, queries=result.get("queries"),
                 )
                 if r["ok"]:
@@ -526,7 +614,7 @@ def _add_block_for_type(rm, report_id, result_id, result_type, df: pd.DataFrame,
             target_value=row.get("target_value", 0),
             label=label,
         )
-    if result_type == "story":
+    if result_type in ("story", "qa"):
         text = story_text or ""
         if label:
             text = f"## {label}\n\n{text}"

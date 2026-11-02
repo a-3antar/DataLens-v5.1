@@ -11,6 +11,12 @@ ai/ai_manager.py
 🧹 تنظيف: حُذفت get_models()/engine_status() من AIManager — كانتا غير
 مستخدمتين في أي مكان بالمشروع (جلب النماذج وفحص حالة المحرك يتمّان
 عبر استدعاء engine.get_models()/engine.status() مباشرة في ui/settings.py).
+
+🆕 سؤال وجواب (answer_question):
+-----------------------------------
+نوع نتيجة جديد "qa" — راجع توثيق الدالة أدناه. لا تغيير على ask()
+ولا tell_story(): _parse_story_queries فقط حصلت على معامل اختياري
+max_queries (افتراضيه STORY_MAX_QUERIES = السلوك القديم بالضبط).
 """
 import json
 import time
@@ -26,7 +32,7 @@ from core.project_db              import ProjectDB
 from core.query_engine            import QueryEngine
 from config import (
     OLLAMA_DEFAULT_URL, STORY_SAMPLE_ROWS_IN_PROMPT, AI_RETRY_DELAY_SECONDS,
-    STORY_TIMEOUT_SECONDS, STORY_MAX_QUERIES,
+    STORY_TIMEOUT_SECONDS, STORY_MAX_QUERIES, QA_MAX_QUERIES, QA_HISTORY_TURNS,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,10 +90,13 @@ class AIManager:
     max_total_wait_seconds       : 0/None = بدون حد. خلاف ذلك، ميزانية
                                     زمنية كلية لعملية ask() الواحدة.
     story_max_total_wait_seconds : نفس الفكرة لكن مستقلة لعملية
-                                    tell_story() الكاملة.
+                                    tell_story() الكاملة (وتُستخدم أيضاً
+                                    لعملية answer_question()).
     story_timeout                 : مهلة اتصال (بالثواني) لمرحلة توليد
                                     نص السرد فقط، مستقلة عن "timeout"
-                                    الممرَّر للمحرك (المستخدم في SQL).
+                                    الممرَّر للمحرك (المستخدم في SQL)،
+                                    وتُستخدم أيضاً لمرحلة كتابة إجابة
+                                    answer_question().
     """
 
     def __init__(
@@ -489,8 +498,12 @@ class AIManager:
             )
         return result
 
-    def _parse_story_queries(self, text: str) -> dict:
-        """تحليل رد AI (خطة الاستعلامات) كـ JSON، مع تقييد العدد بحد STORY_MAX_QUERIES."""
+    def _parse_story_queries(self, text: str, max_queries: int = STORY_MAX_QUERIES) -> dict:
+        """
+        تحليل رد AI (خطة الاستعلامات) كـ JSON، مع تقييد العدد بـ max_queries.
+        الافتراضي STORY_MAX_QUERIES (سلوك Story Telling القديم بالضبط)؛
+        answer_question تمرّر QA_MAX_QUERIES.
+        """
         text = self.engine.clean_response(text)
         try:
             start = text.index("{")
@@ -504,7 +517,7 @@ class AIManager:
             return {"ok": False, "error": "لم يتم إرجاع أي استعلامات في الخطة"}
 
         cleaned = []
-        for q in queries[:STORY_MAX_QUERIES]:
+        for q in queries[:max_queries]:
             if not isinstance(q, dict):
                 continue
             sql = str(q.get("sql", "")).strip()
@@ -516,6 +529,196 @@ class AIManager:
             return {"ok": False, "error": "لا يوجد استعلام SQL صالح ضمن الخطة"}
 
         return {"ok": True, "queries": cleaned}
+
+    # ──────────────────────────────────────────────────────────
+    #  🆕 سؤال وجواب (Q&A / رؤى)
+    # ──────────────────────────────────────────────────────────
+    def answer_question(
+        self,
+        question     : str,
+        ai_rules     : Optional[str] = None,
+        answer_length: str = "short",
+        history      : Optional[list] = None,
+    ) -> dict:
+        """
+        سؤال حر عن البيانات → خطة استعلامات (بحث/فلترة/تجميع) → تنفيذها
+        كلها → إجابة مباشرة + رؤى + رأي AI (Markdown).
+
+        الفلاتر يحددها المستخدم داخل نص السؤال نفسه (يترجمها AI إلى
+        WHERE) — لا Slicers هنا. لا سقف لعدد صفوف نتائج الاستعلامات
+        المُرسَلة لـ AI (تظهر كاملة)؛ الـ prompt يطلب التجميع عند
+        الحاجة (راجع PromptBuilder._qa_plan_rules).
+
+        answer_length: "short" | "long" (راجع config.QA_ANSWER_LENGTHS).
+        history: [{"question": "...", "answer": "..."}] — يُقتطع هنا
+                 إلى آخر QA_HISTORY_TURNS عنصر فقط (config.py)؛ 0 =
+                 بدون ذاكرة.
+
+        سياسة الفشل: تفشل العملية فقط لو لم ينجح أي استعلام؛ لو نجح
+        بعضها، تُكتب الإجابة من الناجح فقط ويُبلَّغ AI بالفاشل (قسم
+        FAILED QUERIES) ليذكره كقيد بدل بناء أرقام عليه.
+
+        يرجع (نفس شكل tell_story مع "answer" بدل "story"):
+        {
+            "ok", "tries", "queries": [...], "answer": "Markdown",
+            "answer_length", "rows", "sql", "df",
+            "error"/"error_type" ← عند الفشل
+        }
+        """
+        qa_start = time.monotonic()
+        question = question.strip()
+        if not question:
+            return {"ok": False, "error": "السؤال فارغ", "tries": 0}
+
+        schema = self.db.get_schema()
+        if not schema:
+            return {"ok": False, "error": "لا توجد جداول محملة في المشروع", "tries": 0}
+
+        history_turns = []
+        if QA_HISTORY_TURNS > 0 and history:
+            history_turns = list(history)[-QA_HISTORY_TURNS:]
+
+        relations = self.db.get_relations()
+        builder = PromptBuilder(schema=schema, relations=relations, ai_rules=ai_rules)
+
+        # ── المرحلة ١: خطة الاستعلامات ──
+        prompt = builder.build_qa_plan(question, history=history_turns)
+        queries_plan = None
+        tries = 0
+        last_error = ""
+        last_error_type = None
+
+        for attempt in range(1, self.max_tries + 1):
+            tries = attempt
+            send_result = self.engine.send(prompt, self.temperature)
+
+            if not send_result["ok"]:
+                last_error = send_result["error"]
+                last_error_type = send_result.get("error_type")
+                logger.warning("QA plan send failed (attempt %d): %s", attempt, last_error)
+
+                if last_error_type in _PERMANENT_ERROR_TYPES:
+                    break
+                if attempt < self.max_tries:
+                    if self._budget_exceeded(qa_start, self.story_max_total_wait_seconds):
+                        break
+                    if self.retry_delay > 0:
+                        time.sleep(self.retry_delay)
+                    continue
+                break
+
+            parsed = self._parse_story_queries(send_result["text"], max_queries=QA_MAX_QUERIES)
+            if not parsed["ok"]:
+                last_error = parsed["error"]
+                last_error_type = None
+                logger.warning("QA plan parse failed (attempt %d): %s", attempt, last_error)
+                if attempt < self.max_tries:
+                    prompt = builder.build_error_retry(
+                        original_prompt=prompt,
+                        failed_sql=send_result["text"][:800],
+                        error_message=last_error,
+                    )
+                    continue
+                break
+
+            queries_plan = parsed["queries"]
+            break
+
+        if not queries_plan:
+            return {
+                "ok": False,
+                "error": last_error or "تعذر توليد خطة استعلامات الإجابة",
+                "tries": tries,
+                "error_type": last_error_type,
+            }
+
+        # ── المرحلة ٢: تنفيذ كل استعلام (بدون Slicers) ──
+        executed = []
+        for q in queries_plan:
+            sql = str(q.get("sql", "")).strip()
+            title = str(q.get("title") or "بيانات").strip()
+            if not sql:
+                continue
+            run_result = self.qe.run(sql)
+            if run_result["ok"]:
+                executed.append({
+                    "title": title, "sql": run_result.get("sql", sql),
+                    "ok": True, "df": run_result["df"], "rows": run_result["rows"],
+                })
+            else:
+                executed.append({
+                    "title": title, "sql": sql,
+                    "ok": False, "error": run_result["error"],
+                })
+
+        successful = [e for e in executed if e["ok"]]
+        failed = [e for e in executed if not e["ok"]]
+
+        if not executed:
+            return {"ok": False, "error": "لم يُرجع الذكاء الاصطناعي أي استعلامات صالحة", "tries": tries}
+        if not successful:
+            errors_text = "؛ ".join(f"{e['title']}: {e.get('error', '')}" for e in failed)
+            return {
+                "ok": False,
+                "error": f"فشلت كل الاستعلامات: {errors_text}",
+                "tries": tries,
+                "queries": executed,
+            }
+
+        # ── المرحلة ٣: كتابة الإجابة (بيانات كاملة بلا اقتطاع) ──
+        answer_prompt = builder.build_qa_answer(
+            question,
+            [{"title": e["title"], "df": e["df"]} for e in successful],
+            answer_length=answer_length,
+            history=history_turns,
+            failed=[{"title": e["title"], "error": e.get("error", "")} for e in failed],
+        )
+
+        send_result = None
+        for attempt in range(1, self.max_tries + 1):
+            tries = attempt
+            send_result = self.engine.send(
+                answer_prompt, self.temperature, timeout_override=self.story_timeout,
+            )
+            if send_result["ok"]:
+                break
+
+            error_type = send_result.get("error_type")
+            logger.warning(
+                "QA answer send failed (attempt %d/%d): %s",
+                attempt, self.max_tries, send_result["error"],
+            )
+            if error_type in _PERMANENT_ERROR_TYPES:
+                break
+            if attempt < self.max_tries:
+                if self._budget_exceeded(qa_start, self.story_max_total_wait_seconds):
+                    break
+                if self.retry_delay > 0:
+                    time.sleep(self.retry_delay)
+
+        if not send_result or not send_result["ok"]:
+            return {
+                "ok": False,
+                "error": f"فشل توليد الإجابة: {(send_result or {}).get('error', 'unknown')}",
+                "tries": tries,
+                "queries": executed,
+                "error_type": (send_result or {}).get("error_type"),
+            }
+
+        answer_text = self.engine.clean_response(send_result["text"]).strip()
+        if not answer_text:
+            return {"ok": False, "error": "رد AI فارغ عند توليد الإجابة", "tries": tries, "queries": executed}
+
+        return {
+            "ok": True,
+            "tries": tries,
+            "queries": executed,
+            "answer": answer_text,
+            "answer_length": answer_length,
+            "rows": sum(e["rows"] for e in successful),
+            "sql": "\n\n".join(f"-- {e['title']}\n{e['sql']}" for e in successful),
+            "df": successful[0]["df"],
+        }
 
 
 # ══════════════════════════════════════════════════════════════
