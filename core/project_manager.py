@@ -1,13 +1,27 @@
 """
 core/project_manager.py
 ========================
-إنشاء / حذف / إدراج / تصدير / استيراد المشاريع.
-يعمل فوق ProjectDB ولا يتعامل مع الـ db مباشرة.
+إنشاء / حذف / إدراج / تصدير / استيراد / ضغط المشاريع.
+يعمل فوق ProjectDB ولا يتعامل مع الـ db مباشرة، باستثناء عمليات
+الصيانة على ملف project.db نفسه (VACUUM) التي لا توجد لها دالة في
+ProjectDB — نفس النمط المتّبع في core/dashboard_manager.py::
+update_dashboard_template عبر sqlite3 مباشرة دون تعديل project_db.py.
+
+🆕 تقليل حجم ملفات المشاريع:
+------------------------------
+- compact(): تنفيذ VACUUM لإعادة المساحة الفارغة التي يتركها SQLite
+  داخل الملف بعد كل إعادة كتابة لجدول (تنظيف البيانات، تحديث ملف...).
+- export(compress=True): تصدير نسخة مكتنزة عبر VACUUM INTO (بدون
+  المساحة الفارغة) ثم ضغطها gzip — يصغّر ملف التصدير كثيراً.
+- import_project(): يقبل .db أو .db.gz (الناتج عن التصدير المضغوط).
 """
 
+import gzip
 import uuid
 import shutil
+import sqlite3
 import logging
+import tempfile
 from pathlib import Path
 from typing  import Optional
 
@@ -25,6 +39,7 @@ class ProjectManager:
         pm = ProjectManager(user_id="u1")
         project_id = pm.create("مشروع المبيعات")
         pm.list_projects()
+        pm.compact(project_id)
         pm.delete(project_id)
     """
 
@@ -143,7 +158,7 @@ class ProjectManager:
 
     def _close_db_connections(self, project_dir: Path) -> None:
         """إغلاق اتصالات SQLite المفتوحة في مجلد المشروع."""
-        import sqlite3, gc
+        import gc
         # تشغيل garbage collector لإغلاق أي connection غير مُغلق
         gc.collect()
         # إغلاق صريح لكل ملفات .db في المجلد
@@ -155,20 +170,80 @@ class ProjectManager:
                 pass
 
     # ──────────────────────────────────────────────────────────
+    #  🆕 ضغط (تنظيف) ملف project.db
+    # ──────────────────────────────────────────────────────────
+
+    def _db_path(self, project_id: str) -> Path:
+        """مسار ملف project.db الفعلي للمشروع."""
+        return self.user_dir / project_id / "project.db"
+
+    def compact(self, project_id: str) -> dict:
+        """
+        تنفيذ VACUUM على project.db لإرجاع المساحة الفارغة التي يتركها
+        SQLite داخل الملف بعد كل إعادة كتابة لجدول (تنظيف البيانات،
+        تحديث ملف، حذف جدول/لوحة/محادثات...). لا يغيّر أي بيانات.
+
+        يرجع: {"ok": True, "before_mb": X, "after_mb": Y}
+               أو {"ok": False, "error": "..."}
+        """
+        db_path = self._db_path(project_id)
+        if not db_path.exists():
+            return {"ok": False, "error": "المشروع غير موجود"}
+        try:
+            before = db_path.stat().st_size
+            self._close_db_connections(db_path.parent)
+            # VACUUM لا يعمل داخل transaction — autocommit مطلوب
+            conn = sqlite3.connect(str(db_path), isolation_level=None)
+            try:
+                conn.execute("VACUUM")
+            finally:
+                conn.close()
+            after = db_path.stat().st_size
+            logger.info("Project compacted: %s — %.2f MB -> %.2f MB",
+                        project_id, before / 1048576, after / 1048576)
+            return {
+                "ok": True,
+                "before_mb": round(before / 1048576, 2),
+                "after_mb" : round(after / 1048576, 2),
+            }
+        except Exception as e:
+            logger.error("compact error: %s", e)
+            return {"ok": False, "error": str(e)}
+
+    # ──────────────────────────────────────────────────────────
     #  تصدير واستيراد
     # ──────────────────────────────────────────────────────────
 
-    def export(self, project_id: str, export_path: Path) -> dict:
+    def export(self, project_id: str, export_path: Path, compress: bool = False) -> dict:
         """
-        تصدير project.db إلى مسار خارجي.
+        تصدير project.db إلى مسار خارجي كنسخة مكتنزة (VACUUM INTO —
+        بدون المساحة الفارغة داخل الملف الأصلي).
+
+        compress=True: تُضغط النسخة بـ gzip (يُفضَّل أن ينتهي export_path
+        بـ .db.gz ليتعرّف عليه import_project تلقائياً).
+
         يرجع: {"ok": True, "path": "..."} أو {"ok": False, "error": "..."}
         """
         db = self.open(project_id)
         if not db:
             return {"ok": False, "error": "المشروع غير موجود"}
         try:
-            shutil.copy2(db.db_path, export_path)
-            logger.info("Project exported: %s → %s", project_id, export_path)
+            with tempfile.TemporaryDirectory(prefix="datalens_vacuum_") as tmp_dir:
+                compact_copy = Path(tmp_dir) / "project.db"
+                src = sqlite3.connect(str(db.db_path))
+                try:
+                    # VACUUM INTO يتطلب SQLite 3.27+ والملف الهدف غير موجود
+                    src.execute("VACUUM INTO ?", (str(compact_copy),))
+                finally:
+                    src.close()
+
+                if compress:
+                    with open(compact_copy, "rb") as f_in, gzip.open(export_path, "wb", compresslevel=9) as f_out:
+                        shutil.copyfileobj(f_in, f_out)
+                else:
+                    shutil.copy2(compact_copy, export_path)
+
+            logger.info("Project exported: %s → %s (compress=%s)", project_id, export_path, compress)
             return {"ok": True, "path": str(export_path)}
         except Exception as e:
             logger.error("export error: %s", e)
@@ -176,19 +251,27 @@ class ProjectManager:
 
     def import_project(self, db_file: Path) -> dict:
         """
-        استيراد project.db من ملف خارجي.
+        استيراد project.db من ملف خارجي (.db أو .db.gz الناتج عن
+        التصدير المضغوط).
         يرجع: {"ok": True, "project_id": "..."} أو {"ok": False, "error": "..."}
         """
         if not db_file.exists():
             return {"ok": False, "error": "الملف غير موجود"}
-        if db_file.suffix != ".db":
-            return {"ok": False, "error": "الملف يجب أن يكون بامتداد .db"}
+
+        is_gzip = db_file.suffix == ".gz"
+        if not is_gzip and db_file.suffix != ".db":
+            return {"ok": False, "error": "الملف يجب أن يكون بامتداد .db أو .db.gz"}
+
+        project_id  = str(uuid.uuid4())
+        project_dir = self.user_dir / project_id
         try:
-            project_id  = str(uuid.uuid4())
-            project_dir = self.user_dir / project_id
             project_dir.mkdir(parents=True)
             dest = project_dir / "project.db"
-            shutil.copy2(db_file, dest)
+            if is_gzip:
+                with gzip.open(db_file, "rb") as f_in, open(dest, "wb") as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+            else:
+                shutil.copy2(db_file, dest)
             # التحقق من سلامة الملف
             db = ProjectDB(self.user_id, project_id)
             _ = db.get_settings()
@@ -196,7 +279,6 @@ class ProjectManager:
             return {"ok": True, "project_id": project_id}
         except Exception as e:
             logger.error("import error: %s", e)
-            project_dir = self.user_dir / project_id
             if project_dir.exists():
                 shutil.rmtree(project_dir, ignore_errors=True)
             return {"ok": False, "error": str(e)}

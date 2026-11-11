@@ -17,6 +17,11 @@ core/data_manager.py
   إحصاءات مناسبة لكل نوع، بدل فرض pd.to_numeric على كل الأعمدة (كان
   يُنتج NaN/أصفاراً بلا معنى لأي عمود نصي وحتى بعض أعمدة التاريخ).
 - 🆕 drop_empty_rows لحذف الصفوف الفارغة كلياً/جزئياً أو حسب عمود محدد.
+- 🆕 _basic_clean تقصّ المسافات الزائدة (بداية/نهاية) من قيم الأعمدة
+  النصية عند التحميل. بدون ذلك تبقى قيم مثل "IDEAL STD. " بمسافة
+  زائدة في البيانات؛ فلاتر لوحات المعلومات (Slicers) تأخذ القيمة
+  حرفياً من البيانات، بينما يكتب الـ AI القيمة في شرط WHERE بدون
+  المسافة — فلا يتطابق الشرطان معاً وتعود الاستعلامات فارغة.
 """
 
 import logging
@@ -101,13 +106,26 @@ class DataManager:
         return {"ok": True, "rows": len(df), "cols": len(df.columns), "file_id": record_id}
 
     def _basic_clean(self, df: pd.DataFrame) -> pd.DataFrame:
-        """تنظيف أولي تلقائي لكل DataFrame."""
+        """
+        تنظيف أولي تلقائي لكل DataFrame عند التحميل:
+        - حذف الصفوف والأعمدة الفارغة كلياً.
+        - توحيد أسماء الأعمدة (strip + مسافة → "_" + lower).
+        - 🆕 قصّ المسافات الزائدة من بداية/نهاية قيم الأعمدة النصية،
+          حتى تتطابق القيم المعروضة في فلاتر اللوحات مع القيم التي
+          يكتبها الـ AI في شروط WHERE. تُترك القيم غير النصية (أرقام،
+          تواريخ، NaN) كما هي دون أي تغيير.
+        """
         df = df.dropna(how="all")
         df = df.dropna(axis=1, how="all")
         df.columns = [
             str(c).strip().replace(" ", "_").lower()
             for c in df.columns
         ]
+
+        for col in df.columns:
+            if df[col].dtype == object or pd.api.types.is_string_dtype(df[col]):
+                df[col] = df[col].map(lambda v: v.strip() if isinstance(v, str) else v)
+
         return df.reset_index(drop=True)
 
     # ──────────────────────────────────────────────────────────

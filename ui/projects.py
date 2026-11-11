@@ -1,7 +1,7 @@
 """
 ui/projects.py
 ==============
-إنشاء / فتح / إعادة تسمية / حذف / تصدير / استيراد المشاريع.
+إنشاء / فتح / إعادة تسمية / حذف / ضغط / تصدير / استيراد المشاريع.
 
 عند إنشاء مشروع جديد، تُعبَّأ إعدادات محرك AI (والمفتاح) تلقائياً
 بآخر محرك+مفتاح+نموذج استخدمه المستخدم (من users.db عبر AuthManager)
@@ -13,9 +13,10 @@ ui/projects.py
 ------------------------------------------------------------------
 كل مشروع الآن بطاقة (container بحدود) ضمن شبكة من 3 أعمدة بدل صف
 أفقي بأربعة أزرار متجاورة. الفعل الرئيسي ("فتح") زر primary بارز
-داخل البطاقة، وبقية الإجراءات (تصدير / إعادة تسمية / حذف) مجمّعة
-داخل قائمة "⁝" منسدلة واحدة (st.popover) — نفس فلسفة تقليل الأزرار
-المتنافسة بصرياً المتّبعة في نظام التصميم الموحّد (راجع ui/common.py).
+داخل البطاقة، وبقية الإجراءات (ضغط / تصدير / إعادة تسمية / حذف)
+مجمّعة داخل قائمة "⁝" منسدلة واحدة (st.popover) — نفس فلسفة تقليل
+الأزرار المتنافسة بصرياً المتّبعة في نظام التصميم الموحّد (راجع
+ui/common.py).
 
 🆕 الانتقال التلقائي بعد فتح/إنشاء مشروع:
 ------------------------------------------------------------------
@@ -29,6 +30,16 @@ st.session_state["_jump_to_page"] (تُقرأ من main.py عبر _JUMP_TARGETS)
     صفحة الملفات هي الخطوة المنطقية التالية فعلياً (رفع أول ملف
     بيانات). لو تغيّر هذا التفضيل مستقبلاً يكفي تبديل القيمة أدناه
     إلى "dashboards".
+
+🆕 ضغط المشاريع وتقليل حجمها:
+------------------------------------------------------------------
+- "🧹 ضغط المشروع": يستدعي ProjectManager.compact (VACUUM) لإرجاع
+  المساحة الفارغة التي يتركها SQLite داخل project.db بعد كل تنظيف
+  بيانات أو تحديث ملف أو حذف. لا يغيّر أي بيانات، ويعرض الحجم
+  قبل/بعد في إشعار.
+- "⬇️ تصدير مضغوط": نسخة .db.gz مكتنزة (VACUUM INTO + gzip) أصغر
+  بكثير من التصدير العادي.
+- الاستيراد يقبل .db أو .db.gz (الناتج عن التصدير المضغوط).
 """
 
 from ai import prompt_builder
@@ -149,18 +160,22 @@ def _render_create_form(pm):
 
 def _render_import_form(pm):
     """
-    نموذج استيراد مشروع من ملف .db — st.form كامل يشمل رفع الملف
-    وزر الإرسال معاً.
+    نموذج استيراد مشروع من ملف .db أو .db.gz (الناتج عن "تصدير مضغوط")
+    — st.form كامل يشمل رفع الملف وزر الإرسال معاً.
     """
     with st.form("import_project"):
-        uploaded = st.file_uploader("اختر ملف .db", type=["db"])
+        uploaded = st.file_uploader("اختر ملف .db أو .db.gz", type=["db", "gz"])
         submitted = st.form_submit_button("📥 استيراد", type="primary", width="stretch")
 
     if submitted:
         if not uploaded:
-            st.error("الرجاء اختيار ملف .db أولاً")
+            st.error("الرجاء اختيار ملف .db أو .db.gz أولاً")
             return
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+
+        # ProjectManager.import_project يميّز المضغوط من لاحقة الملف
+        # (.gz)، فنحافظ على اللاحقة الأصلية في الملف المؤقت.
+        tmp_suffix = ".db.gz" if uploaded.name.lower().endswith(".gz") else ".db"
+        with tempfile.NamedTemporaryFile(suffix=tmp_suffix, delete=False) as tmp:
             tmp.write(uploaded.getbuffer())
             tmp_path = Path(tmp.name)
         try:
@@ -206,7 +221,10 @@ def _render_project_card(pm, p: dict):
 
 
 def _render_project_actions_menu(pm, p: dict):
-    """محتوى قائمة "⁝": تصدير / إعادة تسمية / حذف — مجمّعة بدل أزرار متجاورة."""
+    """
+    محتوى قائمة "⁝": إعادة تسمية / ضغط / تصدير (عادي ومضغوط) / حذف —
+    مجمّعة بدل أزرار متجاورة.
+    """
     pid = p["project_id"]
 
     st.divider()
@@ -229,6 +247,21 @@ def _render_project_actions_menu(pm, p: dict):
             else:
                 st.error(r["error"])
 
+    # 🆕 ضغط المشروع (VACUUM) — يعيد المساحة الفارغة داخل project.db.
+    # عملية آمنة لا تغيّر أي بيانات، فلا تحتاج تأكيداً ثنائياً.
+    if st.button("🧹 ضغط المشروع", key=f"compact_{pid}", width="stretch",
+                 help="يُرجع المساحة الفارغة داخل ملف المشروع بعد التنظيف والحذف والتحديث"):
+        with st.spinner("⏳ جاري ضغط المشروع..."):
+            r = pm.compact(pid)
+        if r["ok"]:
+            notify(
+                f"تم الضغط: {r['before_mb']} MB ← {r['after_mb']} MB",
+                kind="success",
+            )
+            st.rerun()
+        else:
+            st.error(r["error"])
+
     if st.button("⬇️ تصدير المشروع", key=f"export_{pid}", width="stretch"):
         with temp_export_dir() as out_dir:
             out_path = out_dir / f"{p['name']}.db"
@@ -237,6 +270,19 @@ def _render_project_actions_menu(pm, p: dict):
                 offer_download(
                     out_path, "⬇️ تحميل الملف", f"{p['name']}.db",
                     key=f"dl_{pid}",
+                )
+            else:
+                st.error(r["error"])
+
+    # 🆕 تصدير مضغوط (.db.gz) — أصغر بكثير، ويقبله الاستيراد مباشرة.
+    if st.button("🗜️ تصدير مضغوط (.db.gz)", key=f"export_gz_{pid}", width="stretch"):
+        with temp_export_dir() as out_dir:
+            out_path = out_dir / f"{p['name']}.db.gz"
+            r = pm.export(pid, out_path, compress=True)
+            if r["ok"]:
+                offer_download(
+                    out_path, "⬇️ تحميل الملف المضغوط", f"{p['name']}.db.gz",
+                    key=f"dl_gz_{pid}", mime="application/gzip",
                 )
             else:
                 st.error(r["error"])
