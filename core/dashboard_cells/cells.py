@@ -62,6 +62,10 @@ from ui.common import render_themed_table, apply_plotly_theme, get_chart_theme, 
 from core.dashboard_cells.base import DashboardCellBase, _sanitize_rows
 from config import CHART_TYPES
 
+# 🆕 عدد صفوف الصفحة الواحدة في خلية الجدول — الجداول الأطول تُعرض
+# على صفحات مع أزرار السابق/التالي (راجع TableCell.render_result).
+_TABLE_PAGE_SIZE = 25
+
 
 # ══════════════════════════════════════════════════════════════
 #  EmptyCell — خلية بلا question بعد، لا ترث DashboardCellBase
@@ -128,7 +132,35 @@ class TableCell(DashboardCellBase):
         if self._render_error_or_empty():
             return
         df = pd.DataFrame(self.last_result.get("rows", []))
-        st.dataframe(df, width='stretch', hide_index=True)
+        total = len(df)
+
+        if total <= _TABLE_PAGE_SIZE:
+            st.dataframe(df, width='stretch', hide_index=True)
+            self._render_updated_caption(settings)
+            return
+
+        # 🆕 ترقيم صفحات: الصفحة الحالية محفوظة في session_state لكل خلية.
+        pages = -(-total // _TABLE_PAGE_SIZE)
+        page_key = f"table_page_{dashboard_id}_{self.position}"
+        page = min(max(int(st.session_state.get(page_key, 1)), 1), pages)
+        start = (page - 1) * _TABLE_PAGE_SIZE
+
+        st.dataframe(
+            df.iloc[start:start + _TABLE_PAGE_SIZE], width='stretch', hide_index=True,
+        )
+
+        prev_col, info_col, next_col = st.columns([1, 2, 1])
+        with prev_col:
+            if st.button("▶ السابق", key=f"{page_key}_prev", disabled=page <= 1, width='stretch'):
+                st.session_state[page_key] = page - 1
+                st.rerun()
+        with info_col:
+            st.caption(f"صفحة {page} من {pages} — إجمالي {total} صف")
+        with next_col:
+            if st.button("التالي ◀", key=f"{page_key}_next", disabled=page >= pages, width='stretch'):
+                st.session_state[page_key] = page + 1
+                st.rerun()
+
         self._render_updated_caption(settings)
 
 
@@ -400,7 +432,7 @@ class StoryCell(DashboardCellBase):
     display_type = "story"
     label = "تحليل نصي (Story Telling)"
 
-    def execute(self, ai_manager, query_engine, filters: list, ai_rules) -> dict:
+    def execute(self, ai_manager, query_engine, dashboard_id: str, ai_rules) -> dict:
         """
         🆕 لو كان base_sql محفوظاً (يحمل JSON لخطة استعلامات سابقة)،
         يُعاد استخدامه مباشرة — لا يُستدعى AI لتوليد خطة جديدة، فقط
@@ -416,7 +448,7 @@ class StoryCell(DashboardCellBase):
                 base_queries = None
 
         r = ai_manager.tell_story(
-            self.question, ai_rules=ai_rules, filters=filters, base_queries=base_queries,
+            self.question, ai_rules=ai_rules, dashboard_id=dashboard_id, base_queries=base_queries,
         )
         r["used_ai"] = True
         return r

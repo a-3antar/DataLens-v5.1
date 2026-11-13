@@ -102,6 +102,7 @@ from core.project_db import ProjectDB
 from core.query_engine import QueryEngine
 from core.dashboard_templates import DASHBOARD_TEMPLATES, get_template
 from core.dashboard_cells import create_cell
+from core.dashboard_views import DashboardViews
 from ai.ai_manager import AIManager
 from config import DASHBOARD_GAUGE_COUNT, PROJECTS_DIR
 
@@ -118,6 +119,7 @@ class DashboardManager:
         self.db = db
         self.ai = ai
         self.qe = qe or QueryEngine(db)
+        self.views = DashboardViews(db)
 
     # ──────────────────────────────────────────────────────────
     #  خيارات الـ Slicers (جداول/أعمدة/قيم المشروع الكامل)
@@ -157,8 +159,41 @@ class DashboardManager:
     # ──────────────────────────────────────────────────────────
 
     def reset_slicers(self, dashboard_id: str) -> None:
-        """إعادة كل Slicers اللوحة إلى الوضع الافتراضي (بدون تنفيذ أي تحديث)."""
+        """إعادة كل Slicers اللوحة للوضع الافتراضي وإزالة views فلاترها."""
         self.db.reset_dashboard_slicers(dashboard_id)
+        self.views.sync(dashboard_id)
+
+    # ──────────────────────────────────────────────────────────
+    #  🆕 فلاتر اللوحة كـ views (طبقة بيانات منفصلة عن الاستعلامات)
+    #  التفاصيل الكاملة في core/dashboard_views.py
+    # ──────────────────────────────────────────────────────────
+
+    def sync_views(self, dashboard_id: str) -> dict:
+        """إعادة بناء views هذه اللوحة من فلاترها المحفوظة الحالية."""
+        return self.views.sync(dashboard_id)
+
+    def save_slicers(self, dashboard_id: str, rows: list) -> dict:
+        """
+        حفظ صفوف الـ Slicers (نفس شكل db.save_dashboard_slicer) ثم
+        إعادة بناء views اللوحة فوراً — نقطة الحفظ الوحيدة المعتمدة
+        حتى لا تتباعد الفلاتر المحفوظة عن الـ views الفعلية.
+        """
+        for row in rows:
+            self.db.save_dashboard_slicer(
+                dashboard_id, row["position"], row["table_name"],
+                row["column_name"], row["selected_values"],
+            )
+        return self.views.sync(dashboard_id)
+
+    def delete_dashboard(self, dashboard_id: str) -> None:
+        """حذف اللوحة (خلاياها وفلاترها) ثم حذف views فلاترها."""
+        self.db.delete_dashboard(dashboard_id)
+        self.views.drop(dashboard_id)
+
+    def duplicate_dashboard(self, dashboard_id: str, new_id: str, new_title: str) -> None:
+        """تكرار لوحة ثم بناء views اللوحة الجديدة من فلاترها المنسوخة."""
+        self.db.duplicate_dashboard(dashboard_id, new_id, new_title)
+        self.views.sync(new_id)
 
     # ──────────────────────────────────────────────────────────
     #  🆕 تعديل خصائص لوحة موجودة (قالب / عنوان) — sqlite3 مباشر
@@ -261,7 +296,7 @@ class DashboardManager:
     #  تنفيذ خلية واحدة (تُستدعى داخل thread — لا تكتب في DB)
     # ──────────────────────────────────────────────────────────
 
-    def _process_cell(self, cell_obj, filters: list, ai_rules: Optional[str]) -> dict:
+    def _process_cell(self, cell_obj, dashboard_id: str, ai_rules: Optional[str]) -> dict:
         """
         تنفيذ خلية واحدة فعلياً عبر cell_obj.execute() — بغض النظر عن
         نوعها (كل كلاس خلية يعرف منطقه الخاص، راجع core/dashboard_cells).
@@ -270,14 +305,14 @@ class DashboardManager:
         تحدث لاحقاً تسلسلياً بعد تجميع كل نتائج الـ threads.
         """
         try:
-            r = cell_obj.execute(self.ai, self.qe, filters, ai_rules)
+            r = cell_obj.execute(self.ai, self.qe, dashboard_id, ai_rules)
         except Exception as e:
             logger.error("Dashboard cell %d execution error: %s", cell_obj.position, e)
             r = {"ok": False, "error": str(e), "used_ai": False}
 
         return {"cell_obj": cell_obj, "position": cell_obj.position, "result": r}
 
-    def _submit_with_context(self, executor: ThreadPoolExecutor, cell_obj, filters: list, ai_rules: Optional[str]):
+    def _submit_with_context(self, executor: ThreadPoolExecutor, cell_obj, dashboard_id: str, ai_rules: Optional[str]):
         """
         🆕 إرسال _process_cell إلى الـ thread pool مع نقل سياق
         contextvars الحالي (بما فيه اسم المستخدم لأغراض اللوج — راجع
@@ -294,7 +329,7 @@ class DashboardManager:
         حالي أو مستقبلي ينتقل تلقائياً بنفس الطريقة.
         """
         ctx = contextvars.copy_context()
-        return executor.submit(ctx.run, self._process_cell, cell_obj, filters, ai_rules)
+        return executor.submit(ctx.run, self._process_cell, cell_obj, dashboard_id, ai_rules)
 
     # ──────────────────────────────────────────────────────────
     #  تحديث البيانات (كل خلايا اللوحة) — متوازٍ عبر Threads
@@ -350,7 +385,8 @@ class DashboardManager:
 
         cell_objs = [create_cell(r) for r in configured_rows]
 
-        filters = self._build_active_filters(dashboard_id)
+        # مزامنة views الفلاتر قبل بدء الـ threads (كتابة واحدة، ثم قراءات فقط)
+        self.sync_views(dashboard_id)
         total = len(cell_objs)
         done_count = [0]
 
@@ -381,7 +417,7 @@ class DashboardManager:
             workers = min(max_workers, max(1, len(story_cells)))
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="story") as ex:
                 futures = {
-                    self._submit_with_context(ex, c, filters, ai_rules): c
+                    self._submit_with_context(ex, c, dashboard_id, ai_rules): c
                     for c in story_cells
                 }
                 for f in as_completed(futures):
@@ -393,7 +429,7 @@ class DashboardManager:
             if engine_name != "ollama":
                 with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="cell") as ex:
                     futures = {
-                        self._submit_with_context(ex, c, filters, ai_rules): c
+                        self._submit_with_context(ex, c, dashboard_id, ai_rules): c
                         for c in other_cells
                     }
                     for f in as_completed(futures):
@@ -403,7 +439,7 @@ class DashboardManager:
                 # Ollama محلي — لا فائدة حقيقية من التوازي، نبقيه تسلسلياً
                 # (تنفيذ مباشر في الـ main thread — لا حاجة لنقل سياق هنا)
                 for c in other_cells:
-                    all_outcomes.append(self._process_cell(c, filters, ai_rules))
+                    all_outcomes.append(self._process_cell(c, dashboard_id, ai_rules))
                     track_progress()
 
         # ── كتابة النتائج تسلسلياً في project.db بعد انتهاء كل الـ threads ──
@@ -478,8 +514,7 @@ class DashboardManager:
             return {"ok": False, "error": "الخلية غير مُهيَّأة"}
 
         cell_obj = create_cell(row)
-        filters = self._build_active_filters(dashboard_id)
-        outcome = self._process_cell(cell_obj, filters, ai_rules)
+        outcome = self._process_cell(cell_obj, dashboard_id, ai_rules)
         r = outcome["result"]
         used_ai = bool(r.get("used_ai"))
 
@@ -499,75 +534,15 @@ class DashboardManager:
     # ──────────────────────────────────────────────────────────
     #  دوال داخلية
     # ──────────────────────────────────────────────────────────
-    def _build_active_filters(self, dashboard_id: str) -> list:
-        """
-        يحوّل Slicers المُفعَّلة فعلياً (لها جدول+عمود+قيم) إلى صيغة
-        الفلاتر التي يفهمها QueryEngine._build_where_clause.
-
-        الآن مجرد غلاف رقيق فوق filters_from_slicer_rows (راجعها
-        للتفاصيل الكاملة) — استُخرج المنطق منها ليكون قابلاً لإعادة
-        الاستخدام مع صفوف Slicer لم تُحفظ بعد في project_db (مثل
-        فلاتر شاشة "الإنشاء التلقائي" قبل وجود dashboard_id فعلي).
-        """
-        slicers = self.db.get_dashboard_slicers(dashboard_id)
-        return self.filters_from_slicer_rows(slicers)
-
-    def filters_from_slicer_rows(self, slicer_rows: list) -> list:
-        """
-        🆕 يحوّل قائمة صفوف Slicer خام (كل صف: {"table_name", "column_name",
-        "selected_values"}) إلى صيغة الفلاتر التي يفهمها
-        QueryEngine._build_where_clause — بدون أي اعتماد على وجود
-        dashboard_id محفوظ في project_db، حتى يمكن استخدامها لكل من:
-          (١) Slicers لوحة موجودة فعلاً (عبر _build_active_filters أعلاه)
-          (٢) فلاتر مُختارة في شاشة "الإنشاء التلقائي" قبل إنشاء أي لوحة.
-
-        فلتر التاريخ يُستخدم فيه نفس تخزين Slicer العادي (جدول + عمود +
-        selected_values) — التمييز يعتمد فقط على كون العمود مُسجَّلاً
-        كتاريخ فعلياً (_date_cols_{table}). في هذه الحالة selected_values
-        تحمل عنصرين بالضبط [start, end] بدل قائمة قيم مفتوحة، فتُبنى
-        كـ "date_range" بدل "values".
-        """
-        settings = self.db.get_settings()
-        filters = []
-        for s in slicer_rows:
-            table = s.get("table_name")
-            column = s.get("column_name")
-            values = s.get("selected_values")
-            if not table or not column or not values:
-                continue
-
-            date_cols = settings.get(f"_date_cols_{table}", [])
-            if column in date_cols and len(values) == 2:
-                filters.append({
-                    "table": table,
-                    "column": column,
-                    "date_range": {"start": values[0], "end": values[1]},
-                })
-            else:
-                filters.append({
-                    "table": table,
-                    "column": column,
-                    "values": values,
-                })
-        return filters
-
     # ──────────────────────────────────────────────────────────
     #  🆕 بناء خطة لوحة كاملة تلقائياً بالذكاء الاصطناعي
     # ──────────────────────────────────────────────────────────
-    def generate_dashboard_plan(self, description: str, ai_rules: Optional[str] = None,
-                                 filters: Optional[list] = None) -> dict:
+    def generate_dashboard_plan(self, description: str, ai_rules: Optional[str] = None) -> dict:
         """
         (نفس التوثيق السابق)
 
-        🆕 filters (اختياري): فلاتر بصيغة QueryEngine القياسية (نفس
-        شكل filters_from_slicer_rows) مُختارة من المستخدم في شاشة
-        الإنشاء التلقائي قبل توليد الخطة — تُضاف كسياق للـ prompt حتى
-        يقترح AI عناوين/أسئلة تتماشى مع نطاق البيانات المُصفّى فعلياً
-        (مثلاً فترة زمنية محددة أو حالة معينة)، تماماً كما تُستخدم في
-        PromptBuilder._build_filters لصفحة المحادثة. الفلاتر الفعلية
-        تبقى تُطبَّق لاحقاً كـ Slicers حقيقية على اللوحة بعد إنشائها
-        (راجع ui/dashboards.py) — هذا السياق هنا استرشادي فقط لتوليد
-        أسئلة أكثر دقة، وليس تنفيذاً فعلياً للفلترة في هذه المرحلة.
+        ملاحظة: لا تُمرَّر فلاتر للذكاء الاصطناعي هنا؛ فلاتر اللوحة تُطبَّق
+        لاحقاً كـ views في طبقة البيانات (core/dashboard_views.py).
         """
         schema = self.db.get_schema()
         if not schema:
@@ -583,21 +558,6 @@ class DashboardManager:
             schema_lines.append(f"{alias}: {cols}")
         schema_text = "\n".join(schema_lines)
 
-        filters_text = ""
-        if filters:
-            filter_lines = ["الفلاتر النشطة التالية ستُطبَّق فعلياً على بيانات هذه اللوحة "
-                             "(كل الاستعلامات ستُقيَّد بها تلقائياً) — اجعل الأسئلة والعناوين "
-                             "منسجمة مع هذا النطاق دون تكرار ذكره حرفياً في كل سؤال:"]
-            for f in filters:
-                if f.get("date_range"):
-                    filter_lines.append(
-                        f'- الجدول "{f["table"]}"، العمود "{f["column"]}": من '
-                        f'{f["date_range"]["start"]} إلى {f["date_range"]["end"]}'
-                    )
-                else:
-                    vals = "، ".join(str(v) for v in (f.get("values") or []))
-                    filter_lines.append(f'- الجدول "{f["table"]}"، العمود "{f["column"]}": {vals}')
-            filters_text = "\n\nقيود الفلترة الحالية:\n" + "\n".join(filter_lines)
 
         prompt = f"""أنت مساعد لبناء لوحات معلومات (Dashboards). اختر قالباً واحداً فقط من
 القوالب المتاحة أدناه بناءً على طلب المستخدم، ثم اقترح عنواناً وسؤالاً
@@ -607,7 +567,7 @@ class DashboardManager:
 {templates_desc}
 
 الجداول والأعمدة المتاحة في المشروع:
-{schema_text}{filters_text}
+{schema_text}
 
 طلب المستخدم: {description}
 

@@ -155,7 +155,7 @@ class DashboardCellBase(ABC):
     #  التنفيذ — افتراضي (SQL: base_sql أو AI)، StoryCell يُعيد تعريفه
     # ──────────────────────────────────────────────────────────
 
-    def execute(self, ai_manager, query_engine, filters: list, ai_rules: Optional[str]) -> dict:
+    def execute(self, ai_manager, query_engine, dashboard_id: str, ai_rules: Optional[str]) -> dict:
         """
         تنفيذ منطق الخلية وإرجاع نتيجة خام — لا يكتب في project_db
         إطلاقاً (آمن للاستدعاء داخل thread، تماماً كفلسفة _process_cell
@@ -165,18 +165,18 @@ class DashboardCellBase(ABC):
         بالكامل لأنها تستدعي AI دائماً بمرحلتين (SQL ثم سرد نصي).
         """
         if self.base_sql:
-            return self._run_fast(query_engine, filters)
+            return self._run_fast(query_engine, dashboard_id)
 
         r = ai_manager.ask(
             self.question, result_type=self.display_type,
-            ai_rules=ai_rules, filters=filters,
+            ai_rules=ai_rules, dashboard_id=dashboard_id,
         )
         r["used_ai"] = True
         return r
 
-    def _run_fast(self, query_engine, filters: list) -> dict:
+    def _run_fast(self, query_engine, dashboard_id: str) -> dict:
         """تنفيذ base_sql مع الفلاتر عبر QueryEngine مباشرة (بدون AI)."""
-        result = query_engine.run_with_filters(self.base_sql, filters)
+        result = query_engine.run_with_filters(self.base_sql, dashboard_id)
         if not result["ok"]:
             return {"ok": False, "error": result["error"], "sql": self.base_sql, "used_ai": False}
         return {
@@ -342,9 +342,8 @@ class DashboardCellBase(ABC):
                 if not question.strip():
                     notify("الرجاء كتابة سؤال أولاً", kind="warning")
                 else:
-                    filters = dm._build_active_filters(dashboard_id)
                     with st.spinner("⏳ جاري الاختبار..."):
-                        r = self._run_test(question.strip(), db, settings, filters)
+                        r = self._run_test(question.strip(), db, settings, dashboard_id)
                     st.session_state[test_key] = r
 
         if st.session_state.get(test_key):
@@ -378,12 +377,12 @@ class DashboardCellBase(ABC):
                 st.session_state.pop(test_key, None)
                 st.rerun()
 
-    def _run_test(self, question: str, db, settings: dict, filters: list) -> dict:
+    def _run_test(self, question: str, db, settings: dict, dashboard_id: str) -> dict:
         """تشغيل "اختبار" على السؤال الحالي بدون حفظ — نفس منطق ai.ask/tell_story."""
         ai, _ = build_ai_manager(db)
         if self.display_type == "story":
-            return ai.tell_story(question, ai_rules=settings.get("ai_rules"), filters=filters)
-        return ai.ask(question, result_type=self.display_type, ai_rules=settings.get("ai_rules"), filters=filters)
+            return ai.tell_story(question, ai_rules=settings.get("ai_rules"), dashboard_id=dashboard_id)
+        return ai.ask(question, result_type=self.display_type, ai_rules=settings.get("ai_rules"), dashboard_id=dashboard_id)
 
     def _render_test_result(self, r: dict, settings: dict) -> None:
         """
@@ -465,9 +464,8 @@ class DashboardCellBase(ABC):
                 if not self.question:
                     notify("لا يوجد سؤال محفوظ لهذه الخلية بعد", kind="warning")
                 else:
-                    filters = dm._build_active_filters(dashboard_id)
                     with st.spinner("⏳ جاري الاختبار..."):
-                        r = self._run_test(self.question, db, settings, filters)
+                        r = self._run_test(self.question, db, settings, dashboard_id)
                     st.session_state[test_key] = r
                     st.rerun()
 

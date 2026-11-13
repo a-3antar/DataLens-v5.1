@@ -46,6 +46,7 @@ from ui.common import (
 )
 from core.file_manager import FileManager
 from core.data_manager import DataManager
+from core.dashboard_views import DashboardViews
 
 
 def _format_last_updated(f: dict, settings: dict) -> str | None:
@@ -208,6 +209,8 @@ def _render_delete_widget(db, f: dict):
     if st.session_state.get(confirm_key):
         st.caption("⚠️ هذا الإجراء لا رجعة فيه.")
         if st.button("⚠️ تأكيد الحذف نهائياً", key=f"danger_confirm_del_file_{f['id']}", width='stretch'):
+            # 🆕 حذف views اللوحات المبنية على هذا الجدول قبل حذفه
+            DashboardViews(db).drop_for_table(f["table_alias"])
             result = db.remove_file(f["id"])
             st.session_state.pop(confirm_key, None)
             removed_relations = (result or {}).get("removed_relations", 0)

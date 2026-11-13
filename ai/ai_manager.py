@@ -30,6 +30,7 @@ from ai.openai_compatible_engine  import OpenAICompatibleEngine, get_registry_en
 from ai.prompt_builder            import PromptBuilder
 from core.project_db              import ProjectDB
 from core.query_engine            import QueryEngine
+from core.dashboard_views import DashboardViews
 from config import (
     OLLAMA_DEFAULT_URL, STORY_SAMPLE_ROWS_IN_PROMPT, AI_RETRY_DELAY_SECONDS,
     STORY_TIMEOUT_SECONDS, STORY_MAX_QUERIES, QA_MAX_QUERIES, QA_HISTORY_TURNS,
@@ -143,20 +144,16 @@ class AIManager:
         question   : str,
         result_type: Optional[str] = None,
         ai_rules   : Optional[str] = None,
-        filters    : Optional[list] = None,
+        dashboard_id: Optional[str] = None,
     ) -> dict:
         """
         إرسال سؤال → SQL → تنفيذ → نتيجة.
 
-        filters: قيود إضافية (من Slicers لوحة معلومات)، بصيغة
-                 [{"table": "sales", "column": "المنطقة", "values": [...]}]
-                 تُستخدم في مكانين معاً:
-                 (١) كسياق توضيحي في الـ prompt المُرسَل إلى AI (عبر
-                     PromptBuilder._build_filters) — مفيد لكن غير مُلزم.
-                 (٢) 🆕 تُمرَّر فعلياً إلى self.qe.run() عند تنفيذ الـ
-                     SQL الناتج — وهي الضمانة الحقيقية: QueryEngine
-                     يبني view مفلترة فوق كل جدول له فلتر نشط قبل
-                     التنفيذ، بغض النظر عمّا كتبه AI بالضبط.
+        dashboard_id: معرّف لوحة المعلومات (اختياري). عند تمريره يعمل
+                 الاستعلام على بيانات اللوحة بعد تطبيق فلاترها (views في
+                 core/dashboard_views.py). فلاتر اللوحة لا تُرسَل للذكاء
+                 الاصطناعي إطلاقاً ولا تظهر في الـ SQL؛ هو يكتب WHERE فقط
+                 لشروط ذكرها المستخدم في سؤال الخلية نفسه.
 
         يرجع:
         {
@@ -173,7 +170,7 @@ class AIManager:
         if not question:
             return {"ok": False, "error": "السؤال فارغ", "tries": 0}
 
-        schema    = self.db.get_schema()
+        schema    = self._schema(dashboard_id)
         relations = self.db.get_relations()
 
         if not schema:
@@ -188,7 +185,7 @@ class AIManager:
             relations = relations,
             ai_rules  = ai_rules,
         )
-        prompt = builder.build(question, result_type, filters=filters)
+        prompt = builder.build(question, result_type)
 
         last_error = ""
         last_error_type = None
@@ -245,9 +242,8 @@ class AIManager:
             last_sql = extract_result["sql"]
             logger.info("SQL extracted (attempt %d): %s...", attempt, last_sql[:60])
 
-            # 🆕 filters تُمرَّر هنا فعلياً — QueryEngine يبني الـ views
-            # المفلترة قبل تنفيذ last_sql، بغض النظر عن محتواه.
-            run_result = self.qe.run(last_sql, filters=filters)
+            # الفلترة تحدث في طبقة البيانات (views اللوحة) وليس في الـ SQL.
+            run_result = self.qe.run(last_sql, dashboard_id=dashboard_id)
             if run_result["ok"]:
                 logger.info(
                     "Query succeeded on attempt %d: %d rows",
@@ -292,7 +288,7 @@ class AIManager:
         self,
         question: str,
         ai_rules: Optional[str] = None,
-        filters : Optional[list] = None,
+        dashboard_id: Optional[str] = None,
         base_queries: Optional[list] = None,
     ) -> dict:
         """
@@ -336,7 +332,7 @@ class AIManager:
         if not question:
             return {"ok": False, "error": "السؤال فارغ", "tries": 0}
 
-        schema = self.db.get_schema()
+        schema = self._schema(dashboard_id)
         if not schema:
             return {"ok": False, "error": "لا توجد جداول محملة في المشروع", "tries": 0}
 
@@ -349,7 +345,7 @@ class AIManager:
             generated_plan = True
             relations = self.db.get_relations()
             builder = PromptBuilder(schema=schema, relations=relations, ai_rules=ai_rules)
-            prompt = builder.build_story_plan(question, filters=filters)
+            prompt = builder.build_story_plan(question)
 
             last_error = ""
             last_error_type = None
@@ -406,7 +402,7 @@ class AIManager:
             title = str(q.get("title") or "بيانات").strip()
             if not sql:
                 continue
-            run_result = self.qe.run(sql, filters=filters)
+            run_result = self.qe.run(sql, dashboard_id=dashboard_id)
             if run_result["ok"]:
                 ok_count += 1
                 executed.append({
@@ -497,6 +493,17 @@ class AIManager:
                 ensure_ascii=False,
             )
         return result
+
+    # ──────────────────────────────────────────────────────────
+    #  schema بعد تطبيق فلاتر لوحة المعلومات (إن وُجدت)
+    # ──────────────────────────────────────────────────────────
+    def _schema(self, dashboard_id: Optional[str] = None) -> dict:
+        """
+        schema المشروع (الأعمدة والأنواع) مع عينة صفوف مأخوذة من بيانات
+        اللوحة بعد فلاترها — حتى لا يرى الذكاء الاصطناعي أي صف خارج
+        الفلتر. بدون dashboard_id: مطابق تماماً لـ db.get_schema().
+        """
+        return DashboardViews(self.db).get_schema(dashboard_id)
 
     def _parse_story_queries(self, text: str, max_queries: int = STORY_MAX_QUERIES) -> dict:
         """

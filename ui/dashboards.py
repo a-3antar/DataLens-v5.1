@@ -102,11 +102,9 @@ def _show_dashboard_gallery(db):
             else:
                 ai, settings = _build_ai_manager(db)
                 dm = DashboardManager(db, ai)
-                filters_for_ai = dm.filters_from_slicer_rows(auto_filter_rows)
                 with st.spinner("⏳ جاري تحليل بياناتك وبناء خطة اللوحة..."):
                     plan = dm.generate_dashboard_plan(
                         auto_desc.strip(), ai_rules=settings.get("ai_rules"),
-                        filters=filters_for_ai,
                     )
                 if not plan["ok"]:
                     notify(plan["error"], kind="error")
@@ -126,12 +124,10 @@ def _show_dashboard_gallery(db):
 
                     # 🆕 حفظ نفس الفلاتر المُختارة كـ Slicers ابتدائية على
                     # اللوحة الجديدة — تظهر مُفعَّلة فوراً بمجرد فتحها لأول مرة.
-                    for row in auto_filter_rows:
-                        if row["table_name"] and row["column_name"] and row["selected_values"]:
-                            db.save_dashboard_slicer(
-                                dash_id, row["position"], row["table_name"],
-                                row["column_name"], row["selected_values"],
-                            )
+                    dm.save_slicers(dash_id, [
+                        row for row in auto_filter_rows
+                        if row["table_name"] and row["column_name"] and row["selected_values"]
+                    ])
 
                     notify("تم إنشاء اللوحة بنجاح مع تطبيق الفلاتر المختارة", kind="success")
                     st.session_state.current_dashboard_id = dash_id
@@ -251,7 +247,7 @@ def _render_dashboard_card(db, d: dict, settings: dict) -> None:
 
                 if st.button("📑 تكرار", key=f"dup_dash_{d['id']}", width="stretch"):
                     new_id = str(uuid.uuid4())
-                    db.duplicate_dashboard(d["id"], new_id, f"{d['title']} (نسخة)")
+                    DashboardManager(db, None).duplicate_dashboard(d["id"], new_id, f"{d['title']} (نسخة)")
                     st.rerun()
 
                 confirm_key = f"confirm_del_dash_{d['id']}"
@@ -259,7 +255,7 @@ def _render_dashboard_card(db, d: dict, settings: dict) -> None:
                     if st.button(
                         "⚠️ تأكيد الحذف", key=f"danger_confirm_del_{d['id']}", width="stretch",
                     ):
-                        db.delete_dashboard(d["id"])
+                        DashboardManager(db, None).delete_dashboard(d["id"])
                         st.session_state.pop(confirm_key, None)
                         st.rerun()
                 else:
@@ -289,6 +285,13 @@ def _show_dashboard_detail(db):
     ai, settings = _build_ai_manager(db)
     dm = DashboardManager(db, ai)
     engine_name = settings.get("ai_engine", "gemini")
+
+    # 🆕 مزامنة views الفلاتر مرة واحدة لكل لوحة في الجلسة (تعالج لوحات
+    # أُنشئت قبل نظام الـ views). أي تعديل لاحق على الفلاتر يزامنها تلقائياً.
+    _sync_flag = f"_views_synced_{dashboard_id}"
+    if not st.session_state.get(_sync_flag):
+        dm.sync_views(dashboard_id)
+        st.session_state[_sync_flag] = True
 
     # 🆕 صف علوي بإجراء أساسي بارز واحد فقط (🔄 تحديث البيانات) —
     # زر الرجوع تحوّل إلى أيقونة صغيرة هادئة بجانب العنوان مباشرة،
@@ -535,11 +538,7 @@ def _render_slicer_panel(db, dm, dashboard_id, slicers, date_filter_position, da
 
     with save_col:
         if st.button("💾 حفظ الكل", key=f"save_all_slicers_{dashboard_id}", width='stretch', type="primary"):
-            for row in pending_rows:
-                db.save_dashboard_slicer(
-                    dashboard_id, row["position"], row["table_name"],
-                    row["column_name"], row["selected_values"],
-                )
+            dm.save_slicers(dashboard_id, pending_rows)
             notify("تم حفظ كل الفلاتر", kind="success")
             st.rerun()
 

@@ -44,6 +44,12 @@ DEFAULT_AI_RULES = """أنت محلل بيانات محترف. مهمتك الو
 7. لا تضع أي نص قبل أو بعد الـ SQL"""
 
 
+# قيود مشتركة تُضاف دائماً كقسم مستقل في كل prompt يولّد SQL — مستقلة عن
+# ai_rules المخصصة (التي تستبدل DEFAULT_AI_RULES بالكامل لو ضبطها المستخدم).
+SQL_COMMON_CONSTRAINTS = """- لا تستخدم LIMIT (ولا TOP ولا FETCH FIRST) إطلاقاً، إلا إذا طلب المستخدم صراحةً في سؤاله عدداً محدداً من الصفوف (مثل: أعلى 10، أول 5).
+- الجداول المتاحة لك قد تكون مفلترة مسبقاً بفلاتر خارجية؛ لا تحاول إعادة تطبيقها ولا تخمينها. أضف شروط WHERE فقط للشروط التي ذكرها المستخدم صراحةً في سؤاله."""
+
+
 class PromptBuilder:
     """
     بناء الـ Prompt الكامل للـ AI.
@@ -77,21 +83,25 @@ class PromptBuilder:
         self,
         question   : str,
         result_type: Optional[str] = None,
-        filters    : Optional[list] = None,
     ) -> str:
         """
         بناء Prompt كامل لسؤال المستخدم.
 
         question    : السؤال بالعربية أو الإنجليزية
         result_type : "chart" | "table" | "gauge" | "kpi" | "story" | None
-        filters     : قيود إضافية تُفرض على الاستعلام (من Slicers لوحة
-                      المعلومات مثلاً)، بصيغة:
-                      [{"table": "sales", "column": "المنطقة", "values": ["الرياض", "جدة"]}]
+
+        ⚠️ لا يوجد معامل filters عمداً: فلاتر لوحات المعلومات تُطبَّق في
+        طبقة البيانات (core/dashboard_views.py + QueryEngine) قبل وصول
+        البيانات إلى الذكاء الاصطناعي، فلا يراها في الـ prompt ولا يكتبها
+        في الـ SQL.
         """
         parts = []
 
         # 1. AI Rules
         parts.append(self._section("RULES", self.ai_rules))
+
+        # 1b. قيود مشتركة (لا LIMIT، لا إعادة تطبيق فلاتر خارجية)
+        parts.append(self._section("SQL CONSTRAINTS", SQL_COMMON_CONSTRAINTS))
 
         # 2. Schema
         parts.append(self._section("SCHEMA", self._build_schema()))
@@ -109,41 +119,15 @@ class PromptBuilder:
         if result_type:
             parts.append(self._section("RESULT TYPE", self._build_result_hint(result_type)))
 
-        # 6. Filters (اختياري — قيود Slicers)
-        if filters:
-            parts.append(self._section("FILTERS", self._build_filters(filters)))
-
-        # 7. Question
+        # 6. Question
         parts.append(self._section("QUESTION", question))
 
-        # 8. Output reminder
+        # 7. Output reminder
         parts.append("SQL QUERY:")
 
         prompt = "\n\n".join(parts)
-        logger.debug("Prompt built: %d chars, %d tables, %d filters",
-                     len(prompt), len(self.schema), len(filters or []))
+        logger.debug("Prompt built: %d chars, %d tables", len(prompt), len(self.schema))
         return prompt
-
-    def _build_filters(self, filters: list) -> str:
-        """صياغة قيود الفلترة (Slicers) كتعليمات واضحة للـ AI."""
-        lines = [
-            "يجب تقييد نتيجة الاستعلام بكل الشروط التالية معاً (AND فيما بينها):"
-        ]
-        for f in filters:
-            values = f.get("values") or []
-            if not values:
-                continue
-            vals_text = "، ".join(str(v) for v in values)
-            lines.append(
-                f'- من الجدول "{f["table"]}"، يجب أن يكون العمود "{f["column"]}" '
-                f"ضمن إحدى القيم التالية فقط: {vals_text}"
-            )
-        lines.append(
-            "أضف شرط WHERE مناسب يحقق هذه القيود. لو كان الاستعلام يحتاج جدولاً "
-            "غير مذكور أصلاً في السؤال لتطبيق أحد هذه الشروط، اربطه عبر "
-            "العلاقات المذكورة أعلاه (JOIN) إن وُجدت علاقة مناسبة."
-        )
-        return "\n".join(lines)
 
     # ──────────────────────────────────────────────────────────
     #  بناء Prompt إعادة المحاولة عند الخطأ
@@ -239,14 +223,14 @@ class PromptBuilder:
 
         return "\n".join(parts).rstrip()
 
+
     def _build_result_hint(self, result_type: str) -> str:
-        """تلميح للـ AI عن نوع النتيجة المطلوبة."""
+        """تلميح للـ AI عن نوع النتيجة المطلوبة (بدون أي سقف لعدد الصفوف)."""
         hints = {
             "chart": (
                 "النتيجة ستُعرض كـ chart.\n"
                 "- أعد عموداً نصياً للمحور السيني (X)\n"
-                "- أعد عموداً رقمياً واحداً أو اثنين للمحور الصادي (Y)\n"
-                "- لا تعد أكثر من 20 صف"
+                "- أعد عموداً رقمياً واحداً أو اثنين للمحور الصادي (Y)"
             ),
             "table": (
                 "النتيجة ستُعرض كـ جدول.\n"
@@ -266,8 +250,7 @@ class PromptBuilder:
             "story": (
                 "النتيجة ستُستخدم لكتابة تحليل نصي (سرد قصصي) عن البيانات.\n"
                 "- أعد بيانات كافية ومفصّلة تسمح بتحليل حقيقي (وليس رقماً واحداً فقط إلا لو كان السؤال يطلب ذلك تحديداً)\n"
-                "- أعد أعمدة بأسماء عربية أو واضحة تساعد على فهم كل رقم\n"
-                "- لا تتجاوز 200 صف"
+                "- أعد أعمدة بأسماء عربية أو واضحة تساعد على فهم كل رقم"
             ),
         }
         return hints.get(result_type, f"نوع النتيجة: {result_type}")
@@ -399,14 +382,17 @@ class PromptBuilder:
     #  🆕 خطة استعلامات السرد (Story Telling متعدد الاستعلامات)
     # ──────────────────────────────────────────────────────────
 
-    def build_story_plan(self, question: str, filters: Optional[list] = None) -> str:
+    def build_story_plan(self, question: str) -> str:
         """
         بناء Prompt يطلب من AI خطة استعلامات SQL (وليس استعلاماً واحداً)
         تجيب مجتمعة على سؤال المستخدم تمهيداً لكتابة سرد شامل. AI هو من
         يقرر عدد الاستعلامات (بحد أقصى STORY_MAX_QUERIES) ونوع كل واحد.
+
+        لا فلاتر هنا عمداً — فلاتر اللوحة تُطبَّق في طبقة البيانات.
         """
         parts = [
             self._section("RULES", self._story_plan_rules()),
+            self._section("SQL CONSTRAINTS", SQL_COMMON_CONSTRAINTS),
             self._section("SCHEMA", self._build_schema()),
         ]
         if self.relations:
@@ -414,8 +400,6 @@ class PromptBuilder:
         sample_text = self._build_samples()
         if sample_text:
             parts.append(self._section("SAMPLE DATA", sample_text))
-        if filters:
-            parts.append(self._section("FILTERS", self._build_filters(filters)))
         parts.append(self._section("QUESTION", question))
         parts.append("JSON PLAN:")
         prompt = "\n\n".join(parts)
@@ -439,9 +423,8 @@ CREATE)، متوافقاً مع DuckDB، ويستخدم فقط الجداول و
 الـ Schema.
 5. لا تكرر نفس الاستعلام بصياغات مختلفة — كل استعلام يجب أن يضيف زاوية
 أو تفصيلاً مختلفاً فعلياً عن سؤال المستخدم.
-6. لا تُرجع أكثر من 200 صف لكل استعلام (استخدم GROUP BY مناسب).
-7. إذا لم تكن متأكدًا تماماً من وجود عمود معين، لا تستخدمه في الاستعلام.
-8.  استخدم فقط أسماء الجداول من غير alias المذكورة في الـ Schema.
+6. إذا لم تكن متأكدًا تماماً من وجود عمود معين، لا تستخدمه في الاستعلام.
+7. استخدم فقط أسماء الجداول من غير alias المذكورة في الـ Schema.
 """
 
     # ──────────────────────────────────────────────────────────
@@ -522,6 +505,7 @@ CREATE)، متوافقاً مع DuckDB، ويستخدم فقط الجداول و
         """
         parts = [
             self._section("RULES", self._qa_plan_rules()),
+            self._section("SQL CONSTRAINTS", SQL_COMMON_CONSTRAINTS),
             self._section("SCHEMA", self._build_schema()),
         ]
         if self.relations:
