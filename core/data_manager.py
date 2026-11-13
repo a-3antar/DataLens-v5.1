@@ -4,24 +4,35 @@ core/data_manager.py
 تنظيف ومعالجة البيانات وحفظها في project.db.
 يعمل فوق FileManager و ProjectDB.
 
-الإصلاحات:
+الوظائف الرئيسية:
+- تحميل ملف من الذاكرة (load_file) وإعادة تحديثه (refresh_from_bytes).
+- تغيير نوع عمود، تصفية الصفوف، معالجة النصوص والقيم الفارغة.
+- حذف الصفوف الفارغة، المعاينة، وإحصاءات الأعمدة حسب نوعها.
+
+ملاحظات تصميمية مهمة:
 - load_file يستدعي db.add_file() لتسجيل الملف في source_files
-  حتى يتمكن QueryEngine من تحميل الجداول عبر get_files()
-- fill_nulls يفحص صحة strategy قبل فحص null_count == 0
-- 🆕 filter_rows تحوّل القيمة المُدخلة (نصية دائماً من واجهة Streamlit)
-  إلى نوع العمود الفعلي (رقمي/تاريخ/منطقي) قبل المقارنة — بدون هذا
-  التحويل، مقارنة عمود int64 أو datetime64 بقيمة نصية خام ترمي
-  "Invalid comparison between dtype=int64 and str" في pandas، أو
-  تُرجع دائماً نتيجة فارغة بصمت مع أعمدة التاريخ.
-- 🆕 get_stats أصبحت تكتشف نوع العمود فعلياً (رقمي/تاريخ/نصي) وتُرجع
-  إحصاءات مناسبة لكل نوع، بدل فرض pd.to_numeric على كل الأعمدة (كان
-  يُنتج NaN/أصفاراً بلا معنى لأي عمود نصي وحتى بعض أعمدة التاريخ).
-- 🆕 drop_empty_rows لحذف الصفوف الفارغة كلياً/جزئياً أو حسب عمود محدد.
-- 🆕 _basic_clean تقصّ المسافات الزائدة (بداية/نهاية) من قيم الأعمدة
-  النصية عند التحميل. بدون ذلك تبقى قيم مثل "IDEAL STD. " بمسافة
-  زائدة في البيانات؛ فلاتر لوحات المعلومات (Slicers) تأخذ القيمة
-  حرفياً من البيانات، بينما يكتب الـ AI القيمة في شرط WHERE بدون
-  المسافة — فلا يتطابق الشرطان معاً وتعود الاستعلامات فارغة.
+  حتى يتمكن QueryEngine من تحميل الجداول عبر get_files().
+- fill_nulls يفحص صحة strategy قبل فحص null_count == 0.
+- filter_rows تحوّل القيمة المُدخلة (نصية دائماً من واجهة Streamlit)
+  إلى نوع العمود الفعلي (رقمي/تاريخ/منطقي) قبل المقارنة.
+- get_stats تكتشف نوع العمود فعلياً (رقمي/تاريخ/نصي) وتُرجع إحصاءات
+  مناسبة لكل نوع.
+- _basic_clean تقصّ المسافات الزائدة من قيم الأعمدة النصية عند التحميل
+  حتى تتطابق قيم فلاتر لوحات المعلومات مع شروط WHERE التي يكتبها الـ AI.
+
+🆕 أسماء الأعمدة بين الملف الخام والجدول المحفوظ:
+------------------------------------------------------
+_basic_clean يغيّر أسماء الأعمدة (strip + مسافة → "_" + lower)، فتصبح
+الأسماء المسجَّلة في source_files.selected_columns مختلفة عن أسماء
+الملف الخام (مثل "القسم الفعلي" ← "القسم_الفعلي"). لذلك:
+  - الرفع الأول: المستخدم يختار الأعمدة بأسماء الملف الخام، فتُقرأ
+    بها مباشرة عبر read_bytes (كما كان).
+  - التحديث (refresh_from_bytes): لا يمكن تمرير الأسماء المسجَّلة
+    لـ read_bytes (كانت تسبب خطأ "أعمدة غير موجودة" مع أن الملف
+    نفسه). بدلاً من ذلك يُقرأ الملف كاملاً، ينظَّف، ثم تُصفّى الأعمدة
+    بعد التنظيف عبر _select_columns_after_clean بعد توحيد الأسماء
+    المسجَّلة بنفس دالة التنظيف (_normalize_col_name) — فتعمل سواء
+    سُجّلت الأسماء بصيغتها الأصلية أو المنظَّفة.
 """
 
 import logging
@@ -60,6 +71,67 @@ class DataManager:
     #  تحميل ملف وحفظ البيانات النظيفة
     # ──────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _normalize_col_name(name) -> str:
+        """
+        توحيد اسم عمود بنفس قاعدة _basic_clean بالضبط (strip + مسافة
+        → "_" + lower) — مصدر واحد للقاعدة حتى لا تتباعد النسختان.
+        """
+        return str(name).strip().replace(" ", "_").lower()
+
+    def _store_dataframe(
+        self,
+        df           : pd.DataFrame,
+        table_alias  : str,
+        extension    : str,
+        sheet        : Optional[str],
+        selected_cols: Optional[list],
+        original_name: str,
+        file_id      : Optional[str],
+    ) -> dict:
+        """
+        الجزء المشترك بين الرفع الأول والتحديث: تنظيف أولي + حفظ في
+        project.db + تسجيل الملف في source_files. يستقبل df خاماً
+        (قبل _basic_clean) ويرجع نفس شكل نتيجة load_file.
+        """
+        df = self._basic_clean(df)
+        return self._save_clean_and_register(
+            df, table_alias, extension, sheet, selected_cols, original_name, file_id,
+        )
+
+    def _save_clean_and_register(
+        self,
+        df           : pd.DataFrame,
+        table_alias  : str,
+        extension    : str,
+        sheet        : Optional[str],
+        selected_cols: Optional[list],
+        original_name: str,
+        file_id      : Optional[str],
+    ) -> dict:
+        """حفظ DataFrame منظَّف فعلياً وتسجيل الملف (لا تنظيف إضافي هنا)."""
+        try:
+            self.db.save_clean_data(table_alias, df)
+        except Exception as e:
+            logger.error("save_clean_data error: %s", e)
+            return {"ok": False, "error": str(e)}
+
+        import uuid as _uuid
+        record_id = file_id or str(_uuid.uuid4())
+        try:
+            self.db.add_file(
+                file_id         = record_id,
+                original_name   = original_name or f"{table_alias}{extension}",
+                table_alias     = table_alias,
+                selected_sheet  = sheet,
+                selected_columns= selected_cols or list(df.columns),
+            )
+        except Exception as e:
+            logger.debug("add_file skipped (already exists?): %s", e)
+
+        logger.info("table saved: '%s' — %d rows, %d cols", table_alias, len(df), len(df.columns))
+        return {"ok": True, "rows": len(df), "cols": len(df.columns), "file_id": record_id}
+
     def load_file(
         self,
         file_bytes : bytes,
@@ -72,8 +144,8 @@ class DataManager:
     ) -> dict:
         """
         قراءة ملف من الذاكرة (بدون أي نسخة على القرص) + تنظيف أولي +
-        حفظ في project.db. يُستخدم لكل من الرفع الأول وإعادة التحديث
-        (بتمرير نفس file_id في حالة التحديث لتفادي تسجيل مكرر).
+        حفظ في project.db — يُستخدم للرفع الأول. `columns` هنا بأسماء
+        الملف الخام كما اختارها المستخدم (تُقرأ بها مباشرة).
 
         يرجع: {"ok": True, "rows": N, "cols": M}
         """
@@ -81,52 +153,59 @@ class DataManager:
         if not result["ok"]:
             return result
 
-        df = self._basic_clean(result["df"])
-
-        try:
-            self.db.save_clean_data(table_alias, df)
-        except Exception as e:
-            logger.error("load_file save_clean_data error: %s", e)
-            return {"ok": False, "error": str(e)}
-
-        import uuid as _uuid
-        record_id = file_id or str(_uuid.uuid4())
-        try:
-            self.db.add_file(
-                file_id         = record_id,
-                original_name   = original_name or f"{table_alias}{extension}",
-                table_alias     = table_alias,
-                selected_sheet  = sheet,
-                selected_columns= columns or list(df.columns),
-            )
-        except Exception as e:
-            logger.debug("add_file skipped (already exists?): %s", e)
-
-        logger.info("load_file done: '%s' — %d rows, %d cols", table_alias, len(df), len(df.columns))
-        return {"ok": True, "rows": len(df), "cols": len(df.columns), "file_id": record_id}
+        return self._store_dataframe(
+            result["df"], table_alias, extension, sheet, columns, original_name, file_id,
+        )
 
     def _basic_clean(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         تنظيف أولي تلقائي لكل DataFrame عند التحميل:
         - حذف الصفوف والأعمدة الفارغة كلياً.
         - توحيد أسماء الأعمدة (strip + مسافة → "_" + lower).
-        - 🆕 قصّ المسافات الزائدة من بداية/نهاية قيم الأعمدة النصية،
-          حتى تتطابق القيم المعروضة في فلاتر اللوحات مع القيم التي
-          يكتبها الـ AI في شروط WHERE. تُترك القيم غير النصية (أرقام،
-          تواريخ، NaN) كما هي دون أي تغيير.
+        - قصّ المسافات الزائدة من بداية/نهاية قيم الأعمدة النصية، حتى
+          تتطابق القيم المعروضة في فلاتر اللوحات مع القيم التي يكتبها
+          الـ AI في شروط WHERE. القيم غير النصية تبقى كما هي.
         """
         df = df.dropna(how="all")
         df = df.dropna(axis=1, how="all")
-        df.columns = [
-            str(c).strip().replace(" ", "_").lower()
-            for c in df.columns
-        ]
+        df.columns = [self._normalize_col_name(c) for c in df.columns]
 
         for col in df.columns:
             if df[col].dtype == object or pd.api.types.is_string_dtype(df[col]):
                 df[col] = df[col].map(lambda v: v.strip() if isinstance(v, str) else v)
 
         return df.reset_index(drop=True)
+
+    def _select_columns_after_clean(self, df: pd.DataFrame, wanted: Optional[list]) -> dict:
+        """
+        🆕 تصفية أعمدة DataFrame منظَّف بحسب قائمة الأعمدة المسجَّلة
+        للجدول. القائمة تُوحَّد أسماؤها بنفس قاعدة التنظيف أولاً، فتعمل
+        سواء سُجّلت بالاسم الأصلي ("القسم الفعلي") أو المنظَّف
+        ("القسم_الفعلي").
+
+        - لا قائمة مسجَّلة → كل الأعمدة.
+        - عمود مسجَّل غير موجود في الملف الجديد → يُتجاهل مع تحذير في
+          اللوج (الملف المحدَّث قد يكون حذف عموداً فعلاً).
+        - لا يتطابق أي عمود إطلاقاً → خطأ واضح بدل جدول فارغ.
+        """
+        if not wanted:
+            return {"ok": True, "df": df}
+
+        wanted_clean = [self._normalize_col_name(c) for c in wanted]
+        available = set(df.columns)
+        keep = [c for c in wanted_clean if c in available]
+        missing = [c for c in wanted_clean if c not in available]
+
+        if not keep:
+            return {
+                "ok": False,
+                "error": "لا يوجد أي عمود من الأعمدة المسجَّلة للجدول في الملف الجديد "
+                         "— تأكد أنك اخترت نفس الملف/الشيت",
+            }
+        if missing:
+            logger.warning("refresh: columns missing in new file (ignored): %s", missing)
+
+        return {"ok": True, "df": df[keep]}
 
     # ──────────────────────────────────────────────────────────
     #  تغيير نوع البيانات
@@ -174,7 +253,7 @@ class DataManager:
 
     def _coerce_filter_value(self, col: pd.Series, operator: str, raw_value: object):
         """
-        🆕 تحويل القيمة المُدخلة (نصية دائماً من st.text_input) إلى نوع
+        تحويل القيمة المُدخلة (نصية دائماً من st.text_input) إلى نوع
         العمود الفعلي قبل المقارنة — يمنع "Invalid comparison between
         dtype=int64 and str" على الأعمدة الرقمية، ويمنع مقارنة صامتة
         فارغة النتيجة على أعمدة التاريخ (نص مقابل Timestamp).
@@ -231,7 +310,7 @@ class DataManager:
 
         before = len(df)
         try:
-            # 🆕 تحويل القيمة لنوع العمود الفعلي قبل أي مقارنة
+            # تحويل القيمة لنوع العمود الفعلي قبل أي مقارنة
             coerced_value, coerce_error = self._coerce_filter_value(df[column], operator, value)
             if coerce_error:
                 return {"ok": False, "error": coerce_error}
@@ -263,7 +342,7 @@ class DataManager:
             return {"ok": False, "error": str(e)}
 
     # ──────────────────────────────────────────────────────────
-    #  🆕 حذف الصفوف الفارغة
+    #  حذف الصفوف الفارغة
     # ──────────────────────────────────────────────────────────
 
     def drop_empty_rows(
@@ -368,10 +447,9 @@ class DataManager:
         معالجة القيم الفارغة.
         الـ strategies المدعومة: mean | median | mode | zero | value
 
-        ✅ الإصلاح: نفحص صحة strategy أولاً قبل فحص null_count
-        حتى لا يمر strategy خاطئ عندما تكون nulls == 0
+        نفحص صحة strategy أولاً قبل فحص null_count حتى لا يمر strategy
+        خاطئ عندما تكون nulls == 0.
         """
-        # ✅ فحص strategy أولاً — قبل أي شيء آخر
         if strategy not in self.VALID_STRATEGIES:
             return {"ok": False, "error": f"strategy غير مدعوم: {strategy}"}
 
@@ -431,8 +509,7 @@ class DataManager:
     def get_stats(self, table_alias: str, column: str) -> dict:
         """
         إحصاءات أساسية لعمود، مبنية على نوعه الفعلي بدل فرض تحويل
-        رقمي على كل الأعمدة (كان يُنتج قيماً وهمية/NaN لأي عمود نصي
-        وحتى لأعمدة التاريخ التي لا تتحوّل عبر pd.to_numeric).
+        رقمي على كل الأعمدة.
 
         يرجع "kind" يوضّح نوع الإحصاء المُرجَع فعلياً:
             "numeric" → count/nulls/min/max/mean/median (أرقام حقيقية)
@@ -504,6 +581,10 @@ class DataManager:
             logger.error("get_stats error: %s", e)
             return {"ok": False, "error": str(e)}
 
+    # ──────────────────────────────────────────────────────────
+    #  إعادة تحميل (تحديث) جدول موجود
+    # ──────────────────────────────────────────────────────────
+
     def refresh_from_bytes(
         self,
         file_id    : str,
@@ -518,10 +599,26 @@ class DataManager:
         إعادة تحميل البيانات: يُطلب من المستخدم إعادة اختيار نفس الملف
         من جهازه (لا يُحتفظ بأي نسخة سابقة على السيرفر)، ثم تُحفظ
         البيانات الجديدة بنفس file_id لتحديث السجل بدل تكراره.
+
+        🆕 `columns` هنا هي الأعمدة المسجَّلة سابقاً في source_files
+        (بعد التنظيف، أي بأسماء مثل "القسم_الفعلي")، فلا تُمرَّر إلى
+        read_bytes (التي تبحث بأسماء الملف الخام وكانت تُرجع "أعمدة غير
+        موجودة" رغم أن الملف نفسه). نقرأ الملف كاملاً، ننظّفه، ثم نصفّي
+        الأعمدة المسجَّلة بعد التنظيف — راجع _select_columns_after_clean.
         """
         logger.info("Refreshing table '%s' from freshly re-uploaded file", table_alias)
-        return self.load_file(
-            file_bytes, extension, table_alias,
-            sheet=sheet, columns=columns,
-            original_name=original_name, file_id=file_id,
+
+        result = self.fm.read_bytes(file_bytes, extension, sheet, None)
+        if not result["ok"]:
+            return result
+
+        df = self._basic_clean(result["df"])
+
+        selected = self._select_columns_after_clean(df, columns)
+        if not selected["ok"]:
+            return selected
+        df = selected["df"]
+
+        return self._save_clean_and_register(
+            df, table_alias, extension, sheet, list(df.columns), original_name, file_id,
         )

@@ -183,3 +183,4 @@ cython_debug/
 core/mail_param.py
 /project_backup
 data/secret.key
+apply_patch.py
