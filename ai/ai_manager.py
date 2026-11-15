@@ -17,10 +17,36 @@ ai/ai_manager.py
 نوع نتيجة جديد "qa" — راجع توثيق الدالة أدناه. لا تغيير على ask()
 ولا tell_story(): _parse_story_queries فقط حصلت على معامل اختياري
 max_queries (افتراضيه STORY_MAX_QUERIES = السلوك القديم بالضبط).
+
+🆕 ذاكرة المحادثة الداخلية (ملخص تراكمي):
+-------------------------------------------
+- answer_question تستقبل summary (اختياري) — ملخص تراكمي لكل المحادثة
+  السابقة، يُمرَّر لمرحلتي الخطة والإجابة مع آخر QA_HISTORY_TURNS
+  سؤال/جواب، فيكون كل رد متابعة لما سبق حتى لو خرجت الأسئلة القديمة
+  من النافذة.
+- summarize_qa_memory: استفسار AI منفصل تماماً عن answer_question —
+  تُستدعى من ui/chat.py بعد عرض نتيجة السؤال الأخير. فشلها لا يؤثر
+  على أي إجابة: تُسجَّل في اللوج وتُرجع {"ok": False}.
+- الذاكرة والملخص داخليان بالكامل: لا يُعرضان ولا يُعدَّلان من المستخدم.
+
+🆕 تصحيح استعلامات خطة Story/Q&A (_run_planned_query):
+----------------------------------------------------------
+كان أي استعلام يفشل في خطة سرد/سؤال وجواب يُهمَل مباشرة بلا تصحيح
+(بخلاف ask() الذي يُعيد الـ SQL الخاطئ للـ AI مع رسالة الخطأ). الآن
+كلاهما يمر عبر دالة واحدة موحّدة تعيد استخدام نفس آليات ask():
+  ١) QueryEngine.run: تصحيح تلقائي لاسم عمود بحسب Candidate bindings.
+  ٢) _try_schema_column_fix: تصحيح تلقائي من الـ Schema (يغطي رسائل
+     بلا Candidate bindings، ويوحّد الإملاء العربي) — بدون استدعاء AI.
+  ٣) إعادة الـ SQL للـ AI عبر PromptBuilder.build + build_error_retry
+     (نفس منطق ask)، وعدد المحاولات الكلي = self.max_tries.
+في tell_story يُفعَّل تصحيح AI فقط لخطة وُلِّدت الآن (لا لـ base_sql
+محفوظ لخلية لوحة).
 """
+import re
 import json
 import time
 import logging
+from difflib import SequenceMatcher
 from typing import Optional
 
 from ai.base_engine               import BaseEngine
@@ -34,11 +60,26 @@ from core.dashboard_views import DashboardViews
 from config import (
     OLLAMA_DEFAULT_URL, STORY_SAMPLE_ROWS_IN_PROMPT, AI_RETRY_DELAY_SECONDS,
     STORY_TIMEOUT_SECONDS, STORY_MAX_QUERIES, QA_MAX_QUERIES, QA_HISTORY_TURNS,
+    QA_SUMMARY_MAX_CHARS,
 )
 
 logger = logging.getLogger(__name__)
 
 _PERMANENT_ERROR_TYPES = {"auth"}
+
+# 🆕 أقصى عدد محاولات لتحديث الملخص التراكمي — عمداً أقل من max_tries:
+# التلخيص عملية مساندة تأتي بعد ظهور الإجابة، ولا يجب أن تُطيل انتظار
+# المستخدم بإعادة محاولات كثيرة.
+_QA_SUMMARY_MAX_ATTEMPTS = 2
+
+# 🆕 تصحيح أسماء الأعمدة تلقائياً من الـ Schema (راجع _try_schema_column_fix).
+# رسالة DuckDB 'Table "t1" does not have a column named "X"' لا تحتوي
+# Candidate bindings فلا يلتقطها تصحيح QueryEngine — فنطابق الاسم الخاطئ
+# مع أعمدة الـ Schema الفعلية هنا بعد توحيد الإملاء العربي (ه/ة، أ/ا...).
+_MISSING_COL_NAMED_RE = re.compile(r'does not have a column named "([^"]+)"', re.IGNORECASE)
+_AR_NORMALIZE = str.maketrans({"ة": "ه", "أ": "ا", "إ": "ا", "آ": "ا", "ى": "ي", "ؤ": "و", "ئ": "ي"})
+_SCHEMA_FIX_MIN_RATIO = 0.85
+_MAX_SCHEMA_FIX_STEPS = 3
 
 
 def get_engine(
@@ -397,12 +438,21 @@ class AIManager:
         # ── المرحلة ٢: تنفيذ كل استعلام في الخطة ──
         executed = []
         ok_count = 0
+        # 🆕 تصحيح موحّد للاستعلامات الفاشلة (راجع _run_planned_query). تصحيح AI
+        # فقط لخطة وُلِّدت الآن، لا لـ base_sql محفوظ لخلية لوحة.
+        fix_builder = PromptBuilder(
+            schema=schema, relations=self.db.get_relations(), ai_rules=ai_rules,
+        )
         for q in queries_plan:
             sql = str(q.get("sql", "")).strip()
             title = str(q.get("title") or "بيانات").strip()
             if not sql:
                 continue
-            run_result = self.qe.run(sql, dashboard_id=dashboard_id)
+            run_result = self._run_planned_query(
+                sql, title, question, fix_builder, schema,
+                dashboard_id=dashboard_id, allow_ai_fix=generated_plan,
+                start_time=story_start, budget=self.story_max_total_wait_seconds,
+            )
             if run_result["ok"]:
                 ok_count += 1
                 executed.append({
@@ -411,7 +461,7 @@ class AIManager:
                 })
             else:
                 executed.append({
-                    "title": title, "sql": sql,
+                    "title": title, "sql": run_result.get("sql", sql),
                     "ok": False, "error": run_result["error"],
                 })
 
@@ -505,6 +555,149 @@ class AIManager:
         """
         return DashboardViews(self.db).get_schema(dashboard_id)
 
+    # ──────────────────────────────────────────────────────────
+    #  🆕 تنفيذ استعلام خطة (Story / Q&A) مع تصحيح — دالة موحّدة
+    # ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _norm_col(name) -> str:
+        """توحيد اسم عمود للمقارنة: حروف صغيرة + توحيد الإملاء العربي (ه/ة، أ/ا...)."""
+        return str(name).strip().lower().translate(_AR_NORMALIZE)
+
+    def _try_schema_column_fix(self, sql: str, error_msg: str, schema: dict) -> Optional[str]:
+        """
+        تصحيح تلقائي (بدون AI) لاسم عمود غير موجود، بمطابقته مع أعمدة
+        الـ Schema الفعلية. يغطي رسائل DuckDB التي لا تحمل Candidate
+        bindings (مثل: Table "t1" does not have a column named "الحالة")
+        فلا يلتقطها تصحيح QueryEngine.
+
+        الثقة: مطابقة تامة بعد توحيد الإملاء (الحالة ← الحاله) لعمود وحيد،
+        أو تشابه عالٍ (>= _SCHEMA_FIX_MIN_RATIO) بأفضل مرشح غير متعادل مع
+        غيره — وإلا لا تصحيح (نتيجة خاطئة بصمت أخطر من فشل واضح يُصحَّح
+        عبر AI). يرجع SQL مُصحَّحاً أو None.
+        """
+        match = _MISSING_COL_NAMED_RE.search(error_msg or "")
+        if not match:
+            return None
+        wrong = match.group(1).strip()
+
+        all_cols = {c for info in schema.values() for c in info.get("columns", {})}
+        if not wrong or wrong in all_cols:
+            return None
+
+        wrong_norm = self._norm_col(wrong)
+        exact = sorted({c for c in all_cols if self._norm_col(c) == wrong_norm})
+        if len(exact) == 1:
+            best = exact[0]
+        else:
+            scored = sorted(
+                ((SequenceMatcher(None, wrong_norm, self._norm_col(c)).ratio(), c) for c in all_cols),
+                reverse=True,
+            )
+            if not scored or scored[0][0] < _SCHEMA_FIX_MIN_RATIO:
+                return None
+            if len(scored) > 1 and scored[1][0] == scored[0][0]:
+                return None   # غامض: مرشحان متساويان
+            best = scored[0][1]
+
+        quoted = re.compile(r'"' + re.escape(wrong) + r'"')
+        unquoted = re.compile(r'(?<![\w"])' + re.escape(wrong) + r'(?![\w"])')
+        fixed = quoted.sub(f'"{best}"', sql)
+        fixed = unquoted.sub(f'"{best}"', fixed)
+        if fixed == sql:
+            return None
+
+        logger.info("Schema column auto-fix: '%s' -> '%s'", wrong, best)
+        return fixed
+
+    def _run_planned_query(
+        self,
+        sql          : str,
+        title        : str,
+        question     : str,
+        builder      : PromptBuilder,
+        schema       : dict,
+        dashboard_id : Optional[str] = None,
+        allow_ai_fix : bool = True,
+        start_time   : Optional[float] = None,
+        budget       : Optional[int] = None,
+    ) -> dict:
+        """
+        تنفيذ استعلام واحد من خطة (Story/Q&A) مع نفس مستويات التصحيح
+        المستخدمة في ask():
+          ١) QueryEngine.run (يصحّح أسماء الأعمدة تلقائياً من Candidate bindings).
+          ٢) _try_schema_column_fix: تصحيح من الـ Schema (حتى
+             _MAX_SCHEMA_FIX_STEPS مرات) — مجاني، لا يستهلك محاولة.
+          ٣) لو بقي الخطأ وallow_ai_fix: يُعاد الـ SQL الخاطئ مع رسالة الخطأ
+             للـ AI عبر builder.build + build_error_retry، ثم يُنفَّذ
+             الناتج. العدد الكلي للتنفيذات = self.max_tries (مثل ask()).
+
+        يرجع: {"ok", "sql", "df", "rows", "ai_fixes"} عند النجاح، أو
+        {"ok": False, "sql": آخر SQL جُرِّب, "error", "ai_fixes"}.
+        """
+        start_time = start_time or time.monotonic()
+        current = sql
+        executed_sql = None
+        run = {"ok": False, "error": ""}
+        base_prompt = None
+        ai_fixes = 0
+
+        for attempt in range(1, self.max_tries + 1):
+            if current != executed_sql:
+                run = self.qe.run(current, dashboard_id=dashboard_id)
+                for _ in range(_MAX_SCHEMA_FIX_STEPS):
+                    if run["ok"]:
+                        break
+                    fixed = self._try_schema_column_fix(current, run["error"], schema)
+                    if not fixed:
+                        break
+                    current = fixed
+                    run = self.qe.run(current, dashboard_id=dashboard_id)
+                executed_sql = current
+
+            if run["ok"]:
+                return {
+                    "ok": True, "sql": run.get("sql", current),
+                    "df": run["df"], "rows": run["rows"], "ai_fixes": ai_fixes,
+                }
+
+            logger.warning(
+                "Planned query '%s' failed (attempt %d/%d): %s",
+                title, attempt, self.max_tries, run["error"],
+            )
+            if not allow_ai_fix or attempt >= self.max_tries:
+                break
+            if self._budget_exceeded(start_time, budget):
+                logger.warning("Total wait budget exceeded — skipping AI fix for '%s'", title)
+                break
+
+            if base_prompt is None:
+                base_prompt = builder.build(f"{question}\n(الاستعلام المطلوب الآن: {title})")
+            retry_prompt = builder.build_error_retry(
+                original_prompt=base_prompt, failed_sql=current, error_message=run["error"],
+            )
+
+            send_result = self.engine.send(retry_prompt, self.temperature)
+            if not send_result["ok"]:
+                logger.warning("AI fix send failed for '%s': %s", title, send_result["error"])
+                if send_result.get("error_type") in _PERMANENT_ERROR_TYPES:
+                    break
+                if self.retry_delay > 0:
+                    time.sleep(self.retry_delay)
+                continue
+
+            extracted = self.engine.extract_sql(send_result["text"])
+            if not extracted["ok"]:
+                logger.warning("AI fix SQL extraction failed for '%s': %s", title, extracted["error"])
+                continue
+
+            current = extracted["sql"]
+            ai_fixes += 1
+            logger.info("AI fix %d for planned query '%s': %s...", ai_fixes, title, current[:60])
+
+        return {"ok": False, "sql": current, "error": run["error"], "ai_fixes": ai_fixes}
+
+
     def _parse_story_queries(self, text: str, max_queries: int = STORY_MAX_QUERIES) -> dict:
         """
         تحليل رد AI (خطة الاستعلامات) كـ JSON، مع تقييد العدد بـ max_queries.
@@ -546,6 +739,7 @@ class AIManager:
         ai_rules     : Optional[str] = None,
         answer_length: str = "short",
         history      : Optional[list] = None,
+        summary      : Optional[str] = None,
     ) -> dict:
         """
         سؤال حر عن البيانات → خطة استعلامات (بحث/فلترة/تجميع) → تنفيذها
@@ -560,6 +754,9 @@ class AIManager:
         history: [{"question": "...", "answer": "..."}] — يُقتطع هنا
                  إلى آخر QA_HISTORY_TURNS عنصر فقط (config.py)؛ 0 =
                  بدون ذاكرة.
+        summary: 🆕 ملخص تراكمي (نص) لكل المحادثة السابقة — يُمرَّر لمرحلتي
+                 الخطة والإجابة ليحفظ ما سبق الأسئلة العشرة الأخيرة. داخلي
+                 بالكامل (لا يُعرض للمستخدم).
 
         سياسة الفشل: تفشل العملية فقط لو لم ينجح أي استعلام؛ لو نجح
         بعضها، تُكتب الإجابة من الناجح فقط ويُبلَّغ AI بالفاشل (قسم
@@ -589,7 +786,7 @@ class AIManager:
         builder = PromptBuilder(schema=schema, relations=relations, ai_rules=ai_rules)
 
         # ── المرحلة ١: خطة الاستعلامات ──
-        prompt = builder.build_qa_plan(question, history=history_turns)
+        prompt = builder.build_qa_plan(question, history=history_turns, summary=summary)
         queries_plan = None
         tries = 0
         last_error = ""
@@ -641,12 +838,17 @@ class AIManager:
 
         # ── المرحلة ٢: تنفيذ كل استعلام (بدون Slicers) ──
         executed = []
+        # 🆕 كل استعلام يمر عبر الدالة الموحّدة _run_planned_query: تصحيح تلقائي
+        # للأعمدة ثم إعادة الـ SQL الفاشل للـ AI (حتى self.max_tries) مثل ask().
         for q in queries_plan:
             sql = str(q.get("sql", "")).strip()
             title = str(q.get("title") or "بيانات").strip()
             if not sql:
                 continue
-            run_result = self.qe.run(sql)
+            run_result = self._run_planned_query(
+                sql, title, question, builder, schema,
+                start_time=qa_start, budget=self.story_max_total_wait_seconds,
+            )
             if run_result["ok"]:
                 executed.append({
                     "title": title, "sql": run_result.get("sql", sql),
@@ -654,7 +856,7 @@ class AIManager:
                 })
             else:
                 executed.append({
-                    "title": title, "sql": sql,
+                    "title": title, "sql": run_result.get("sql", sql),
                     "ok": False, "error": run_result["error"],
                 })
 
@@ -679,6 +881,7 @@ class AIManager:
             answer_length=answer_length,
             history=history_turns,
             failed=[{"title": e["title"], "error": e.get("error", "")} for e in failed],
+            summary=summary,
         )
 
         send_result = None
@@ -726,6 +929,70 @@ class AIManager:
             "sql": "\n\n".join(f"-- {e['title']}\n{e['sql']}" for e in successful),
             "df": successful[0]["df"],
         }
+
+
+    # ──────────────────────────────────────────────────────────
+    #  🆕 تحديث الملخص التراكمي لمحادثة سؤال وجواب (استفسار منفصل)
+    # ──────────────────────────────────────────────────────────
+    def summarize_qa_memory(
+        self,
+        old_summary: Optional[str],
+        question   : str,
+        answer     : str,
+    ) -> dict:
+        """
+        دمج الملخص التراكمي السابق مع آخر سؤال وجواب في ملخص محدَّث
+        (حد أقصى config.QA_SUMMARY_MAX_CHARS حرف) — استفسار AI منفصل
+        تماماً عن answer_question، يُستدعى من ui/chat.py بعد عرض نتيجة
+        السؤال الأخير ويُخزَّن ناتجه في session_state.
+
+        مهلة الاتصال = story_timeout، وعدد المحاولات محدود
+        (_QA_SUMMARY_MAX_ATTEMPTS) حتى لا يُطيل الانتظار. الفشل لا يؤثر
+        على أي إجابة: يُسجَّل في اللوج ويُرجع {"ok": False} فيبقى
+        المستدعي على الملخص القديم دون تغيير.
+
+        يرجع: {"ok": True, "summary": "..."} أو {"ok": False, "error": "..."}
+        """
+        question = (question or "").strip()
+        answer = (answer or "").strip()
+        if not question or not answer:
+            return {"ok": False, "error": "لا يوجد سؤال/جواب لتلخيصه"}
+
+        builder = PromptBuilder(schema={}, relations=[])
+        prompt = builder.build_qa_summary(old_summary, question, answer)
+
+        attempts = min(self.max_tries, _QA_SUMMARY_MAX_ATTEMPTS)
+        last_error = ""
+        for attempt in range(1, attempts + 1):
+            send_result = self.engine.send(
+                prompt, self.temperature, timeout_override=self.story_timeout,
+            )
+            if send_result["ok"]:
+                text = self.engine.clean_response(send_result["text"]).strip()
+                if not text:
+                    last_error = "رد AI فارغ عند تحديث الملخص"
+                    logger.warning("QA summary empty (attempt %d/%d)", attempt, attempts)
+                    continue
+
+                if len(text) > QA_SUMMARY_MAX_CHARS:
+                    # حماية: لو تجاوز النموذج الحد رغم التعليمات نحتفظ
+                    # بالنهاية (الأحدث) ونقتطع من البداية (الأقدم)
+                    text = text[-QA_SUMMARY_MAX_CHARS:]
+                    newline_pos = text.find("\n")
+                    if 0 <= newline_pos < len(text) // 2:
+                        text = text[newline_pos + 1:]
+                    text = text.strip()
+
+                return {"ok": True, "summary": text}
+
+            last_error = send_result.get("error", "unknown")
+            logger.warning(
+                "QA summary send failed (attempt %d/%d): %s", attempt, attempts, last_error,
+            )
+            if send_result.get("error_type") in _PERMANENT_ERROR_TYPES:
+                break
+
+        return {"ok": False, "error": last_error}
 
 
 # ══════════════════════════════════════════════════════════════

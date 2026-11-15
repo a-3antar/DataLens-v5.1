@@ -37,11 +37,34 @@ ui/chat.py
 شيء يخص بياناته (والفلاتر يكتبها في نص السؤال نفسه)، فيبحث AI ويفلتر
 ويلخّص ويستخرج Insights ويكتب رأيه (ai.ai_manager.AIManager.answer_question).
 عند اختيار هذا النوع يظهر في قائمة "⁝" خيار "طول الإجابة" (مختصرة/مفصّلة).
-ذاكرة المحادثة: تُبنى من أسئلة/أجوبة "qa" الناجحة في هذه الجلسة
-(_build_qa_history) ويقتطعها AIManager إلى آخر config.QA_HISTORY_TURNS.
 البيانات المستخدمة تظهر كاملة داخل expander (جدول مُنسَّق بالثيم لو
 ≤ _QA_THEMED_TABLE_MAX_ROWS صفاً، وإلا st.dataframe التفاعلي لسلاسة
 التمرير). الإرسال للتقرير يمر كفقرة Markdown مثل Story تماماً.
+
+🆕 ذاكرة المحادثة الداخلية لنوع "qa" (آخر 10 أسئلة + ملخص تراكمي):
+------------------------------------------------------------------------
+- الأسئلة/الأجوبة: تُبنى من أسئلة/أجوبة "qa" الناجحة في هذه الجلسة
+  (_build_qa_history) ويقتطعها AIManager إلى آخر config.QA_HISTORY_TURNS
+  (10) — تُرسَل للذكاء الاصطناعي مع أجوبتها.
+- الملخص التراكمي: يُحفظ في st.session_state["_qa_summary"] ويُحدَّث
+  بعد كل جواب "qa" ناجح عبر AIManager.summarize_qa_memory — استفسار
+  AI منفصل تماماً عن الإجابة نفسها: _handle_submit يسجّل العمل المعلَّق
+  (_PENDING_SUMMARY_KEY) ثم يُعيد الرسم، فتظهر الإجابة كاملة أولاً،
+  وبعد رسم الصفحة (بطاقات + مربع الكتابة) تُنفِّذ _flush_pending_summary
+  التلخيص. لو أُرسل سؤال جديد قبل اكتمال التلخيص يُنفَّذ أولاً (يمنع
+  تقدّم الملخص خطوة عن الأسئلة). الملخص يُرسَل مع الأسئلة السابقة
+  ليحفظ ما سبق الأسئلة العشرة. فشل التلخيص لا يؤثر على أي إجابة
+  (يبقى الملخص القديم).
+- الذاكرة والملخص داخليان بالكامل: لا يُعرضان ولا يُعدَّلان من المستخدم.
+- "🗑️ مسح تاريخ المحادثة" يمسح الذاكرة (بطاقات الجلسة) والملخص معاً.
+
+🆕 مسح خانة السؤال بعد الإجابة:
+---------------------------------
+st.session_state.pop(مفتاح_الـ widget) بعد إنشاء الـ widget لا يمسح
+قيمته فعلياً (الواجهة الأمامية تعيد إرسال القيمة القديمة). الحل: علم
+_CLEAR_QUESTION_KEY يُضبط في _handle_submit، ويُقرأ في بداية
+_render_input_area قبل رسم st.text_area فيُضبط st.session_state
+[مفتاح_الـ widget] = "" — نفس نمط _PREFILL_KEY المستخدم لمرجع الأسئلة.
 
 لا تغيير على أي من ai.ai_manager.AIManager.ask/tell_story ولا على
 core.query_engine — فقط طبقة العرض.
@@ -86,7 +109,12 @@ _RESULT_TYPE_LABELS = {
 
 _QUESTION_BOX_KEY = "chat_question_box"
 _PREFILL_KEY = "_chat_question_prefill"
+_CLEAR_QUESTION_KEY = "_chat_clear_question"
 _THREAD_KEY = "chat_thread"
+# 🆕 الملخص التراكمي الداخلي لمحادثة "qa" (نص) — لا يُعرض للمستخدم
+_SUMMARY_KEY = "_qa_summary"
+# 🆕 عمل تلخيص معلَّق {"question", "answer"} ينتظر رسم الإجابة أولاً
+_PENDING_SUMMARY_KEY = "_qa_summary_pending"
 
 # 🆕 أقصى عدد صفوف يُعرض به جدول بيانات Q&A كجدول HTML مُنسَّق
 # (render_themed_table) — أعلى من ذلك يُستخدم st.dataframe التفاعلي
@@ -156,6 +184,10 @@ def show_chat():
     with bottom():
         _render_input_area(db, ai, settings)
 
+    # 🆕 بعد أن رُسمت الإجابة ومربع الكتابة بالكامل: تحديث ملخص المحادثة
+    # (استفسار AI منفصل، صامت — لا يُعرض للمستخدم).
+    _flush_pending_summary(ai)
+
 
 # ══════════════════════════════════════════════════════════════
 #  🆕 مرجع الأسئلة — popover يسرد أسئلة الجلسة + السجل المحفوظ
@@ -213,6 +245,12 @@ def _render_question_reference(db) -> None:
 # ══════════════════════════════════════════════════════════════
 
 def _render_input_area(db, ai, settings: dict) -> None:
+    # 🆕 مسح خانة السؤال بعد إجابة سابقة — يجب أن يحدث قبل إنشاء الـ
+    # widget (راجع توثيق الوحدة أعلاه). يسبق تطبيق _PREFILL_KEY حتى
+    # يتغلّب أي سؤال مُختار من "مرجع الأسئلة" على المسح.
+    if st.session_state.pop(_CLEAR_QUESTION_KEY, False):
+        st.session_state[_QUESTION_BOX_KEY] = ""
+
     # تطبيق أي سؤال مُختار من "مرجع الأسئلة" قبل رسم مربع النص
     if _PREFILL_KEY in st.session_state:
         st.session_state[_QUESTION_BOX_KEY] = st.session_state.pop(_PREFILL_KEY)
@@ -290,6 +328,9 @@ def _render_clear_history_button(db) -> None:
     الإلغاء) يضبط _chat_options_expander_open=True قبل rerun — فقط
     ليبقى fallback الـ expander (نسخ Streamlit القديمة بلا popover)
     مفتوحاً عبر كل هذه الخطوات؛ لا تأثير له مع st.popover الحديث.
+
+    🆕 تأكيد المسح يمسح أيضاً الملخص التراكمي الداخلي لمحادثة "qa"
+    (_SUMMARY_KEY) — فيبدأ AI من صفحة بيضاء مع بطاقات الجلسة المفرغة.
     """
     confirm_key = "confirm_clear_chat_history"
     if st.session_state.get(confirm_key):
@@ -297,6 +338,8 @@ def _render_clear_history_button(db) -> None:
         if st.button("⚠️ تأكيد المسح", key="danger_confirm_clear_chat", width="stretch"):
             db.clear_chat_history()
             st.session_state[_THREAD_KEY] = []
+            st.session_state.pop(_SUMMARY_KEY, None)
+            st.session_state.pop(_PENDING_SUMMARY_KEY, None)
             st.session_state.pop(confirm_key, None)
             notify("تم مسح تاريخ المحادثة", kind="success")
             st.rerun()
@@ -325,10 +368,42 @@ def _build_qa_history() -> list:
     return turns
 
 
+def _flush_pending_summary(ai) -> None:
+    """
+    🆕 تنفيذ تحديث الملخص التراكمي المعلَّق (إن وُجد) كاستفسار AI
+    منفصل: الملخص السابق + آخر سؤال/جواب → ملخص جديد في session_state.
+    يُستدعى بعد رسم الإجابة (show_chat)، أو قبل معالجة سؤال جديد
+    (_handle_submit) لو لم يكتمل. العمل المعلَّق يُحذف فقط بعد انتهاء
+    المحاولة، فلو قاطع المستخدم السكربت بإرسال سؤال جديد أثناء
+    التلخيص، يُعاد تنفيذه قبل السؤال التالي. فشل التلخيص (أو أي
+    استثناء) لا يؤثر على أي إجابة: يبقى الملخص القديم.
+    """
+    pending = st.session_state.get(_PENDING_SUMMARY_KEY)
+    if not pending:
+        return
+    try:
+        r = ai.summarize_qa_memory(
+            st.session_state.get(_SUMMARY_KEY, ""),
+            pending.get("question", ""), pending.get("answer", ""),
+        )
+        if r.get("ok") and r.get("summary"):
+            st.session_state[_SUMMARY_KEY] = r["summary"]
+    except Exception as e:
+        # لا نُسقط الصفحة بسبب عملية مساندة
+        import logging
+        logging.getLogger(__name__).warning("QA summary update failed: %s", e)
+    finally:
+        st.session_state.pop(_PENDING_SUMMARY_KEY, None)
+
+
 def _handle_submit(db, ai, settings: dict, question: str) -> None:
     if not question.strip():
         notify("الرجاء كتابة سؤال", kind="warning")
         return
+
+    # 🆕 لو كان تلخيص السؤال السابق لم يكتمل (قاطعه هذا الإرسال)، ننفّذه
+    # أولاً حتى يُبنى السؤال الجديد على ملخص محدَّث.
+    _flush_pending_summary(ai)
 
     result_type = st.session_state.get("_chat_result_type", "table")
     chart_type = st.session_state.get("_chat_chart_type", "bar")
@@ -347,9 +422,12 @@ def _handle_submit(db, ai, settings: dict, question: str) -> None:
     if result_type == "story":
         result = ai.tell_story(question, ai_rules=settings.get("ai_rules"))
     elif result_type == "qa":
+        # 🆕 آخر الأسئلة/الأجوبة + الملخص التراكمي الداخلي يُرسَلان للـ AI
+        # فقط (لا يُعرضان) — يُبنى history قبل إضافة هذا السؤال للسجل.
         result = ai.answer_question(
             question, ai_rules=settings.get("ai_rules"),
             answer_length=answer_length, history=_build_qa_history(),
+            summary=st.session_state.get(_SUMMARY_KEY, ""),
         )
     else:
         result = ai.ask(question, result_type=result_type, ai_rules=settings.get("ai_rules"))
@@ -374,7 +452,16 @@ def _handle_submit(db, ai, settings: dict, question: str) -> None:
     if not result["ok"]:
         notify(f"فشل الاستعلام: {result.get('error')}", kind="error")
 
-    st.session_state.pop(_QUESTION_BOX_KEY, None)
+    # 🆕 جدولة تحديث الملخص كاستفسار منفصل بعد عرض هذه الإجابة (يُنفَّذ
+    # في _flush_pending_summary بعد إعادة الرسم، لا هنا)
+    if result_type == "qa" and result.get("ok") and result.get("answer"):
+        st.session_state[_PENDING_SUMMARY_KEY] = {
+            "question": question.strip(), "answer": result["answer"],
+        }
+
+    # 🆕 مسح خانة السؤال عبر العلم (يُنفَّذ في بداية _render_input_area
+    # بعد rerun، قبل إنشاء الـ widget) — pop المباشر للمفتاح لا يمسحها.
+    st.session_state[_CLEAR_QUESTION_KEY] = True
     st.rerun()
 
 # ══════════════════════════════════════════════════════════════
