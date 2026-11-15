@@ -12,8 +12,16 @@ config.py
 🆕 نوع نتيجة جديد "qa" (سؤال وجواب / رؤى):
 ---------------------------------------------
 أُضيف "qa" إلى RESULT_TYPES مع ثوابت قسم "سؤال وجواب" أدناه
-(QA_MAX_QUERIES, QA_HISTORY_TURNS, QA_ANSWER_LENGTHS,
-QA_DEFAULT_ANSWER_LENGTH) — كلها قابلة للتعديل من هذا الملف فقط.
+(QA_MAX_QUERIES, QA_HISTORY_TURNS, QA_SUMMARY_MAX_CHARS,
+QA_ANSWER_LENGTHS, QA_DEFAULT_ANSWER_LENGTH) — كلها قابلة للتعديل من
+هذا الملف فقط.
+
+🆕 ذاكرة سؤال وجواب داخلية (آخر 10 أسئلة + ملخص تراكمي):
+------------------------------------------------------------
+QA_HISTORY_TURNS رُفع إلى 10، وأُضيف QA_SUMMARY_MAX_CHARS لتحديد
+أقصى طول للملخص التراكمي الذي يحفظ ما سبق الأسئلة العشرة. الذاكرة
+والملخص داخليان بالكامل (لا يُعرضان ولا يُعدَّلان من المستخدم) —
+يُرسَلان للذكاء الاصطناعي فقط لتكون الردود متابعة للمحادثة.
 """
 
 import os
@@ -99,17 +107,6 @@ DEFAULT_SETTINGS = {
     },
 }
 
-# ─── محركات الـ AI ─────────────────────────────────────────
-# ملاحظة: "ollama" محرك محلي (يتصل بسيرفر على نفس الجهاز أو الشبكة
-# المحلية) — لن يعمل على Streamlit Community Cloud لأن السحابة لا
-# تصل لأي سيرفر Ollama يعمل على جهاز المستخدم. يبقى مدرجاً هنا
-# للاستخدام أثناء التطوير/التشغيل المحلي فقط؛ الواجهة تعرض تنبيهاً
-# واضحاً عند اختياره (راجع ui/settings.py).
-#
-# "gemini" و "ollama": بروتوكول خاص بكل منهما (كلاس منفصل).
-# باقي المحركات ("groq", "openrouter", ...): تُبنى ديناميكياً عبر
-# ai.openai_compatible_engine.OpenAICompatibleEngine
-# — إضافة محرك جديد متوافق مع OpenAI API تتم بسطر واحد فقط في
 AI_ENGINES = ["gemini", "groq", "openrouter", "ollama"]
 
 OLLAMA_DEFAULT_URL = "http://localhost:11434"
@@ -121,9 +118,6 @@ ALLOWED_EXTENSIONS = [".xlsx", ".xls", ".csv"]
 # 🆕 "qa" = سؤال وجواب (رؤى) — راجع قسم QA أدناه.
 RESULT_TYPES = ["table", "chart", "gauge", "kpi", "story", "qa"]
 
-# ─── أنواع الرسوم البيانية المدعومة ────────────────────────
-# مرجع موحّد يُستخدم في صفحة المحادثة (ui/chat.py) وصفحة لوحات
-# المعلومات (ui/dashboards.py) حتى لا يتكرر التعريف في مكانين.
 CHART_TYPES = {
     "bar"    : "أعمدة",
     "line"   : "خطي",
@@ -140,28 +134,18 @@ STORY_MAX_QUERIES = 10 # أقصى عدد استعلام SQL يمكن إنشاؤ�
 # أقصى عدد استعلامات SQL يخطط لها AI للسؤال الواحد.
 QA_MAX_QUERIES = 6
 
-# 🆕 عدد آخر (سؤال + جواب) من هذه الجلسة التي تُرسَل كسياق مختصر مع
-# كل سؤال جديد، حتى تعمل أسئلة المتابعة ("وماذا عن الشهر السابق؟").
-# 0 = بدون ذاكرة (كل سؤال مستقل تماماً). قابل للتعديل هنا فقط.
-QA_HISTORY_TURNS = 3
+QA_HISTORY_TURNS = 10
 
-# 🆕 طول الإجابة الذي يختاره المستخدم في واجهة المحادثة (المفتاح =
-# القيمة الداخلية، النص = التسمية المعروضة).
+
+QA_SUMMARY_MAX_CHARS = 2400
+
+
 QA_ANSWER_LENGTHS = {
     "short": "مختصرة",
     "long" : "مفصّلة",
 }
 QA_DEFAULT_ANSWER_LENGTH = "short"
 
-# ملاحظة: لا يوجد سقف لعدد صفوف نتائج Q&A المُرسَلة لـ AI عمداً — تظهر
-# البيانات كاملة، ويُطلب من AI (عبر الـ prompt) استخدام التجميع
-# (Aggregate) كلما كانت النتيجة كبيرة. راجع ai/prompt_builder.py.
-
-# ─── الثيمات ───────────────────────────────────────────────
-# "custom" يُضاف دائماً كخيار أخير في الواجهة (ui/settings.py) — ليس
-# له إدخال هنا لأنه لا يملك ألواناً ثابتة؛ ألوانه الفعلية تُقرأ من
-# settings["custom_theme_colors"] (راجع DEFAULT_SETTINGS أعلاه و
-# ui/common.py::_resolve_theme_colors).
 THEMES = {
     "ocean_dark"    : "Ocean Dark",
     "arctic_light"  : "Arctic Light",
@@ -185,10 +169,6 @@ DASHBOARD_GAUGE_COUNT = 4    # عدد الـ Gauges الثابت أعلى كل �
 DASHBOARD_SLICER_COUNT = 4   # عدد شرائح الفلترة (Slicers) — قابل للتعديل هنا فقط
 DASHBOARD_SLICER_VALUES_LIMIT = 200  # أقصى عدد قيم فريدة تُعرض في قائمة اختيار Slicer
 
-# ─── المناطق الزمنية المقترحة في الواجهة ────────────────────
-# قائمة مختصرة ومعقولة بدل عرض المئات من zoneinfo.available_timezones()
-# دفعة واحدة في selectbox. المنطقة الحالية المحفوظة تُضاف تلقائياً في
-# أعلى القائمة لو لم تكن ضمن هذه المجموعة (راجع ui/settings.py).
 COMMON_TIMEZONES = [
     "Asia/Riyadh", "Asia/Dubai", "Asia/Kuwait", "Asia/Qatar",
     "Asia/Bahrain", "Asia/Baghdad", "Asia/Amman", "Asia/Beirut",

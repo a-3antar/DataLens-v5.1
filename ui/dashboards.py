@@ -18,24 +18,29 @@ ui/dashboards.py
      الإنشاء اليدوي أصبح تدفقاً واحداً مرقّماً (1: العنوان، 2: القالب) داخل
      st.form واحد — فلا يوجد أي زر مستقل لكل قالب يمكن أن يُنشئ اللوحة
      قبل تأكيد الاختيار، والإرسال الوحيد الممكن هو زر "➕ إنشاء اللوحة".
-   - التفاصيل (_show_dashboard_detail): الصف العلوي أصبح بإجراء أساسي
-     بارز واحد فقط (🔄 تحديث البيانات)، والرجوع/الإرسال للتقرير
-     أهدأ بصرياً وأصغر مساحة (يتبعان تلقائياً شكل الزر "الثانوي" الموحّد
-     المعرَّف في apply_theme_css، لكن رُتِّبت الأعمدة هنا لتعكس هذا
-     الترتيب في الأهمية بصرياً أيضاً).
-   - _render_template_switcher وَ_render_slicer_panel: نفس نمط تسمية
-     العنوان (أيقونة + نص + عداد/حالة بين قوسين) المستخدم في كل قوائم
-     التطبيق المطوية الأخرى، ليتطابق الشكل تماماً (الحجم والتباعد
-     موحَّدان أصلاً عبر CSS في apply_theme_css).
    - حقول الفلاتر: القيم المميزة (Distinct Values) تُجلب فقط عند تغيّر
      الجدول/العمود فعلياً (بصمة مخزَّنة في session_state)، لا في كل
-     rerun — فالتفاعل مع أي حقل آخر لا يُعيد الجلب من القاعدة، ويبقى
-     زر "💾 حفظ الكل" هو الإجراء البارز الوحيد في لوحة الفلاتر.
+     rerun — ويبقى زر "💾 حفظ الكل" هو الإجراء البارز الوحيد في لوحة الفلاتر.
 8. 🆕 إعادة تسمية لوحة بعد إنشائها (_render_rename_dashboard_form): نموذج
-   st.form صغير داخل قائمة "⁝" في بطاقة اللوحة (نفس نمط إعادة تسمية
-   المشاريع في ui/projects.py) — Enter في الحقل يحفظ الاسم مباشرة. التنفيذ
-   الفعلي في core.dashboard_manager.DashboardManager.rename_dashboard
-   (لا يمس الخلايا ولا الفلاتر ولا القالب ولا وقت "آخر تحديث").
+   st.form صغير (نفس نمط إعادة تسمية المشاريع في ui/projects.py) — Enter
+   في الحقل يحفظ الاسم مباشرة. يُستخدم في بطاقة المعرض وفي قائمة إجراءات
+   صفحة التفاصيل. التنفيذ الفعلي في
+   core.dashboard_manager.DashboardManager.rename_dashboard (لا يمس
+   الخلايا ولا الفلاتر ولا القالب ولا وقت "آخر تحديث").
+9. 🆕 قائمة إجراءات واحدة في صفحة تفاصيل اللوحة (_render_dashboard_actions_menu):
+   زر "⚙️ إجراءات اللوحة" (popover) يجمع: 🔄 تحديث البيانات (الفعل
+   الأساسي)، ♻️ تحديث إجباري (إعادة توليد SQL)، 📤 إرسال إلى تقرير،
+   ✏️ إعادة تسمية — بدل ثلاثة عناصر منفصلة في الصف العلوي. بما أن
+   Streamlit لا يسمح بتداخل popover داخل popover، حقول الإرسال للتقرير
+   تُرسم مباشرة داخل القائمة (_render_send_all_to_report_fields).
+10. 🆕 التحديث الإجباري (_clear_base_sql_for_visible_cells + _run_refresh):
+   التحديث العادي يعيد استخدام base_sql المحفوظ لكل خلية (بدون AI)، فلا
+   يتغيّر الـ SQL حتى لو كان خاطئاً أو قديماً. التحديث الإجباري يُفرغ
+   base_sql للخلايا المرئية فقط (ضمن نطاق القالب الحالي) ثم يستدعي نفس
+   refresh_dashboard — فتُعاد خطة الـ SQL من الصفر عبر AI وتُحفظ كأساس
+   جديد للتحديثات السريعة اللاحقة. الخلايا المخفية لا تُمس. لا حاجة
+   لتعديل DashboardManager أو project_db: القيمة الفارغة "" تُعامَل كأنها
+   "لا base_sql" في كل المسارات (execute/حفظ الأساس الجديد).
 """
 
 from core import dashboard_cells
@@ -188,11 +193,10 @@ def _render_manual_create_flow(db) -> None:
 
 def _render_rename_dashboard_form(db, d: dict) -> None:
     """
-    🆕 نموذج إعادة تسمية لوحة موجودة — يُرسم داخل قائمة "⁝" الخاصة
-    ببطاقة اللوحة في المعرض (نفس نمط _render_project_actions_menu في
-    ui/projects.py). st.form واحد بحقل الاسم وزر الحفظ، فالضغط على
-    Enter في الحقل يُنفّذ الحفظ مباشرة. الاسم الحالي يُعرض كقيمة
-    ابتدائية ليسهل تعديله بدل الكتابة من الصفر.
+    🆕 نموذج إعادة تسمية لوحة موجودة — يُرسم داخل قوائم "⁝" (بطاقة اللوحة
+    في المعرض، وقائمة إجراءات صفحة التفاصيل). st.form واحد بحقل الاسم
+    وزر الحفظ، فالضغط على Enter في الحقل يُنفّذ الحفظ مباشرة. الاسم
+    الحالي يُعرض كقيمة ابتدائية ليسهل تعديله بدل الكتابة من الصفر.
 
     التنفيذ الفعلي عبر DashboardManager.rename_dashboard (لا حاجة لـ
     AI هنا، فيُمرَّر None). لا يُغيّر الخلايا ولا الفلاتر ولا وقت
@@ -272,6 +276,119 @@ def _build_ai_manager(db):
     """مفتاح API يُقرأ من إعدادات المشروع (project.db) كما كان دائماً."""
     return _core_build_ai_manager(db)
 
+
+# ══════════════════════════════════════════════════════════════
+#  🆕 تحديث البيانات (عادي / إجباري)
+# ══════════════════════════════════════════════════════════════
+
+def _clear_base_sql_for_visible_cells(db, dashboard_id: str, template: dict) -> int:
+    """
+    إفراغ base_sql للخلايا المُهيَّأة والمرئية فقط (position ضمن نطاق
+    القالب الحالي: صف المؤشرات الثابت + cell_count القالب) — لإجبار
+    refresh_dashboard على إعادة توليد SQL عبر AI.
+
+    - القيمة الفارغة "" تُعامَل كـ "لا base_sql" في كل مسارات
+      DashboardCellBase/StoryCell (`if self.base_sql:`) وفي حفظ الأساس
+      الجديد بعد التنفيذ (`if not cell_obj.base_sql:`).
+    - الخلايا المخفية (خارج نطاق القالب) لا تُمس، بنفس سياسة
+      refresh_dashboard التي تتجاهلها أصلاً.
+    - يرجع عدد الخلايا التي كان لها base_sql وأُفرغت فعلاً.
+    """
+    visible_limit = DASHBOARD_GAUGE_COUNT + template["cell_count"]
+    cleared = 0
+    for row in db.get_dashboard_cells(dashboard_id):
+        if not row.get("question") or row["position"] >= visible_limit:
+            continue
+        if row.get("base_sql"):
+            db.save_dashboard_cell_base_sql(dashboard_id, row["position"], "")
+            cleared += 1
+    return cleared
+
+
+def _run_refresh(db, dm, settings: dict, dashboard_id: str, template: dict,
+                 engine_name: str, force: bool) -> None:
+    """
+    تنفيذ تحديث اللوحة مع مؤشر تقدّم وإشعار نتيجة، ثم st.rerun().
+
+    force=False: التحديث السريع المعتاد (base_sql المحفوظ يُعاد تنفيذه
+                 بدون AI، وAI فقط للخلايا الجديدة أو Story).
+    force=True : تحديث إجباري — يُفرغ base_sql للخلايا المرئية أولاً
+                 فيُعاد توليد SQL لكل منها عبر AI (راجع
+                 _clear_base_sql_for_visible_cells).
+    """
+    status_placeholder = st.empty()
+
+    if force:
+        _clear_base_sql_for_visible_cells(db, dashboard_id, template)
+        status_placeholder.markdown("⏳ جاري إعادة توليد SQL وتحديث خلايا اللوحة...")
+    else:
+        status_placeholder.markdown("⏳ جاري تحديث خلايا اللوحة...")
+
+    def on_progress(done, total):
+        frame = _BUSY_FRAMES[done % len(_BUSY_FRAMES)]
+        status_placeholder.markdown(f"{frame} جاري التحديث... تم {done} من {total}")
+
+    result = dm.refresh_dashboard(
+        dashboard_id,
+        ai_rules=settings.get("ai_rules"),
+        on_progress=on_progress,
+        engine_name=engine_name,
+    )
+    status_placeholder.empty()
+
+    if not result["ok"]:
+        notify(result.get("error", "فشل التحديث"), kind="error")
+    elif result["errors"] == 0:
+        notify(
+            f"تم تحديث {result['total']} خلية بنجاح "
+            f"(⚡ {result['fast_updates']} سريع، 🤖 {result['ai_calls']} عبر AI)",
+            kind="success",
+        )
+    else:
+        notify(
+            f"تم التحديث: {result['total'] - result['errors']} نجحت، "
+            f"{result['errors']} فشلت",
+            kind="warning",
+        )
+    st.rerun()
+
+
+def _render_dashboard_actions_menu(db, dashboard_id: str, dashboard: dict, template: dict):
+    """
+    🆕 قائمة إجراءات اللوحة الواحدة (popover): تحديث البيانات، تحديث
+    إجباري، إرسال إلى تقرير، إعادة تسمية.
+
+    ترجع (refresh_clicked, force_clicked) — التنفيذ الفعلي يتم في
+    المُستدعي بعد رسم الصف العلوي كاملاً، حتى يظهر مؤشر التقدّم أسفله
+    وليس داخل القائمة المنبثقة (التي تُغلق عند أول rerun).
+    """
+    has_popover = hasattr(st, "popover")
+    menu_ctx = (
+        st.popover("⚙️ إجراءات اللوحة", width="stretch") if has_popover
+        else st.expander("⚙️ إجراءات اللوحة", expanded=False)
+    )
+
+    refresh_clicked = force_clicked = False
+    with menu_ctx:
+        refresh_clicked = st.button(
+            "🔄 تحديث البيانات", key=f"refresh_dash_{dashboard_id}",
+            type="primary", width="stretch",
+        )
+        force_clicked = st.button(
+            "♻️ تحديث إجباري (إعادة توليد SQL)", key=f"force_refresh_dash_{dashboard_id}",
+            width="stretch",
+            help="يتجاهل SQL المحفوظ لكل خلية ويطلب من الذكاء الاصطناعي توليده "
+                 "من جديد — استخدمه لو كانت النتائج خاطئة أو تغيّرت بنية البيانات. "
+                 "أبطأ من التحديث العادي ويستهلك استدعاءات AI.",
+        )
+        st.divider()
+        _render_send_all_to_report_fields(db, dashboard_id, dashboard, template)
+        st.divider()
+        _render_rename_dashboard_form(db, dashboard)
+
+    return refresh_clicked, force_clicked
+
+
 def _show_dashboard_detail(db):
     dashboard_id = st.session_state.current_dashboard_id
     dashboard = db.get_dashboard(dashboard_id)
@@ -293,11 +410,9 @@ def _show_dashboard_detail(db):
         dm.sync_views(dashboard_id)
         st.session_state[_sync_flag] = True
 
-    # 🆕 صف علوي بإجراء أساسي بارز واحد فقط (🔄 تحديث البيانات) —
-    # زر الرجوع تحوّل إلى أيقونة صغيرة هادئة بجانب العنوان مباشرة،
-    # وإرسال التقرير بقي بشكله الهادئ (popover/expander) دون منافسة
-    # بصرية للتحديث، الذي يأخذ أكبر مساحة ووحيد بلون primary.
-    title_col, back_col, refresh_col, report_col = st.columns([5, 0.9, 2.4, 1.7])
+    # 🆕 صف علوي: العنوان + زر رجوع صغير + قائمة إجراءات واحدة تجمع
+    # (تحديث / تحديث إجباري / إرسال إلى تقرير / إعادة تسمية).
+    title_col, back_col, menu_col = st.columns([6, 0.9, 2.4])
     with back_col:
         if st.button("↩️", key="back_to_dashboards", width="stretch", help="الرجوع إلى قائمة اللوحات"):
             st.session_state.current_dashboard_id = None
@@ -306,42 +421,16 @@ def _show_dashboard_detail(db):
         st.title(f"📊 {dashboard['title']}")
         updated_label = format_local_dt(dashboard.get("updated_at"), settings) or "لم يُحدَّث بعد"
         st.caption(f"آخر تحديث: {updated_label}")
-    with refresh_col:
-        refresh_clicked = st.button("🔄 تحديث البيانات", type="primary", width='stretch')
-    with report_col:
-        _render_send_all_to_report(db, dashboard_id, dashboard, template)
-
-    if refresh_clicked:
-        status_placeholder = st.empty()
-        status_placeholder.markdown("⏳ جاري تحديث خلايا اللوحة...")
-
-        def on_progress(done, total):
-            frame = _BUSY_FRAMES[done % len(_BUSY_FRAMES)]
-            status_placeholder.markdown(f"{frame} جاري التحديث... تم {done} من {total}")
-
-        result = dm.refresh_dashboard(
-            dashboard_id,
-            ai_rules=settings.get("ai_rules"),
-            on_progress=on_progress,
-            engine_name=engine_name,
+    with menu_col:
+        refresh_clicked, force_clicked = _render_dashboard_actions_menu(
+            db, dashboard_id, dashboard, template,
         )
-        status_placeholder.empty()
 
-        if not result["ok"]:
-            notify(result.get("error", "فشل التحديث"), kind="error")
-        elif result["errors"] == 0:
-            notify(
-                f"تم تحديث {result['total']} خلية بنجاح "
-                f"(⚡ {result['fast_updates']} سريع، 🤖 {result['ai_calls']} عبر AI)",
-                kind="success",
-            )
-        else:
-            notify(
-                f"تم التحديث: {result['total'] - result['errors']} نجحت، "
-                f"{result['errors']} فشلت",
-                kind="warning",
-            )
-        st.rerun()
+    if refresh_clicked or force_clicked:
+        _run_refresh(
+            db, dm, settings, dashboard_id, template, engine_name,
+            force=force_clicked,
+        )
 
     # 🆕 تغيير قالب اللوحة بعد إنشائها — لا يحذف ولا يُحدِّث أي خلية
     # مخزَّنة مسبقاً (راجع DashboardManager.update_dashboard_template
@@ -454,59 +543,59 @@ def _render_template_switcher(db, dm, dashboard: dict, dashboard_id: str) -> Non
                 notify(r.get("error", "فشل تغيير القالب"), kind="error")
 
 
-def _render_send_all_to_report(db, dashboard_id: str, dashboard: dict, template: dict) -> None:
+def _render_send_all_to_report_fields(db, dashboard_id: str, dashboard: dict, template: dict) -> None:
+    """
+    🆕 حقول إرسال اللوحة إلى تقرير — تُرسم مباشرة داخل السياق الحالي
+    (قائمة إجراءات اللوحة)، بدون فتح popover خاص بها لأن Streamlit لا
+    يدعم تداخل popover داخل popover.
+    """
     from exporters.report_manager import ReportManager
 
+    st.markdown("**📤 إرسال إلى تقرير**")
     reports = db.get_reports()
-    has_popover = hasattr(st, "popover")
-    menu_ctx = (
-        st.popover("📤 إرسال إلى تقرير", width='stretch') if has_popover
-        else st.expander("📤 إرسال إلى تقرير", expanded=False)
+    if not reports:
+        st.caption("أنشئ تقريراً أولاً من صفحة التقارير")
+        return
+
+    report_options = {r["title"]: r["id"] for r in reports}
+    report_choice = st.selectbox(
+        "اختر تقريراً", list(report_options.keys()), key=f"send_all_report_{dashboard_id}",
     )
-    with menu_ctx:
-        if not reports:
-            st.caption("أنشئ تقريراً أولاً من صفحة التقارير")
-            return
+    mode = st.radio(
+        "طريقة الإرسال", ["layout", "separate"],
+        format_func=lambda m: "بنفس شكل اللوحة (أعمدة)" if m == "layout" else "خلايا منفصلة",
+        key=f"send_all_mode_{dashboard_id}",
+    )
 
-        report_options = {r["title"]: r["id"] for r in reports}
-        report_choice = st.selectbox(
-            "اختر تقريراً", list(report_options.keys()), key=f"send_all_report_{dashboard_id}",
-        )
-        mode = st.radio(
-            "طريقة الإرسال", ["layout", "separate"],
-            format_func=lambda m: "بنفس شكل اللوحة (أعمدة)" if m == "layout" else "خلايا منفصلة",
-            key=f"send_all_mode_{dashboard_id}",
-        )
+    if st.button("📤 إرسال", key=f"send_all_btn_{dashboard_id}", width='stretch'):
+        rm = ReportManager(db)
+        report_id = report_options[report_choice]
 
-        if st.button("📤 إرسال", key=f"send_all_btn_{dashboard_id}", width='stretch', type="primary"):
-            rm = ReportManager(db)
-            report_id = report_options[report_choice]
-
-            if mode == "layout":
-                gauges, columns = _build_dashboard_snapshot(db, dashboard_id, template)
-                if not gauges and not any(columns):
-                    notify("لا توجد خلايا محدَّثة (بنتيجة محفوظة) لإرسالها", kind="warning")
-                else:
-                    r = rm.add_dashboard(report_id, dashboard["title"], gauges, columns)
-                    notify(
-                        "تم إرسال اللوحة كاملة بنفس تخطيطها إلى التقرير" if r["ok"]
-                        else r.get("error", "فشل الإرسال"),
-                        kind="success" if r["ok"] else "error",
-                    )
+        if mode == "layout":
+            gauges, columns = _build_dashboard_snapshot(db, dashboard_id, template)
+            if not gauges and not any(columns):
+                notify("لا توجد خلايا محدَّثة (بنتيجة محفوظة) لإرسالها", kind="warning")
             else:
-                rows = db.get_dashboard_cells(dashboard_id)
-                sent, failed = 0, 0
-                for row in rows:
-                    if not row.get("question") or not row.get("last_result"):
-                        continue
-                    cell_obj = create_cell(row)
-                    r = cell_obj.send_to_report(rm, report_id, cell_obj.title or "")
-                    sent += 1 if r.get("ok") else 0
-                    failed += 0 if r.get("ok") else 1
-                if sent:
-                    notify(f"تم إرسال {sent} خلية إلى التقرير" + (f" ({failed} فشلت)" if failed else ""), kind="success")
-                else:
-                    notify("لا توجد خلايا محدَّثة (بنتيجة محفوظة) لإرسالها", kind="warning")
+                r = rm.add_dashboard(report_id, dashboard["title"], gauges, columns)
+                notify(
+                    "تم إرسال اللوحة كاملة بنفس تخطيطها إلى التقرير" if r["ok"]
+                    else r.get("error", "فشل الإرسال"),
+                    kind="success" if r["ok"] else "error",
+                )
+        else:
+            rows = db.get_dashboard_cells(dashboard_id)
+            sent, failed = 0, 0
+            for row in rows:
+                if not row.get("question") or not row.get("last_result"):
+                    continue
+                cell_obj = create_cell(row)
+                r = cell_obj.send_to_report(rm, report_id, cell_obj.title or "")
+                sent += 1 if r.get("ok") else 0
+                failed += 0 if r.get("ok") else 1
+            if sent:
+                notify(f"تم إرسال {sent} خلية إلى التقرير" + (f" ({failed} فشلت)" if failed else ""), kind="success")
+            else:
+                notify("لا توجد خلايا محدَّثة (بنتيجة محفوظة) لإرسالها", kind="warning")
 
 
 def _render_slicer_panel(db, dm, dashboard_id, slicers, date_filter_position, date_filter):
@@ -847,3 +936,5 @@ def _build_dashboard_snapshot(db, dashboard_id: str, template: dict):
         columns.append(col_cells)
 
     return gauges, columns
+
+    
