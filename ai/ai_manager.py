@@ -8,10 +8,6 @@ ai/ai_manager.py
 - استخراج SQL من الرد
 - تنفيذ SQL عبر QueryEngine
 
-🧹 تنظيف: حُذفت get_models()/engine_status() من AIManager — كانتا غير
-مستخدمتين في أي مكان بالمشروع (جلب النماذج وفحص حالة المحرك يتمّان
-عبر استدعاء engine.get_models()/engine.status() مباشرة في ui/settings.py).
-
 🆕 سؤال وجواب (answer_question):
 -----------------------------------
 نوع نتيجة جديد "qa" — راجع توثيق الدالة أدناه. لا تغيير على ask()
@@ -29,18 +25,25 @@ max_queries (افتراضيه STORY_MAX_QUERIES = السلوك القديم با
   على أي إجابة: تُسجَّل في اللوج وتُرجع {"ok": False}.
 - الذاكرة والملخص داخليان بالكامل: لا يُعرضان ولا يُعدَّلان من المستخدم.
 
-🆕 تصحيح استعلامات خطة Story/Q&A (_run_planned_query):
-----------------------------------------------------------
-كان أي استعلام يفشل في خطة سرد/سؤال وجواب يُهمَل مباشرة بلا تصحيح
-(بخلاف ask() الذي يُعيد الـ SQL الخاطئ للـ AI مع رسالة الخطأ). الآن
-كلاهما يمر عبر دالة واحدة موحّدة تعيد استخدام نفس آليات ask():
-  ١) QueryEngine.run: تصحيح تلقائي لاسم عمود بحسب Candidate bindings.
-  ٢) _try_schema_column_fix: تصحيح تلقائي من الـ Schema (يغطي رسائل
-     بلا Candidate bindings، ويوحّد الإملاء العربي) — بدون استدعاء AI.
-  ٣) إعادة الـ SQL للـ AI عبر PromptBuilder.build + build_error_retry
-     (نفس منطق ask)، وعدد المحاولات الكلي = self.max_tries.
-في tell_story يُفعَّل تصحيح AI فقط لخطة وُلِّدت الآن (لا لـ base_sql
-محفوظ لخلية لوحة).
+🆕 Smart Value Resolver (القيم النصية التي لا تطابق البيانات):
+------------------------------------------------------------------
+ask(resolve_values=True) — يُفعَّل من صفحة المحادثة فقط — إن نجح تنفيذ
+SQL ورجع 0 صف، يُمرَّر الـ SQL إلى core.value_resolver.ValueResolver
+(راجع ذلك الملف للمنطق الكامل) لاكتشاف شرط نصي على عمود تصنيفي لا
+تطابق قيمته البيانات الفعلية:
+  - تصحيح تلقائي مؤكد → يُعاد تنفيذ الـ SQL المصحَّح مرة واحدة،
+    وتُضاف للنتيجة "value_fixes" لإظهار التصحيح للمستخدم.
+  - أكثر من احتمال → تبقى النتيجة 0 صف وتُضاف "value_resolution"
+    (status/items/sql الأصلي) ليعرض ui/chat.py قائمة الاختيار.
+    بعد اختيار المستخدم تُنفِّذ apply_value_choices الـ SQL المعدَّل
+    (تعديل مواضع الـ literals فقط) دون أي استدعاء AI جديد لتوليد SQL.
+  - لا مرشح → "value_resolution" بحالة not_found لإبلاغ المستخدم.
+خطأ تنفيذ SQL لا يمر بهذا المسار إطلاقاً (يبقى خطأً كما هو)، وأي
+استثناء داخل الـ Resolver يُسجَّل فقط ولا يكسر ask(). الافتراضي
+resolve_values=False فلا يتغير سلوك لوحات المعلومات ولا Story/QA.
+الوحيد المستخدم من AI هنا: _suggest_value_variants — استدعاء واحد
+قصير عند الحاجة فقط لاقتراح كتابات بديلة (ترجمة/تحويل حروف) تُتحقق
+لاحقاً من وجودها فعلاً في العمود.
 """
 import re
 import json
@@ -57,6 +60,7 @@ from ai.prompt_builder            import PromptBuilder
 from core.project_db              import ProjectDB
 from core.query_engine            import QueryEngine
 from core.dashboard_views import DashboardViews
+from core.value_resolver import ValueResolver, build_variants_prompt, parse_variants_response
 from config import (
     OLLAMA_DEFAULT_URL, STORY_SAMPLE_ROWS_IN_PROMPT, AI_RETRY_DELAY_SECONDS,
     STORY_TIMEOUT_SECONDS, STORY_MAX_QUERIES, QA_MAX_QUERIES, QA_HISTORY_TURNS,
@@ -138,7 +142,8 @@ class AIManager:
                                     نص السرد فقط، مستقلة عن "timeout"
                                     الممرَّر للمحرك (المستخدم في SQL)،
                                     وتُستخدم أيضاً لمرحلة كتابة إجابة
-                                    answer_question().
+                                    answer_question() ولاقتراح الكتابات
+                                    البديلة في Smart Value Resolver.
     """
 
     def __init__(
@@ -186,6 +191,7 @@ class AIManager:
         result_type: Optional[str] = None,
         ai_rules   : Optional[str] = None,
         dashboard_id: Optional[str] = None,
+        resolve_values: bool = False,
     ) -> dict:
         """
         إرسال سؤال → SQL → تنفيذ → نتيجة.
@@ -196,6 +202,9 @@ class AIManager:
                  الاصطناعي إطلاقاً ولا تظهر في الـ SQL؛ هو يكتب WHERE فقط
                  لشروط ذكرها المستخدم في سؤال الخلية نفسه.
 
+        resolve_values: 🆕 تفعيل Smart Value Resolver عندما ينجح التنفيذ
+                 ويرجع 0 صف (راجع توثيق الوحدة أعلاه). الافتراضي False.
+
         يرجع:
         {
             "ok"         : True/False,
@@ -203,6 +212,8 @@ class AIManager:
             "df"         : DataFrame,          ← عند النجاح
             "rows"       : N,
             "tries"      : عدد المحاولات الفعلي,
+            "value_fixes"     : [...]  ← (اختياري) قيم صُحّحت تلقائياً,
+            "value_resolution": {...}  ← (اختياري) اقتراحات تنتظر اختيار المستخدم,
             "error"      : "...",              ← عند الفشل
             "error_type" : "auth"|"rate_limit"|"transient"|"other",
         }
@@ -291,7 +302,7 @@ class AIManager:
                     attempt, run_result["rows"]
                 )
                 executed_sql = run_result.get("sql", last_sql)
-                return {
+                result = {
                     "ok"        : True,
                     "sql"       : executed_sql,
                     "df"        : run_result["df"],
@@ -299,6 +310,10 @@ class AIManager:
                     "tries"     : attempt,
                     "auto_fixes": run_result.get("auto_fixes"),
                 }
+                # 🆕 نجاح التنفيذ بصفر صفوف (وليس خطأ SQL) → Smart Value Resolver
+                if resolve_values and run_result["rows"] == 0:
+                    result = self._resolve_zero_rows(result, dashboard_id)
+                return result
 
             last_error = run_result["error"]
             last_error_type = None
@@ -321,6 +336,108 @@ class AIManager:
         if last_error_type:
             result["error_type"] = last_error_type
         return result
+
+    # ──────────────────────────────────────────────────────────
+    #  🆕 Smart Value Resolver — التكامل مع ask()
+    # ──────────────────────────────────────────────────────────
+
+    def _resolver_table_loader(self, dashboard_id: Optional[str] = None):
+        """
+        دالة تحميل الجداول التي يستهلكها ValueResolver: تقرأ الجدول بنفس
+        الطريقة التي يراه بها QueryEngine (views اللوحة إن وُجد
+        dashboard_id)، وتقتصر على جداول المشروع الفعلية فقط — أي اسم
+        آخر وارد في SQL (عمود، CTE...) يُرجع None دون أي قراءة أو لوج خطأ.
+        """
+        aliases = {f["table_alias"].lower(): f["table_alias"] for f in self.db.get_files()}
+
+        def loader(name: str):
+            real = aliases.get(str(name).lower())
+            if real is None:
+                return None
+            return self.qe.views.read_table(real, dashboard_id)
+
+        return loader
+
+    def _suggest_value_variants(self, wanted: str, table: str, column: str, samples: list) -> list:
+        """
+        اقتراح كتابات بديلة لقيمة (ترجمة/تحويل حروف) عبر استدعاء AI واحد
+        قصير بلا إعادة محاولة: الفشل غير مؤثر (يبقى الـ Resolver على
+        نتائجه المحلية). يُرسَل فقط النص المطلوب واسم الجدول/العمود وبضع
+        قيم نموذجية — راجع core.value_resolver.build_variants_prompt.
+        """
+        prompt = build_variants_prompt(wanted, table, column, samples)
+        r = self.engine.send(
+            prompt, min(self.temperature, 0.2), timeout_override=self.story_timeout,
+        )
+        if not r["ok"]:
+            logger.warning("Value variants request failed: %s", r.get("error"))
+            return []
+        return parse_variants_response(r["text"])
+
+    def _resolve_zero_rows(self, result: dict, dashboard_id: Optional[str] = None) -> dict:
+        """
+        معالجة نتيجة ناجحة بصفر صفوف عبر ValueResolver (راجع توثيق الوحدة).
+        لا ترمي استثناءً أبداً: أي خلل يُسجَّل وتُرجع النتيجة الأصلية كما هي.
+        """
+        try:
+            resolver = ValueResolver(
+                self._resolver_table_loader(dashboard_id), self._suggest_value_variants,
+            )
+            res = resolver.resolve(result["sql"])
+            status = res["status"]
+
+            if status == "auto_fixed":
+                rerun = self.qe.run(res["sql"], dashboard_id=dashboard_id)
+                if rerun["ok"]:
+                    logger.info("Value auto-fixed: %s", res["fixes"])
+                    result.update({
+                        "sql": rerun.get("sql", res["sql"]),
+                        "df": rerun["df"],
+                        "rows": rerun["rows"],
+                        "value_fixes": res["fixes"],
+                    })
+                else:
+                    logger.warning("Re-run after value auto-fix failed: %s", rerun["error"])
+            elif status in ("needs_choice", "not_found"):
+                result["value_resolution"] = {
+                    "status": status,
+                    "items": res["items"],
+                    "sql": result["sql"],
+                    "message": res.get("message", ""),
+                }
+        except Exception as e:
+            logger.warning("Smart Value Resolver failed (ignored): %s", e)
+        return result
+
+    def apply_value_choices(
+        self, sql: str, items: list, choices: dict, dashboard_id: Optional[str] = None,
+    ) -> dict:
+        """
+        تنفيذ SQL الأصلي بعد تطبيق اختيارات المستخدم لقيم الشروط
+        (ValueResolver.apply_choices — يغيّر مواضع الـ literals المقصودة
+        فقط، فتبقى بقية الشروط كما هي). لا يستدعي AI لتوليد SQL ولا
+        يعيد تنفيذ أي استعلام غير الاستعلام المعدَّل نفسه.
+
+        يرجع نفس شكل ask() الناجح: {"ok", "sql", "df", "rows", "value_fixes"}
+        أو {"ok": False, "error": ...}.
+        """
+        applied = ValueResolver.apply_choices(sql, items, choices)
+        if not applied["ok"]:
+            return {"ok": False, "error": applied["error"]}
+
+        run_result = self.qe.run(applied["sql"], dashboard_id=dashboard_id)
+        if not run_result["ok"]:
+            return {"ok": False, "sql": applied["sql"], "error": run_result["error"]}
+
+        logger.info("Value choices applied: %s", applied["fixes"])
+        return {
+            "ok": True,
+            "sql": run_result.get("sql", applied["sql"]),
+            "df": run_result["df"],
+            "rows": run_result["rows"],
+            "auto_fixes": run_result.get("auto_fixes"),
+            "value_fixes": applied["fixes"],
+        }
 
     # ──────────────────────────────────────────────────────────
     #  السرد القصصي (Story Telling)

@@ -66,8 +66,27 @@ _CLEAR_QUESTION_KEY يُضبط في _handle_submit، ويُقرأ في بداي�
 _render_input_area قبل رسم st.text_area فيُضبط st.session_state
 [مفتاح_الـ widget] = "" — نفس نمط _PREFILL_KEY المستخدم لمرجع الأسئلة.
 
-لا تغيير على أي من ai.ai_manager.AIManager.ask/tell_story ولا على
-core.query_engine — فقط طبقة العرض.
+🆕 Smart Value Resolver في بطاقة السؤال (نتائج الجدول/الرسم/Gauge/KPI):
+-------------------------------------------------------------------------
+_handle_submit يستدعي ai.ask(..., resolve_values=True) لهذه الأنواع
+فقط (لا Story ولا QA). عندما ينجح SQL ويرجع 0 صف بسبب قيمة نصية لا
+تطابق البيانات (مثل «باريس» مقابل Paris) تضيف النتيجة أحد مفتاحين
+(راجع ai/ai_manager.py وcore/value_resolver.py):
+  - value_fixes: تصحيح تلقائي مؤكد طُبِّق وأُعيد التنفيذ — تُعرض
+    ملاحظة قصيرة بالقيمة القديمة والجديدة في سطر الحالة.
+  - value_resolution: أكثر من احتمال (needs_choice) أو لا شيء
+    (not_found) — _render_value_resolution ترسم داخل نفس البطاقة
+    رسالة وقائمة اختيار (st.form لكل بطاقة) مرتبة بالثقة مع تصنيف
+    المطابقة وسببها.
+بعد اختيار المستخدم يُنفَّذ استعلام واحد معدَّل (ai.apply_value_choices)
+ويحلّ نتيجته مكان نتيجة البطاقة نفسها في chat_thread (مع حفظ السجل في
+project.db بنفس chat_id)، ثم st.rerun() — فلا يُعاد استدعاء AI ولا
+يتكرر تنفيذ السؤال الأصلي مع إعادات الرسم اللاحقة، ويبقى سياق السؤال
+وبقية شروطه كما هي. أثناء انتظار الاختيار لا يُرسم جسم النتيجة (لا
+بيانات أصلاً)، وحالة not_found تُظهر رسالة بدل اقتراحات وهمية.
+
+لا تغيير على أي من ai.ai_manager.AIManager.tell_story/answer_question ولا
+على core.query_engine — فقط طبقة العرض.
 """
 
 import uuid
@@ -77,34 +96,24 @@ import hashlib
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from contextlib import contextmanager
-
-# 🆕 st.bottom في إصدارات Streamlit الحديثة كائن حاوية جاهز (proxy) —
-# يُستخدم مباشرة كـ context manager (`with st.bottom:` بدون استدعاء/
-# أقواس)، على عكس streamlit_extras.bottom_container.bottom() القديمة
-# التي هي دالة تُستدعى فترجع الحاوية (`with bottom():`). نوحّد الاثنين
-# هنا خلف نفس الواجهة (`with bottom():`) حتى لا يتغيّر باقي الكود.
-if hasattr(st, "bottom"):
-    @contextmanager
-    def bottom():
-        with st.bottom:
-            yield
-else:
-    from streamlit_extras.bottom_container import bottom
 
 from ui.common import (
-    apply_rtl, apply_theme_css, chat_ui_css, require_login, require_project, sidebar_header,
+    apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
     format_local_dt, notify, get_chart_theme, apply_plotly_theme,
     render_themed_table,
 )
 from ai.ai_manager import build_ai_manager
 from core.dashboard_cells.cells import _build_chart_figure, _apply_chart_layout_tweaks
+from core.value_resolver import LEVEL_LABELS
 from config import CHART_TYPES, QA_ANSWER_LENGTHS, QA_DEFAULT_ANSWER_LENGTH
 
 _RESULT_TYPE_LABELS = {
-    "table": "جدول", "chart": "رسم بياني", "gauge": "مقياس (Gauge)",
-    "kpi": "بطاقة مؤشر (KPI)", "story": "تحليل نصي (Story Telling)",
     "qa": "💡 سؤال وجواب (رؤى)",
+    "table": "جدول", 
+    "chart": "رسم بياني", 
+    "gauge": "مقياس (Gauge)",
+    "kpi": "بطاقة مؤشر (KPI)", 
+    "story": "تحليل نصي (Story Telling)",
 }
 
 _QUESTION_BOX_KEY = "chat_question_box"
@@ -115,6 +124,7 @@ _THREAD_KEY = "chat_thread"
 _SUMMARY_KEY = "_qa_summary"
 # 🆕 عمل تلخيص معلَّق {"question", "answer"} ينتظر رسم الإجابة أولاً
 _PENDING_SUMMARY_KEY = "_qa_summary_pending"
+_SCROLL_TO_ITEM_KEY = "_chat_scroll_to_item"
 
 # 🆕 أقصى عدد صفوف يُعرض به جدول بيانات Q&A كجدول HTML مُنسَّق
 # (render_themed_table) — أعلى من ذلك يُستخدم st.dataframe التفاعلي
@@ -122,10 +132,43 @@ _PENDING_SUMMARY_KEY = "_qa_summary_pending"
 # ui/common.py). لا يقتطع أي صف — فقط يغيّر طريقة العرض.
 _QA_THEMED_TABLE_MAX_ROWS = 200
 
+# 🆕 أنواع النتائج التي يُفعَّل لها Smart Value Resolver (نتائج SQL مفردة)
+_RESOLVER_RESULT_TYPES = ("table", "chart", "gauge", "kpi")
 
 
 
-
+def _chat_page_css(settings: dict) -> str:
+    """تنسيق محلي لواجهة المحادثة دون الاعتماد على CSS خاص غير موجود في common.py."""
+    return """
+    <style>
+      [data-testid="stMainBlockContainer"] {
+        max-width: 1100px;
+        padding-top: 1.1rem;
+        padding-bottom: 6rem;
+      }
+      [data-testid="stExpander"] { border-radius: 10px; margin: .25rem 0 .55rem; }
+      .chat-page-header { margin: 0 0 1rem; }
+      .chat-page-title { display:flex; align-items:center; gap:.55rem; font-size:1.35rem; font-weight:750; }
+      .chat-page-subtitle { opacity:.68; font-size:.88rem; margin-top:.25rem; }
+      .chat-user-row { display:flex; justify-content:flex-start; margin:.65rem 0 .45rem; }
+      .chat-user-bubble {
+        max-width:92%; padding:.7rem 1rem; border-radius:14px;
+        background:rgba(128,128,128,.13); line-height:1.8;
+        overflow-wrap:anywhere; white-space:pre-wrap;
+      }
+      .chat-user-label { display:block; font-size:.72rem; font-weight:700; opacity:.65; margin-bottom:.2rem; }
+      .chat-answer-head { display:flex; align-items:center; gap:.45rem; font-weight:700; margin:.5rem 0 .65rem; }
+      .chat-assistant-icon { font-size:1.1rem; }
+      .chat-status-ok { color:#16a34a; }
+      .chat-status-fail { color:#dc2626; }
+      [data-testid="st-key-chat_composer"] {
+        padding:.4rem 0 .15rem;
+        border-top:1px solid rgba(128,128,128,.22);
+      }
+      [data-testid="stChatInput"] { border-radius:14px; }
+      [data-testid="stChatInput"] textarea { direction:rtl; text-align:right; }
+    </style>
+    """
 
 def show_chat():
     apply_rtl()
@@ -134,7 +177,7 @@ def show_chat():
     settings = db.get_settings()
     apply_theme_css(settings.get("theme", "ocean_dark"))
     sidebar_header()
-    st.markdown(chat_ui_css(settings), unsafe_allow_html=True)
+    st.markdown(_chat_page_css(settings), unsafe_allow_html=True)
 
     if _THREAD_KEY not in st.session_state:
         st.session_state[_THREAD_KEY] = []
@@ -158,8 +201,6 @@ def show_chat():
         notify("محرك AI غير معروف. راجع الإعدادات.", kind="error")
         return
 
-    _render_question_reference(db)
-
     # ── سجل الأسئلة/الإجابات (بطاقات متتالية) ──────────────────
     thread = st.session_state[_THREAD_KEY]
     if not thread:
@@ -175,14 +216,12 @@ def show_chat():
         )
     else:
         for item in thread:
-            _render_qa_card(db, settings, item)
+            _render_qa_card(db, ai, settings, item)
 
-    # ── منطقة الكتابة — مثبَّتة فعلياً أسفل الصفحة عبر
-    # streamlit_extras.bottom.bottom()، بدل الاعتماد على كونها آخر
-    # عنصر في تدفق الصفحة (الذي لا يُبقيها ظاهرة إن طال السجل أعلاها).
-    # يتطلب أن تكون حزمة streamlit-extras مضافة إلى requirements.txt.
-    with bottom():
-        _render_input_area(db, ai, settings)
+    # شريط الكتابة والخيارات في أسفل المحادثة.
+    # st.chat_input يدعم Enter للإرسال وShift+Enter لسطر جديد.
+    # وShift+Enter لإضافة سطر جديد.
+    _render_input_area(db, ai, settings)
 
     # 🆕 بعد أن رُسمت الإجابة ومربع الكتابة بالكامل: تحديث ملخص المحادثة
     # (استفسار AI منفصل، صامت — لا يُعرض للمستخدم).
@@ -241,17 +280,13 @@ def _render_question_reference(db) -> None:
 
 
 # ══════════════════════════════════════════════════════════════
-#  منطقة الكتابة — عمودان: مربع النص | (قائمة ⁝ + زر إرسال)
+#  منطقة الكتابة — خيارات مختصرة + حقل محادثة مثبت أسفل الصفحة
 # ══════════════════════════════════════════════════════════════
 
 def _render_input_area(db, ai, settings: dict) -> None:
-    # 🆕 مسح خانة السؤال بعد إجابة سابقة — يجب أن يحدث قبل إنشاء الـ
-    # widget (راجع توثيق الوحدة أعلاه). يسبق تطبيق _PREFILL_KEY حتى
-    # يتغلّب أي سؤال مُختار من "مرجع الأسئلة" على المسح.
+    # تطبيق سؤال مختار من المحادثات السابقة قبل إنشاء chat_input.
     if st.session_state.pop(_CLEAR_QUESTION_KEY, False):
         st.session_state[_QUESTION_BOX_KEY] = ""
-
-    # تطبيق أي سؤال مُختار من "مرجع الأسئلة" قبل رسم مربع النص
     if _PREFILL_KEY in st.session_state:
         st.session_state[_QUESTION_BOX_KEY] = st.session_state.pop(_PREFILL_KEY)
 
@@ -259,99 +294,159 @@ def _render_input_area(db, ai, settings: dict) -> None:
     st.session_state.setdefault("_chat_chart_type", "bar")
     st.session_state.setdefault("_chat_answer_length", QA_DEFAULT_ANSWER_LENGTH)
 
+    # حقل السؤال وزر الخيارات في صف واحد.
     with st.container(key="chat_composer", border=False):
-        try:
-            col_text, col_side = st.columns([5, 1.25], vertical_alignment="bottom")
-        except TypeError:
-            col_text, col_side = st.columns([5, 1.25])
-
-        with col_text:
-            question = st.text_area(
-                "اكتب سؤالك بالعربية أو الإنجليزية", height=100,
-                placeholder="اسأل عن المبيعات، الإنتاج، المخزون، الأداء...",
-                key=_QUESTION_BOX_KEY, 
-                label_visibility="collapsed",
+        input_col, options_col = st.columns([0.88, 0.12], vertical_alignment="bottom")
+        with input_col:
+            question = st.chat_input(
+                "اكتب سؤالك... Enter للإرسال، Shift + Enter لسطر جديد",
+                key=_QUESTION_BOX_KEY,
+                width="stretch",
             )
-
-        with col_side:
+        with options_col:
             _render_options_popover(db)
-            run_clicked = st.button("إرسال  ➤", type="primary", width="stretch", key="chat_send")
 
-    if run_clicked:
+    if question:
         _handle_submit(db, ai, settings, question)
 
 
 def _render_options_popover(db) -> None:
-    """
-    قائمة "⁝" منسدلة: نوع النتيجة، نوع الرسم (فقط عند اختيار "رسم
-    بياني")، طول الإجابة (فقط عند اختيار "سؤال وجواب")، ثم زر مسح
-    تاريخ المحادثة. القيم المُختارة تُخزَّن في session_state مباشرة
-    (بدون form) فتُقرأ وقت الإرسال.
-    """
-    has_popover = hasattr(st, "popover")
-    # 🆕 fallback الـ expander (نسخ Streamlit القديمة بلا st.popover)
-    # فقط: نحافظ على حالة الفتح عبر session_state، وإلا فأي ضغط على
-    # زر تأكيد المسح بالأسفل يُعيد رسم الصفحة والـ expander يرتد
-    # مغلقاً تلقائياً (expanded ثابتة False) قبل أن يرى المستخدم نتيجة
-    # الضغط. غير مطلوب مع st.popover لأنه لا "يُغلق" بنفس المنطق.
-    _EXPANDED_KEY = "_chat_options_expander_open"
-    ctx = (
-        st.popover("⁝ خيارات", width="stretch") if has_popover
-        else st.expander("⁝ خيارات", expanded=st.session_state.get(_EXPANDED_KEY, False))
-    )
-    with ctx:
-        result_type = st.selectbox(
-            "نوع النتيجة", list(_RESULT_TYPE_LABELS.keys()),
-            format_func=lambda t: _RESULT_TYPE_LABELS.get(t, t),
-            key="_chat_result_type",
-        )
-        if result_type == "chart":
-            st.selectbox(
-                "نوع الرسم", list(CHART_TYPES.keys()),
-                format_func=lambda t: CHART_TYPES[t],
-                key="_chat_chart_type",
-            )
-        if result_type == "qa":
-            st.selectbox(
-                "طول الإجابة", list(QA_ANSWER_LENGTHS.keys()),
-                format_func=lambda t: QA_ANSWER_LENGTHS[t],
-                key="_chat_answer_length",
-            )
+    """قائمة خيارات موحدة؛ اختيار أي بند يعرض إعداداته داخل النافذة نفسها."""
+    sections = {
+        "type": "نوع المحادثة",
+        "reports": "إرسال إلى التقارير",
+        "history": "المحادثات السابقة",
+        "clear": "مسح المحادثة",
+    }
+    st.session_state.setdefault("_chat_options_section", "")
+
+    with st.popover("⚙️ خيارات", width="stretch"):
+        cols = st.columns(2)
+        for idx, (key, label) in enumerate(sections.items()):
+            with cols[idx % 2]:
+                if st.button(label, key=f"chat_option_{key}", width="stretch"):
+                    st.session_state["_chat_options_section"] = key
+
+        section = st.session_state.get("_chat_options_section", "")
+        if not section:
+            st.caption("اختر أحد الخيارات لعرض إعداداته.")
+            return
 
         st.divider()
-        _render_clear_history_button(db)
+        st.markdown(f"**{sections[section]}**")
+
+        if section == "type":
+            result_type = st.selectbox(
+                "نوع النتيجة", list(_RESULT_TYPE_LABELS.keys()),
+                format_func=lambda t: _RESULT_TYPE_LABELS.get(t, t),
+                key="_chat_result_type",
+            )
+            if result_type == "chart":
+                st.selectbox(
+                    "نوع الرسم", list(CHART_TYPES.keys()),
+                    format_func=lambda t: CHART_TYPES[t], key="_chat_chart_type",
+                )
+            elif result_type == "qa":
+                st.selectbox(
+                    "طول الإجابة", list(QA_ANSWER_LENGTHS.keys()),
+                    format_func=lambda t: QA_ANSWER_LENGTHS[t], key="_chat_answer_length",
+                )
+
+        elif section == "reports":
+            thread = st.session_state.get(_THREAD_KEY, [])
+            latest = next((item for item in reversed(thread)
+                           if (item.get("result") or {}).get("ok")), None)
+            if latest:
+                _render_latest_report_form(db, latest)
+            else:
+                st.info("لا توجد نتيجة ناجحة في المحادثة لإضافتها إلى تقرير.")
+
+        elif section == "history":
+            thread = st.session_state.get(_THREAD_KEY, [])
+            seen, entries = set(), []
+            for item in reversed(thread):
+                q = (item.get("question") or "").strip()
+                if q and q not in seen:
+                    seen.add(q)
+                    entries.append(q)
+            if len(entries) < 30:
+                for item in db.get_chat_history(limit=30):
+                    q = (item.get("question") or "").strip()
+                    if q and q not in seen:
+                        seen.add(q)
+                        entries.append(q)
+            if not entries:
+                st.caption("لا توجد محادثات سابقة.")
+            else:
+                for q in entries:
+                    label = q if len(q) <= 65 else q[:65].rstrip() + "…"
+                    q_hash = hashlib.md5(q.encode("utf-8")).hexdigest()[:10]
+                    if st.button(label, key=f"ref_q_{q_hash}", width="stretch"):
+                        st.session_state[_PREFILL_KEY] = q
+                        st.session_state["_chat_options_section"] = ""
+                        st.rerun()
+
+        elif section == "clear":
+            _render_clear_history_button(db)
+
+
+def _render_latest_report_form(db, item: dict) -> None:
+    """نموذج إضافة أحدث نتيجة ناجحة إلى أحد التقارير من قائمة الخيارات."""
+    result = item["result"]
+    reports = db.get_reports()
+    if not reports:
+        st.info("لا توجد تقارير. أنشئ تقريراً أولاً من صفحة التقارير.")
+        return
+
+    result_type = item["result_type"]
+    df = result.get("df")
+    chart_type = item.get("chart_type", "bar")
+    report_options = {r["title"]: r["id"] for r in reports}
+    with st.form(f"quick_send_report_{item['id']}"):
+        report_choice = st.selectbox("اختر التقرير", list(report_options))
+        label = st.text_input("عنوان/تسمية (لـ KPI أو Gauge)", value="")
+        include_data_table = False
+        if result_type in ("story", "qa"):
+            include_data_table = st.checkbox(
+                "إرفاق جدول البيانات مع التحليل" if result_type == "story"
+                else "إرفاق جداول البيانات مع الإجابة", value=False,
+            )
+        submitted = st.form_submit_button("إضافة إلى التقرير", width="stretch")
+        if submitted:
+            from exporters.report_manager import ReportManager
+            rm = ReportManager(db)
+            response = _add_block_for_type(
+                rm, report_options[report_choice], str(uuid.uuid4()), result_type,
+                df, label, story_text=result.get("story") or result.get("answer"),
+                include_data_table=include_data_table, chart_type=chart_type,
+                queries=result.get("queries"),
+            )
+            if response["ok"]:
+                notify("تمت الإضافة إلى التقرير", kind="success")
+            else:
+                notify(response["error"], kind="error")
 
 
 def _render_clear_history_button(db) -> None:
-    """
-    🆕 كل مسار يؤدي لإعادة رسم القائمة (فتح التأكيد، تنفيذه، أو
-    الإلغاء) يضبط _chat_options_expander_open=True قبل rerun — فقط
-    ليبقى fallback الـ expander (نسخ Streamlit القديمة بلا popover)
-    مفتوحاً عبر كل هذه الخطوات؛ لا تأثير له مع st.popover الحديث.
-
-    🆕 تأكيد المسح يمسح أيضاً الملخص التراكمي الداخلي لمحادثة "qa"
-    (_SUMMARY_KEY) — فيبدأ AI من صفحة بيضاء مع بطاقات الجلسة المفرغة.
-    """
+    """مسح سجل المحادثة والذاكرة الداخلية بعد تأكيد المستخدم."""
     confirm_key = "confirm_clear_chat_history"
     if st.session_state.get(confirm_key):
-        st.caption("⚠️ سيُحذف كل سجل المحادثة نهائياً.")
-        if st.button("⚠️ تأكيد المسح", key="danger_confirm_clear_chat", width="stretch"):
+        st.warning("سيُحذف سجل المحادثة نهائياً.")
+        if st.button("تأكيد مسح المحادثة", key="danger_confirm_clear_chat", width="stretch"):
             db.clear_chat_history()
             st.session_state[_THREAD_KEY] = []
             st.session_state.pop(_SUMMARY_KEY, None)
             st.session_state.pop(_PENDING_SUMMARY_KEY, None)
             st.session_state.pop(confirm_key, None)
-            notify("تم مسح تاريخ المحادثة", kind="success")
+            st.session_state["_chat_options_section"] = ""
+            notify("تم مسح المحادثة", kind="success")
             st.rerun()
         if st.button("إلغاء", key="cancel_clear_chat", width="stretch"):
             st.session_state.pop(confirm_key, None)
-            st.session_state["_chat_options_expander_open"] = True
             st.rerun()
-    else:
-        if st.button("🗑️ مسح تاريخ المحادثة", key="danger_clear_chat", width="stretch"):
-            st.session_state[confirm_key] = True
-            st.session_state["_chat_options_expander_open"] = True
-            st.rerun()
+    elif st.button("مسح المحادثة", key="danger_clear_chat", width="stretch"):
+        st.session_state[confirm_key] = True
+        st.rerun()
 
 
 def _build_qa_history() -> list:
@@ -430,7 +525,11 @@ def _handle_submit(db, ai, settings: dict, question: str) -> None:
             summary=st.session_state.get(_SUMMARY_KEY, ""),
         )
     else:
-        result = ai.ask(question, result_type=result_type, ai_rules=settings.get("ai_rules"))
+        # 🆕 Smart Value Resolver مفعَّل لنتائج SQL المفردة (جدول/رسم/gauge/KPI)
+        result = ai.ask(
+            question, result_type=result_type, ai_rules=settings.get("ai_rules"),
+            resolve_values=result_type in _RESOLVER_RESULT_TYPES,
+        )
 
     chat_id = str(uuid.uuid4())
     db.save_chat_result(
@@ -448,6 +547,7 @@ def _handle_submit(db, ai, settings: dict, question: str) -> None:
         "chart_type": chart_type,
         "result": result,
     })
+    st.session_state[_SCROLL_TO_ITEM_KEY] = chat_id
 
     if not result["ok"]:
         notify(f"فشل الاستعلام: {result.get('error')}", kind="error")
@@ -468,7 +568,7 @@ def _handle_submit(db, ai, settings: dict, question: str) -> None:
 #  بطاقة سؤال/إجابة واحدة
 # ══════════════════════════════════════════════════════════════
 
-def _render_qa_card(db, settings: dict, item: dict) -> None:
+def _render_qa_card(db, ai, settings: dict, item: dict) -> None:
     result = item["result"]
     result_type = item["result_type"]
     chart_type = item.get("chart_type", "bar")
@@ -480,6 +580,47 @@ def _render_qa_card(db, settings: dict, item: dict) -> None:
     safe_question = html.escape(item["question"].strip())
 
     with st.container(key=f"chat_item_{item['id']}", border=False):
+        if st.session_state.get(_SCROLL_TO_ITEM_KEY) == item["id"]:
+            anchor_id = f"chat-new-answer-{item['id']}"
+            st.markdown(f'<div id="{anchor_id}"></div>', unsafe_allow_html=True)
+            st.components.v1.html(
+                f"""<script>
+                const targetId = {anchor_id!r};
+                const scrollToAnswer = () => {{
+                    try {{
+                        const target = window.parent.document.getElementById(targetId);
+                        if (target) target.scrollIntoView({{behavior: 'smooth', block: 'start'}});
+                    }} catch (e) {{}}
+                }};
+                scrollToAnswer();
+                setTimeout(scrollToAnswer, 150);
+                </script>""",
+                height=0,
+                scrolling=False,
+            )
+            st.session_state.pop(_SCROLL_TO_ITEM_KEY, None)
+
+        # SQL والبيانات والإرسال إلى التقارير في Expander موحّد.
+        used_queries = result.get("queries", []) or []
+        has_sql = bool(result.get("sql"))
+        with st.expander("SQL والبيانات المستخدمة وإرسال إلى التقارير", expanded=False):
+            if has_sql:
+                st.markdown("**SQL المُنفَّذ**")
+                st.code(result["sql"], language="sql")
+            elif not result.get("ok"):
+                st.caption("لم يُولَّد SQL قبل حدوث الخطأ")
+
+            if used_queries:
+                if has_sql:
+                    st.divider()
+                st.markdown("**البيانات المستخدمة**")
+                for query_index, query_item in enumerate(used_queries, start=1):
+                    _render_query_data_block(settings, query_item)
+                    if query_index < len(used_queries):
+                        st.divider()
+
+            _render_send_to_report_form(db, item)
+
         st.markdown(
             f"""
             <div class="chat-user-row">
@@ -496,13 +637,6 @@ def _render_qa_card(db, settings: dict, item: dict) -> None:
             unsafe_allow_html=True,
         )
 
-        with st.expander("السؤال وSQL", expanded=False):
-            st.markdown(f"**السؤال الكامل:**\n\n{item['question']}")
-            if result.get("sql"):
-                st.code(result["sql"], language="sql")
-            elif not result.get("ok"):
-                st.caption("لم يُولَّد SQL قبل حدوث الخطأ")
-
         if not result.get("ok"):
             st.error(f"فشل الاستعلام: {result.get('error')}")
         else:
@@ -510,10 +644,97 @@ def _render_qa_card(db, settings: dict, item: dict) -> None:
             if result.get("auto_fixes"):
                 fixes_text = "، ".join(f"«{f['from']}» → «{f['to']}»" for f in result["auto_fixes"])
                 st.caption(f"✏️ تم تصحيح اسم عمود تلقائياً: {fixes_text}")
+            if result.get("value_fixes"):
+                value_text = "، ".join(f"«{f['from']}» → «{f['to']}»" for f in result["value_fixes"])
+                st.caption(f"🔎 تم تصحيح قيمة في الفلتر تلقائياً: {value_text}")
 
-            _render_answer_body(settings, result, result_type, chart_type, key_prefix=item["id"])
+            resolution = result.get("value_resolution")
+            if resolution:
+                _render_value_resolution(db, ai, item, resolution)
 
-        _render_send_to_report_form(db, item)
+            # أثناء انتظار اختيار المستخدم لا توجد بيانات تُعرض (0 صف)
+            if not (resolution and resolution.get("status") == "needs_choice"):
+                _render_answer_body(settings, result, result_type, chart_type, key_prefix=item["id"])
+
+
+# ══════════════════════════════════════════════════════════════
+#  🆕 Smart Value Resolver — اختيار القيمة المقصودة
+# ══════════════════════════════════════════════════════════════
+
+def _candidate_label(cand: dict) -> str:
+    """نص خيار واحد في قائمة الاختيار: القيمة · تصنيف المطابقة (الثقة) — السبب."""
+    level = LEVEL_LABELS.get(cand["level"], cand["level"])
+    return f"{cand['value']}  ·  {level} ({int(round(cand['score'] * 100))}%) — {cand['reason']}"
+
+
+def _render_value_resolution(db, ai, item: dict, resolution: dict) -> None:
+    """
+    رسالة + نموذج اختيار داخل بطاقة السؤال نفسها (راجع توثيق الوحدة أعلاه).
+    - not_found: رسالة فقط، دون اقتراحات.
+    - needs_choice: st.form واحد لكل بطاقة، قائمة لكل قيمة لم تُحسم
+      تلقائياً (العناصر المؤكدة تلقائياً تُعرض كسطر ملاحظة وتُطبَّق مع
+      الاختيار). الإرسال ينفّذ استعلاماً معدَّلاً واحداً ويستبدل نتيجة
+      البطاقة ثم st.rerun().
+    """
+    if resolution.get("status") == "not_found":
+        st.info(
+            resolution.get("message")
+            or "لم أجد في البيانات قيمة مطابقة لما كتبته — جرّب صياغة أخرى."
+        )
+        return
+
+    items = resolution.get("items", [])
+    pending = [it for it in items if not it.get("auto")]
+    wanted_text = "، ".join(f"«{it['wanted']}»" for it in pending) or "القيمة المطلوبة"
+
+    with st.form(f"value_resolution_form_{item['id']}"):
+        st.markdown(f"**لم أجد تطابقاً مباشراً مع {wanted_text}. هل تقصد إحدى القيم التالية؟**")
+
+        for it in items:
+            if it.get("auto"):
+                st.caption(f"✓ «{it['wanted']}» ← «{it['chosen']}» (تطابق مؤكد)")
+
+        selections = {}
+        for it in pending:
+            options = it["candidates"]
+            selections[it["id"]] = st.selectbox(
+                f"«{it['wanted']}» — عمود {it['column']}",
+                options=list(range(len(options))), index=None,
+                format_func=lambda i, opts=options: _candidate_label(opts[i]),
+                placeholder="اختر القيمة الصحيحة",
+                key=f"vr_{item['id']}_{it['id']}",
+            )
+        submitted = st.form_submit_button("تطبيق الاختيار", type="primary")
+
+    if not submitted:
+        return
+
+    if any(sel is None for sel in selections.values()):
+        notify("اختر قيمة لكل عنصر أولاً", kind="warning")
+        return
+
+    choices = {
+        it["id"]: it["candidates"][selections[it["id"]]]["value"] for it in pending
+    }
+    with st.spinner("⏳ جاري إعادة تنفيذ الاستعلام بالقيمة المختارة..."):
+        new_result = ai.apply_value_choices(resolution["sql"], items, choices)
+
+    if not new_result["ok"]:
+        st.error(f"فشل إعادة التنفيذ: {new_result.get('error')}")
+        return
+
+    # نفس سياق السؤال الأصلي: نحتفظ بعدد المحاولات ونستبدل النتيجة في مكانها
+    new_result["tries"] = item["result"].get("tries", 1)
+    item["result"] = new_result
+    db.save_chat_result(
+        item["id"], item["question"],
+        sql_query=new_result.get("sql"),
+        result_type=item["result_type"],
+        result_data={"rows": new_result.get("rows")},
+        error=None,
+    )
+    notify("تم تنفيذ الاستعلام بالقيمة المختارة", kind="success")
+    st.rerun()
 
 
 def _render_query_data_block(settings, q: dict) -> None:
@@ -597,28 +818,12 @@ def _render_answer_body(settings, result: dict, result_type: str, chart_type: st
         story_text = result.get("story", "")
         st.markdown(story_text)
 
-        queries = result.get("queries", [])
-        if queries:
-            with st.expander("📊 البيانات المستخدمة"):
-                for q in queries:
-                    st.markdown(f"**{q.get('title', 'بيانات')}**")
-                    if q.get("ok") and q.get("df") is not None:
-                        render_themed_table(q["df"], settings)
-                    elif not q.get("ok"):
-                        st.caption(f"⚠️ فشل هذا الاستعلام: {q.get('error')}")
-                    st.divider()
 
     elif result_type == "qa":
         # 🆕 الإجابة (Markdown: الإجابة / الرؤى / الرأي / ملاحظات) ثم
         # البيانات المستخدمة كاملة داخل expander.
         st.markdown(result.get("answer", ""))
 
-        queries = result.get("queries", [])
-        if queries:
-            with st.expander("📊 البيانات المستخدمة"):
-                for q in queries:
-                    _render_query_data_block(settings, q)
-                    st.divider()
 
 
 # ══════════════════════════════════════════════════════════════
