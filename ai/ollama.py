@@ -24,11 +24,14 @@ class OllamaEngine(BaseEngine):
         model: str = "",
         timeout: int = OLLAMA_TIMEOUT_SECONDS,
         api_key: str = "",
-        num_ctx: int = 8192,
-        keep_alive: str = "10m",
+        num_ctx: Optional[int] = None,
+        keep_alive: str = "5m",
     ):
         super().__init__(api_key="", model=model, timeout=timeout)
         self.base_url = base_url.rstrip("/")
+        if num_ctx is None:
+            model_lower = (model or '').lower()
+            num_ctx = 6144 if '3b' in model_lower else 4096
         self.num_ctx = max(2048, int(num_ctx))
         self.keep_alive = keep_alive
 
@@ -65,8 +68,8 @@ class OllamaEngine(BaseEngine):
     def _num_predict_for_prompt(self, prompt: str) -> int:
         """حد أصغر لمخرجات SQL لتقليل زمن التوليد ومنع الاستطراد."""
         if "SQL QUERY:" in prompt:
-            return 512
-        return 1536
+            return 384
+        return 768
 
     def send(
         self,
