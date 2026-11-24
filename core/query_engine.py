@@ -104,6 +104,10 @@ class QueryEngine:
         if not re.match(r"^\\s*(SELECT|WITH)\\b", without_comments, re.IGNORECASE):
             return {"ok": False, "error": "يُسمح باستعلامات SELECT أو WITH فقط؛ لم يبدأ الرد باستعلام قراءة صالح"}
 
+        # نسمح بفاصلة منقوطة نهائية واحدة فقط؛ تعدد الأوامر مرفوض.
+        if ";" in sql.rstrip().rstrip(";"):
+            return {"ok": False, "error": "يُسمح باستعلام SQL واحد فقط"}
+
         sql_upper = sql.upper()
         for word in SQL_FORBIDDEN:
             # نستخدم word boundary لتجنب false positives
