@@ -25,6 +25,12 @@ max_queries (افتراضيه STORY_MAX_QUERIES = السلوك القديم با
   على أي إجابة: تُسجَّل في اللوج وتُرجع {"ok": False}.
 - الذاكرة والملخص داخليان بالكامل: لا يُعرضان ولا يُعدَّلان من المستخدم.
 
+🆕 الذاكرة المعرفية (core/knowledge_manager.py):
+-------------------------------------------------
+ask/tell_story/answer_question تضيف سياق المعرفة المخزَّن للمشروع إلى الـ prompt
+(قسم DATA CONTEXT) عبر _knowledge_context — صامت: لا معرفة أو أي فشل = سلوك
+سابق بلا تغيير. طبقتا المعرفة ب وج تستدعيان _run_planned_query بحرارة 0.0 صريحة
+(معامل temperature) بدل self.temperature.
 🆕 Smart Value Resolver (القيم النصية التي لا تطابق البيانات):
 ------------------------------------------------------------------
 ask(resolve_values=True) — يُفعَّل من صفحة المحادثة فقط — إن نجح تنفيذ
@@ -61,6 +67,7 @@ from core.project_db              import ProjectDB
 from core.query_engine            import QueryEngine
 from core.dashboard_views import DashboardViews
 from core.value_resolver import ValueResolver, build_variants_prompt, parse_variants_response
+from core.knowledge_manager import KnowledgeManager
 from config import (
     OLLAMA_DEFAULT_URL, STORY_SAMPLE_ROWS_IN_PROMPT, AI_RETRY_DELAY_SECONDS,
     STORY_TIMEOUT_SECONDS, STORY_MAX_QUERIES, QA_MAX_QUERIES, QA_HISTORY_TURNS,
@@ -181,6 +188,16 @@ class AIManager:
         elapsed = time.monotonic() - start_time
         return (elapsed + self.retry_delay) > budget
 
+    def _knowledge_context(self, question: str, schema: Optional[dict], mode: str,
+                           dashboard_id: Optional[str] = None) -> Optional[str]:
+        """سياق معرفة المشروع للـ prompt (None بصمت عند غيابه أو أي فشل)."""
+        try:
+            return KnowledgeManager(self.db).build_context(
+                question, schema, mode=mode, filtered=bool(dashboard_id)) or None
+        except Exception as e:
+            logger.debug("knowledge context skipped: %s", e)
+            return None
+
     # ──────────────────────────────────────────────────────────
     #  الدالة الرئيسية
     # ──────────────────────────────────────────────────────────
@@ -237,7 +254,10 @@ class AIManager:
             relations = relations,
             ai_rules  = ai_rules,
         )
-        prompt = builder.build(question, result_type)
+        prompt = builder.build(
+            question, result_type,
+            knowledge_context=self._knowledge_context(question, schema, "sql", dashboard_id),
+        )
 
         last_error = ""
         last_error_type = None
@@ -503,7 +523,10 @@ class AIManager:
             generated_plan = True
             relations = self.db.get_relations()
             builder = PromptBuilder(schema=schema, relations=relations, ai_rules=ai_rules)
-            prompt = builder.build_story_plan(question)
+            prompt = builder.build_story_plan(
+                question,
+                knowledge_context=self._knowledge_context(question, schema, "sql", dashboard_id),
+            )
 
             last_error = ""
             last_error_type = None
@@ -607,6 +630,7 @@ class AIManager:
             question,
             [{"title": e["title"], "df": e["df"]} for e in successful],
             max_rows=STORY_SAMPLE_ROWS_IN_PROMPT,
+            knowledge_context=self._knowledge_context(question, schema, "answer", dashboard_id),
         )
 
         send_result = None
@@ -738,6 +762,7 @@ class AIManager:
         allow_ai_fix : bool = True,
         start_time   : Optional[float] = None,
         budget       : Optional[int] = None,
+        temperature  : Optional[float] = None,
     ) -> dict:
         """
         تنفيذ استعلام واحد من خطة (Story/Q&A) مع نفس مستويات التصحيح
@@ -794,7 +819,9 @@ class AIManager:
                 original_prompt=base_prompt, failed_sql=current, error_message=run["error"],
             )
 
-            send_result = self.engine.send(retry_prompt, self.temperature)
+            send_result = self.engine.send(
+                retry_prompt, temperature if temperature is not None else self.temperature,
+            )
             if not send_result["ok"]:
                 logger.warning("AI fix send failed for '%s': %s", title, send_result["error"])
                 if send_result.get("error_type") in _PERMANENT_ERROR_TYPES:
@@ -903,7 +930,10 @@ class AIManager:
         builder = PromptBuilder(schema=schema, relations=relations, ai_rules=ai_rules)
 
         # ── المرحلة ١: خطة الاستعلامات ──
-        prompt = builder.build_qa_plan(question, history=history_turns, summary=summary)
+        prompt = builder.build_qa_plan(
+            question, history=history_turns, summary=summary,
+            knowledge_context=self._knowledge_context(question, schema, "sql"),
+        )
         queries_plan = None
         tries = 0
         last_error = ""
@@ -999,6 +1029,7 @@ class AIManager:
             history=history_turns,
             failed=[{"title": e["title"], "error": e.get("error", "")} for e in failed],
             summary=summary,
+            knowledge_context=self._knowledge_context(question, schema, "answer"),
         )
 
         send_result = None

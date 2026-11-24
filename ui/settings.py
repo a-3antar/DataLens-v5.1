@@ -197,6 +197,25 @@ def show_settings():
                  "متتاليين (توليد SQL ثم توليد النص) وطبيعته الزمنية مختلفة.",
         )
 
+        st.markdown("**🧠 الذاكرة المعرفية للمشروع**")
+        use_knowledge = st.toggle(
+            "استخدام الذاكرة المعرفية في الـ prompts", value=bool(settings.get("use_knowledge", True)),
+            help="يُضاف ملخص معرفة المشروع (أوصاف الأعمدة، المرادفات، طرق التجميع) إلى أسئلة SQL والتحليل.",
+        )
+        knowledge_auto_refresh = st.toggle(
+            "تحديث الذاكرة (الطبقتين ب وج) تلقائياً بعد رفع/تحديث الملفات",
+            value=bool(settings.get("knowledge_auto_refresh", True)),
+            help="الطبقة الإحصائية (أ) تعمل دائماً بدون AI. الطبقتان ب وج تستهلكان استدعاءات AI.",
+        )
+        knowledge_send_values = st.toggle(
+            "السماح بإرسال قيم فعلية من بياناتك للذكاء الاصطناعي",
+            value=bool(settings.get("knowledge_send_values_to_ai", True)),
+        )
+        st.warning(
+            "🔒 خصوصية: عند التفعيل تُرسَل للمحرك الخارجي عيّنات صفوف وقيم فئوية وأكثر القيم تكراراً ولقطات "
+            "من نتائج الاستعلامات لبناء الذاكرة. عند الإيقاف تُرسَل أسماء الأعمدة والإحصاءات فقط، وتُعطَّل "
+            "طبقة الـ Insights (ج) كلياً."
+        )
         st.markdown("**🌍 المنطقة الزمنية**")
         current_tz = settings.get("timezone", "Asia/Riyadh")
         tz_options = COMMON_TIMEZONES if current_tz in COMMON_TIMEZONES else [current_tz] + COMMON_TIMEZONES
@@ -216,6 +235,9 @@ def show_settings():
                 "max_total_wait_seconds": max_total_wait,
                 "story_max_total_wait_seconds": story_max_total_wait,
                 "timezone": timezone_choice,
+                "use_knowledge": use_knowledge,
+                "knowledge_auto_refresh": knowledge_auto_refresh,
+                "knowledge_send_values_to_ai": knowledge_send_values,
             })
             st.success("تم الحفظ")
 

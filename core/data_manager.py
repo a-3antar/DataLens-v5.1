@@ -71,6 +71,14 @@ class DataManager:
     #  تحميل ملف وحفظ البيانات النظيفة
     # ──────────────────────────────────────────────────────────
 
+    def _mark_knowledge_stale(self, table_alias: str) -> None:
+        """وسم معرفة الجدول stale بعد تعديل بياناته (تلميح فقط بلا حساب؛ لا يكسر أي عملية)."""
+        try:
+            from core.knowledge_manager import KnowledgeManager
+            KnowledgeManager(self.db).mark_stale(table_alias)
+        except Exception as e:
+            logger.debug("mark_knowledge_stale skipped: %s", e)
+
     @staticmethod
     def _normalize_col_name(name) -> str:
         """
@@ -240,6 +248,7 @@ class DataManager:
                 return {"ok": False, "error": f"نوع غير مدعوم: {new_type}"}
 
             self.db.save_clean_data(table_alias, df)
+            self._mark_knowledge_stale(table_alias)
             logger.info("dtype changed: %s.%s -> %s", table_alias, column, new_type)
             return {"ok": True}
 
@@ -334,6 +343,7 @@ class DataManager:
 
             df = df.reset_index(drop=True)
             self.db.save_clean_data(table_alias, df)
+            self._mark_knowledge_stale(table_alias)
             logger.info("filter_rows: %s — %d -> %d rows", table_alias, before, len(df))
             return {"ok": True, "before": before, "after": len(df)}
 
@@ -383,6 +393,7 @@ class DataManager:
 
             df = df.reset_index(drop=True)
             self.db.save_clean_data(table_alias, df)
+            self._mark_knowledge_stale(table_alias)
             after = len(df)
             logger.info(
                 "drop_empty_rows: %s (mode=%s%s) — %d -> %d rows",
@@ -427,6 +438,7 @@ class DataManager:
             elif op == "lower":
                 df[column] = s.str.lower()
             self.db.save_clean_data(table_alias, df)
+            self._mark_knowledge_stale(table_alias)
             return {"ok": True}
         except Exception as e:
             logger.error("text_op error: %s", e)
@@ -480,6 +492,7 @@ class DataManager:
 
             df[column] = df[column].fillna(fill_val)
             self.db.save_clean_data(table_alias, df)
+            self._mark_knowledge_stale(table_alias)
             logger.info(
                 "fill_nulls: %s.%s — %d nulls filled (%s)",
                 table_alias, column, null_count, strategy

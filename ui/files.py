@@ -61,6 +61,7 @@ from ui.common import (
 from core.file_manager import FileManager
 from core.data_manager import DataManager
 from core.dashboard_views import DashboardViews
+from core.knowledge_manager import KnowledgeManager, trigger_after_load
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +211,15 @@ def _get_upload_cache(uploaded) -> dict:
     return cache
 
 
+def _start_knowledge_job(db, table_alias: str) -> None:
+    """تشغيل تحديث الذاكرة المعرفية في الخلفية بعد رفع/تحديث جدول (لا يكسر الصفحة عند أي فشل)."""
+    try:
+        r = trigger_after_load(db, table_alias)
+        if r.get("ok"):
+            notify("بدأ تحديث معرفة المشروع في الخلفية", kind="info")
+    except Exception as e:
+        logger.warning("knowledge job start failed: %s", e)
+
 def _render_upload_form(fm: FileManager, dm: DataManager) -> None:
     """
     اختيار الملف والشيت خارج الـ form (ليُعاد حساب الأعمدة عند تغيير
@@ -274,6 +284,7 @@ def _render_upload_form(fm: FileManager, dm: DataManager) -> None:
             )
         if r["ok"]:
             st.session_state.pop(_UPLOAD_CACHE_KEY, None)
+            _start_knowledge_job(dm.db, table_alias)
             notify(f"تم تحميل الجدول '{table_alias}' — {r['rows']} صف، {r['cols']} عمود", kind="success")
             st.rerun()
         else:
@@ -340,6 +351,7 @@ def _render_delete_widget(db, f: dict):
         st.caption("⚠️ هذا الإجراء لا رجعة فيه.")
         if st.button("⚠️ تأكيد الحذف نهائياً", key=f"danger_confirm_del_file_{f['id']}", width='stretch'):
             # حذف views اللوحات المبنية على هذا الجدول قبل حذفه
+            KnowledgeManager(db).drop_for_table(f["table_alias"])
             DashboardViews(db).drop_for_table(f["table_alias"])
             result = db.remove_file(f["id"])
             st.session_state.pop(confirm_key, None)
@@ -389,6 +401,7 @@ def _render_refresh_widget(dm: DataManager, f: dict):
                     columns=f.get("selected_columns") or None,
                 )
             if r["ok"]:
+                _start_knowledge_job(dm.db, f["table_alias"])
                 notify(f"تم التحديث — {r['rows']} صف", kind="success")
                 st.rerun()
             else:

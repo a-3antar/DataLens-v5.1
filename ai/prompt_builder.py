@@ -80,6 +80,14 @@ SQL_COMMON_CONSTRAINTS = """- لا تستخدم LIMIT (ولا TOP ولا FETCH F
 - الجداول المتاحة لك قد تكون مفلترة مسبقاً بفلاتر خارجية؛ لا تحاول إعادة تطبيقها ولا تخمينها. أضف شروط WHERE فقط للشروط التي ذكرها المستخدم صراحةً في سؤاله."""
 
 
+# قسم سياق المعرفة المُضاف للـ prompts (راجع core/knowledge_manager.py::build_context)
+KNOWLEDGE_RULES = (
+    "هذا القسم ملف معرفة مُستخرج مسبقاً عن البيانات الكاملة للمشروع (غير مفلترة). "
+    "استخدمه للفهم والتلميح فقط (معاني الأعمدة، المرادفات، طريقة التجميع، القيم المعروفة). "
+    "الأرقام تأتي من DATA أو نتيجة الاستعلام فقط، وعند التعارض تُقدَّم DATA. "
+    "استخدم أسماء الأعمدة والقيم كما وردت حرفياً."
+)
+
 class PromptBuilder:
     """
     بناء الـ Prompt الكامل للـ AI.
@@ -113,6 +121,7 @@ class PromptBuilder:
         self,
         question   : str,
         result_type: Optional[str] = None,
+        knowledge_context: Optional[str] = None,
     ) -> str:
         """
         بناء Prompt كامل لسؤال المستخدم.
@@ -145,6 +154,7 @@ class PromptBuilder:
         if sample_text:
             parts.append(self._section("SAMPLE DATA", sample_text))
 
+        parts.extend(self._knowledge_parts(knowledge_context))
         # 5. Result Type hint (اختياري)
         if result_type:
             parts.append(self._section("RESULT TYPE", self._build_result_hint(result_type)))
@@ -285,6 +295,13 @@ class PromptBuilder:
         }
         return hints.get(result_type, f"نوع النتيجة: {result_type}")
 
+    def _knowledge_parts(self, knowledge_context: Optional[str]) -> list:
+        """قسم [DATA CONTEXT] (قائمة فارغة لو لا سياق معرفة)."""
+        ctx = (knowledge_context or "").strip()
+        if not ctx:
+            return []
+        return [self._section("DATA CONTEXT", KNOWLEDGE_RULES + "\n\n" + ctx)]
+
     def _section(self, title: str, content: str) -> str:
         """تنسيق قسم في الـ Prompt."""
         border = "─" * 40
@@ -412,7 +429,7 @@ class PromptBuilder:
     #  🆕 خطة استعلامات السرد (Story Telling متعدد الاستعلامات)
     # ──────────────────────────────────────────────────────────
 
-    def build_story_plan(self, question: str) -> str:
+    def build_story_plan(self, question: str, knowledge_context: Optional[str] = None) -> str:
         """
         بناء Prompt يطلب من AI خطة استعلامات SQL (وليس استعلاماً واحداً)
         تجيب مجتمعة على سؤال المستخدم تمهيداً لكتابة سرد شامل. AI هو من
@@ -430,6 +447,7 @@ class PromptBuilder:
         sample_text = self._build_samples()
         if sample_text:
             parts.append(self._section("SAMPLE DATA", sample_text))
+        parts.extend(self._knowledge_parts(knowledge_context))
         parts.append(self._section("QUESTION", question))
         parts.append("JSON PLAN:")
         prompt = "\n\n".join(parts)
@@ -461,7 +479,8 @@ CREATE)، متوافقاً مع DuckDB، ويستخدم فقط الجداول و
     #  🆕 بناء Prompt السرد من عدة مجموعات بيانات (نتائج عدة استعلامات)
     # ──────────────────────────────────────────────────────────
 
-    def build_story_multi(self, question: str, datasets: list, max_rows: int = 30) -> str:
+    def build_story_multi(self, question: str, datasets: list, max_rows: int = 30,
+                          knowledge_context: Optional[str] = None) -> str:
         """
         نفس فلسفة build_story القديمة (وتشترك معها في نفس نص القواعد
         عبر _story_writing_rules، بما فيها قاعدة الرسم البياني كجدول
@@ -495,6 +514,7 @@ CREATE)، متوافقاً مع DuckDB، ويستخدم فقط الجداول و
 
         parts = [
             self._section("RULES", rules),
+            *self._knowledge_parts(knowledge_context),
             self._section("DATA", full_data_text),
             self._section("QUESTION", question),
             "التحليل النصي (Markdown):",
@@ -543,6 +563,7 @@ CREATE)، متوافقاً مع DuckDB، ويستخدم فقط الجداول و
         question: str,
         history : Optional[list] = None,
         summary : Optional[str] = None,
+        knowledge_context: Optional[str] = None,
     ) -> str:
         """
         بناء Prompt يطلب من AI خطة استعلامات SQL تجيب على سؤال
@@ -562,6 +583,7 @@ CREATE)، متوافقاً مع DuckDB، ويستخدم فقط الجداول و
         sample_text = self._build_samples()
         if sample_text:
             parts.append(self._section("SAMPLE DATA", sample_text))
+        parts.extend(self._knowledge_parts(knowledge_context))
         summary_text = self._format_qa_summary(summary)
         if summary_text:
             parts.append(self._section("CONVERSATION SUMMARY", summary_text))
@@ -715,6 +737,7 @@ CREATE)، متوافقاً مع DuckDB، ويستخدم فقط الجداول و
         history      : Optional[list] = None,
         failed       : Optional[list] = None,
         summary      : Optional[str] = None,
+        knowledge_context: Optional[str] = None,
     ) -> str:
         """
         بناء Prompt كتابة الإجابة النهائية (شكلها يتناسب مع السؤال وطول
@@ -745,6 +768,7 @@ CREATE)، متوافقاً مع DuckDB، ويستخدم فقط الجداول و
 
         parts = [self._section("RULES", self._qa_answer_rules(answer_length))]
         parts.append(self._section("STYLE EXAMPLE", self._qa_style_example(answer_length)))
+        parts.extend(self._knowledge_parts(knowledge_context))
         summary_text = self._format_qa_summary(summary)
         if summary_text:
             parts.append(self._section("CONVERSATION SUMMARY", summary_text))

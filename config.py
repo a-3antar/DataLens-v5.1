@@ -79,6 +79,9 @@ DEFAULT_SETTINGS = {
     "max_total_wait_seconds": 0,
     "story_max_total_wait_seconds": 0,
     "story_timeout": STORY_TIMEOUT_SECONDS,
+    "use_knowledge": True,
+    "knowledge_auto_refresh": True,
+    "knowledge_send_values_to_ai": True,
     "custom_theme_colors": {
         "primary": "#1E3A5F",
         "accent" : "#2563EB",
@@ -164,3 +167,13 @@ COMMON_TIMEZONES = [
     "Europe/London", "Europe/Paris", "Europe/Berlin",
     "America/New_York", "America/Los_Angeles", "Asia/Tokyo", "UTC",
 ]
+
+# ─── الذاكرة المعرفية للمشروع (core/knowledge_manager.py) ───
+KNOWLEDGE_CONTEXT_MAX_CHARS = 6000            # أقصى طول لقسم DATA CONTEXT في الـ prompt
+KNOWLEDGE_TOP_VALUES = 15                     # عدد القيم الفئوية الأكثر تكراراً المخزَّنة لكل عمود
+KNOWLEDGE_CATEGORICAL_MAX_DISTINCT = 50       # أعلى كاردينالية تُعتبر فئوية وتُخزَّن قيمها
+KNOWLEDGE_MAX_INSIGHTS = 12                   # أقصى عدد insights محفوظة
+KNOWLEDGE_INSIGHT_QUERIES = 6                 # أقصى عدد استعلامات يخطّط لها AI لاكتشاف الأنماط
+KNOWLEDGE_INSIGHT_SNAPSHOT_ROWS = 20          # صفوف لقطة نتيجة الدليل المخزَّنة مع كل insight
+KNOWLEDGE_JOB_STALE_MINUTES = 30              # مهمة running أقدم من هذا تُعتبر ميتة
+KNOWLEDGE_MAX_CORRELATIONS = 8                # أقصى أزواج ارتباط مخزَّنة لكل جدول

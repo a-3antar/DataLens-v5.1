@@ -12,6 +12,7 @@ from ui.login import show_login
 from ui.projects import show_projects
 from ui.files import show_files
 from ui.data import show_data
+from ui.knowledge import show_knowledge
 from ui.chat import show_chat
 from ui.dashboards import show_dashboards
 from ui.reports import show_reports
@@ -19,6 +20,7 @@ from ui.settings import show_settings
 from core.auth import AuthManager
 from config import APP_NAME, APP_VERSION, APP_ICON
 from core.logger_config import setup_logging
+from core.knowledge_manager import cleanup_dead_jobs_all
 import logging
 
 setup_logging(logging.INFO)
@@ -44,6 +46,7 @@ if "_startup_cleanup_done" not in st.session_state:
     cleanup_stale_temp_dirs(max_age_hours=2)
     AuthManager().clean_expired_sessions()
     AuthManager().purge_expired_deletions()
+    cleanup_dead_jobs_all()
     st.session_state["_startup_cleanup_done"] = True
 
 # ── التأكد من تسجيل الدخول ──────────────────────────────────
@@ -56,6 +59,7 @@ PAGES = {
     "📁 المشاريع": show_projects,
     "📄 الملفات": show_files,
     "🧹 تنظيف البيانات": show_data,
+    "🧠 معرفة المشروع": show_knowledge,
     "📊 لوحات المعلومات": show_dashboards,
     "💬 المحادثة": show_chat,
     "📝 التقارير": show_reports,
