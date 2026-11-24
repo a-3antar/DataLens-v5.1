@@ -92,8 +92,13 @@ def show_settings():
 
         api_key = ""
         ollama_url = settings.get("ollama_url", "http://localhost:11434")
+        ollama_timeout = int(settings.get("ollama_timeout", 180))
         if engine_name == "ollama":
             ollama_url = st.text_input("عنوان سيرفر Ollama", value=ollama_url)
+            ollama_timeout = st.number_input(
+                "مهلة توليد Ollama (ثانية)", 30, 900, ollama_timeout, step=30,
+                help="مهلة مستقلة للنماذج المحلية. ابدأ بـ 180 ثانية، وارفعها إذا كان النموذج كبيراً أو يعمل على CPU.",
+            )
         else:
             api_key = st.text_input(
                 f"مفتاح API لـ {engine_name}",
@@ -141,6 +146,7 @@ def show_settings():
             }
             if engine_name == "ollama":
                 updates["ollama_url"] = ollama_url
+                updates["ollama_timeout"] = ollama_timeout
             else:
                 updates[f"api_key_{engine_name}"] = api_key
             db.save_settings(updates)
