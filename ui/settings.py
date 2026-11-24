@@ -92,7 +92,7 @@ def show_settings():
 
         api_key = ""
         ollama_url = settings.get("ollama_url", "http://localhost:11434")
-        ollama_timeout = int(settings.get("ollama_timeout", 180))
+        ollama_timeout = int(settings.get("ollama_timeout", 300))
         if engine_name == "ollama":
             ollama_url = st.text_input("عنوان سيرفر Ollama", value=ollama_url)
             ollama_timeout = st.number_input(
