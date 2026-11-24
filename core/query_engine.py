@@ -99,9 +99,9 @@ class QueryEngine:
         """
         # ارفض أي رد لا يبدأ باستعلام قراءة. إزالة التعليقات الافتتاحية
         # تمنع تمرير نص تفسيري/أوامر مخفية قبل SELECT أو WITH.
-        without_comments = re.sub(r"/\\*.*?\\*/", " ", sql, flags=re.DOTALL)
-        without_comments = re.sub(r"--[^\\r\\n]*", " ", without_comments)
-        if not re.match(r"^\\s*(SELECT|WITH)\\b", without_comments, re.IGNORECASE):
+        without_comments = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
+        without_comments = re.sub(r"--[^\r\n]*", " ", without_comments)
+        if not re.match(r"^\s*(SELECT|WITH)\b", without_comments, re.IGNORECASE):
             return {"ok": False, "error": "يُسمح باستعلامات SELECT أو WITH فقط؛ لم يبدأ الرد باستعلام قراءة صالح"}
 
         # نسمح بفاصلة منقوطة نهائية واحدة فقط؛ تعدد الأوامر مرفوض.
