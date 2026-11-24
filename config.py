@@ -65,7 +65,7 @@ AI_RETRY_DELAY_SECONDS = 5
 STORY_TIMEOUT_SECONDS = 45
 
 # مهلة افتراضية أطول للنماذج المحلية؛ تحميل النموذج والتوليد الأول أبطأ عادةً.
-OLLAMA_TIMEOUT_SECONDS = 180
+OLLAMA_TIMEOUT_SECONDS = 300
 
 # ─── المشروع — قيم افتراضية ────────────────────────────────
 DEFAULT_SETTINGS = {
