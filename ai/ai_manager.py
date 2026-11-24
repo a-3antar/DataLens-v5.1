@@ -31,6 +31,7 @@ ask/tell_story/answer_question تضيف سياق المعرفة المخزَّن
 (قسم DATA CONTEXT) عبر _knowledge_context — صامت: لا معرفة أو أي فشل = سلوك
 سابق بلا تغيير. طبقتا المعرفة ب وج تستدعيان _run_planned_query بحرارة 0.0 صريحة
 (معامل temperature) بدل self.temperature.
+
 🆕 Smart Value Resolver (القيم النصية التي لا تطابق البيانات):
 ------------------------------------------------------------------
 ask(resolve_values=True) — يُفعَّل من صفحة المحادثة فقط — إن نجح تنفيذ
@@ -46,10 +47,25 @@ SQL ورجع 0 صف، يُمرَّر الـ SQL إلى core.value_resolver.Value
   - لا مرشح → "value_resolution" بحالة not_found لإبلاغ المستخدم.
 خطأ تنفيذ SQL لا يمر بهذا المسار إطلاقاً (يبقى خطأً كما هو)، وأي
 استثناء داخل الـ Resolver يُسجَّل فقط ولا يكسر ask(). الافتراضي
-resolve_values=False فلا يتغير سلوك لوحات المعلومات ولا Story/QA.
+resolve_values=False فلا يتغير سلوك لوحات المعلومات.
 الوحيد المستخدم من AI هنا: _suggest_value_variants — استدعاء واحد
 قصير عند الحاجة فقط لاقتراح كتابات بديلة (ترجمة/تحويل حروف) تُتحقق
 لاحقاً من وجودها فعلاً في العمود.
+
+🆕 Value Resolver داخل خطط الاستعلامات (سؤال وجواب + Story):
+-----------------------------------------------------------------
+الاستعلامات الفرعية في خطة answer_question/tell_story (تُنفَّذ عبر
+_run_planned_query) كانت لا تمر بالـ Resolver، فشرط مثل
+ILIKE '%سانا جاز%' على قيمة مخزَّنة "SANA - GAS" يرجع 0 صف بصمت ويُنتج
+إجابة متناقضة ("لا توجد بيانات" مع أرقام العميل من استعلام آخر).
+الآن _run_planned_query(resolve_values=True) تعالج نتيجة الصفر عبر
+_resolve_planned_zero_rows، وبما أنه لا يوجد مستخدم ليختار وسط خطة
+متعددة الاستعلامات:
+  - تصحيح مؤكد → يُطبَّق ويُعاد التنفيذ، وتُجمَّع "value_fixes" في
+    نتيجة العملية (يعرضها ui/chat.py كسطر ملاحظة).
+  - غير مؤكد → لا استبدال، بل "value_hint" نصي بأقرب القيم الموجودة
+    يُمرَّر لمرحلة كتابة الإجابة (قسم NOTES) كي لا تُبنى خلاصة
+    "لا توجد بيانات" على عدم تطابق كتابة لا أكثر.
 """
 import re
 import json
@@ -82,6 +98,9 @@ _PERMANENT_ERROR_TYPES = {"auth"}
 # التلخيص عملية مساندة تأتي بعد ظهور الإجابة، ولا يجب أن تُطيل انتظار
 # المستخدم بإعادة محاولات كثيرة.
 _QA_SUMMARY_MAX_ATTEMPTS = 2
+
+# 🆕 أقصى عدد قيم مرشحة تُذكر في تلميح value_hint لكل شرط (يُرسَل للـ AI)
+_HINT_MAX_CANDIDATES = 5
 
 # 🆕 تصحيح أسماء الأعمدة تلقائياً من الـ Schema (راجع _try_schema_column_fix).
 # رسالة DuckDB 'Table "t1" does not have a column named "X"' لا تحتوي
@@ -429,6 +448,66 @@ class AIManager:
             logger.warning("Smart Value Resolver failed (ignored): %s", e)
         return result
 
+    @staticmethod
+    def _format_value_hint(items: list) -> str:
+        """
+        🆕 صياغة تلميح نصي (للـ AI فقط) من عناصر ValueResolver غير المحسومة:
+        لكل شرط لم يطابق البيانات تُذكر القيمة المكتوبة وأقرب القيم الموجودة
+        فعلاً في العمود. يُستخدم في قسم NOTES بمرحلة كتابة الإجابة.
+        """
+        lines = []
+        for it in items:
+            cands = [c["value"] for c in (it.get("candidates") or [])[:_HINT_MAX_CANDIDATES]]
+            if cands:
+                lines.append(
+                    f"الشرط «{it['wanted']}» على العمود {it['column']} لم يطابق أي صف حرفياً؛ "
+                    f"أقرب قيم موجودة فعلاً في العمود: " + "، ".join(f"«{c}»" for c in cands)
+                )
+            else:
+                lines.append(
+                    f"الشرط «{it['wanted']}» على العمود {it['column']} لم يطابق أي صف "
+                    f"ولا توجد قيمة قريبة منه في العمود"
+                )
+        return "؛ ".join(lines)
+
+    def _resolve_planned_zero_rows(self, out: dict, sql: str, dashboard_id: Optional[str] = None) -> dict:
+        """
+        🆕 معالجة استعلام فرعي (من خطة QA/Story) رجع بصفر صفوف عبر
+        ValueResolver. على عكس ask() لا يوجد مستخدم ليختار وسط خطة
+        متعددة الاستعلامات، لذا:
+          - تصحيح مؤكد → إعادة تنفيذ الـ SQL المصحَّح واستبدال النتيجة
+            وإضافة "value_fixes".
+          - غير ذلك → لا استبدال؛ تُضاف "value_hint" نصية بأقرب القيم
+            الموجودة لتصل إلى مرحلة كتابة الإجابة.
+        لا ترمي استثناءً أبداً: أي خلل يُسجَّل وتُرجع النتيجة كما هي.
+        """
+        try:
+            resolver = ValueResolver(
+                self._resolver_table_loader(dashboard_id), self._suggest_value_variants,
+            )
+            res = resolver.resolve(sql)
+            status = res["status"]
+
+            if status == "auto_fixed":
+                rerun = self.qe.run(res["sql"], dashboard_id=dashboard_id)
+                if rerun["ok"]:
+                    logger.info("Planned query value auto-fixed: %s", res["fixes"])
+                    out.update({
+                        "sql": rerun.get("sql", res["sql"]),
+                        "df": rerun["df"],
+                        "rows": rerun["rows"],
+                        "value_fixes": res["fixes"],
+                    })
+                else:
+                    logger.warning("Re-run after planned value auto-fix failed: %s", rerun["error"])
+            elif status in ("needs_choice", "not_found") and res.get("items"):
+                hint = self._format_value_hint(res["items"])
+                if hint:
+                    out["value_hint"] = hint
+        except Exception as e:
+            logger.warning("Planned query value resolver failed (ignored): %s", e)
+        return out
+
     def apply_value_choices(
         self, sql: str, items: list, choices: dict, dashboard_id: Optional[str] = None,
     ) -> dict:
@@ -486,6 +565,10 @@ class AIManager:
         بقية الأنواع) — فتُعاد توليد خطة استعلامات جديدة تلقائياً في
         أول تحديث تالٍ، دون أي تعديل إضافي مطلوب هنا.
 
+        🆕 الاستعلامات التي ترجع بصفر صفوف بسبب قيمة نصية لا تطابق
+        البيانات تُصحَّح تلقائياً عند التأكد (راجع _run_planned_query)؛
+        ما صُحِّح يُعاد في "value_fixes".
+
         يرجع:
         {
             "ok"      : True/False,
@@ -500,6 +583,7 @@ class AIManager:
             "df"      : DataFrame أول استعلام ناجح (توافق خلفي مع بقية الكود),
             "rows"    : مجموع صفوف الاستعلامات الناجحة,
             "tries"   : عدد محاولات آخر مرحلة AI استُدعيت,
+            "value_fixes": [...]  ← (اختياري) قيم صُحّحت تلقائياً,
             "base_queries_json": (فقط لو تم توليد خطة جديدة الآن) — نص
                 JSON جاهز للحفظ كـ base_sql لهذه الخلية،
             "error"   : "..."  ← عند الفشل (أي مرحلة)
@@ -578,6 +662,7 @@ class AIManager:
         # ── المرحلة ٢: تنفيذ كل استعلام في الخطة ──
         executed = []
         ok_count = 0
+        all_value_fixes = []
         # 🆕 تصحيح موحّد للاستعلامات الفاشلة (راجع _run_planned_query). تصحيح AI
         # فقط لخطة وُلِّدت الآن، لا لـ base_sql محفوظ لخلية لوحة.
         fix_builder = PromptBuilder(
@@ -592,9 +677,11 @@ class AIManager:
                 sql, title, question, fix_builder, schema,
                 dashboard_id=dashboard_id, allow_ai_fix=generated_plan,
                 start_time=story_start, budget=self.story_max_total_wait_seconds,
+                resolve_values=True,
             )
             if run_result["ok"]:
                 ok_count += 1
+                all_value_fixes.extend(run_result.get("value_fixes") or [])
                 executed.append({
                     "title": title, "sql": run_result.get("sql", sql),
                     "ok": True, "df": run_result["df"], "rows": run_result["rows"],
@@ -677,6 +764,8 @@ class AIManager:
             "sql": "\n\n".join(f"-- {e['title']}\n{e['sql']}" for e in successful),
             "df": successful[0]["df"],
         }
+        if all_value_fixes:
+            result["value_fixes"] = all_value_fixes
         if generated_plan:
             result["base_queries_json"] = json.dumps(
                 [{"title": q.get("title") or "بيانات", "sql": str(q.get("sql", "")).strip()}
@@ -763,6 +852,7 @@ class AIManager:
         start_time   : Optional[float] = None,
         budget       : Optional[int] = None,
         temperature  : Optional[float] = None,
+        resolve_values: bool = False,
     ) -> dict:
         """
         تنفيذ استعلام واحد من خطة (Story/Q&A) مع نفس مستويات التصحيح
@@ -773,8 +863,13 @@ class AIManager:
           ٣) لو بقي الخطأ وallow_ai_fix: يُعاد الـ SQL الخاطئ مع رسالة الخطأ
              للـ AI عبر builder.build + build_error_retry، ثم يُنفَّذ
              الناتج. العدد الكلي للتنفيذات = self.max_tries (مثل ask()).
+          ٤) 🆕 resolve_values: لو نجح التنفيذ ورجع 0 صف تُعالَج القيم
+             النصية غير المطابقة عبر _resolve_planned_zero_rows (تصحيح
+             مؤكد أو value_hint). افتراضياً False (طبقتا المعرفة ب وج
+             لا تحتاجانه).
 
-        يرجع: {"ok", "sql", "df", "rows", "ai_fixes"} عند النجاح، أو
+        يرجع: {"ok", "sql", "df", "rows", "ai_fixes"} عند النجاح
+        (+ "value_fixes"/"value_hint" اختيارياً)، أو
         {"ok": False, "sql": آخر SQL جُرِّب, "error", "ai_fixes"}.
         """
         start_time = start_time or time.monotonic()
@@ -798,10 +893,13 @@ class AIManager:
                 executed_sql = current
 
             if run["ok"]:
-                return {
+                out = {
                     "ok": True, "sql": run.get("sql", current),
                     "df": run["df"], "rows": run["rows"], "ai_fixes": ai_fixes,
                 }
+                if resolve_values and run["rows"] == 0:
+                    out = self._resolve_planned_zero_rows(out, out["sql"], dashboard_id)
+                return out
 
             logger.warning(
                 "Planned query '%s' failed (attempt %d/%d): %s",
@@ -906,10 +1004,16 @@ class AIManager:
         بعضها، تُكتب الإجابة من الناجح فقط ويُبلَّغ AI بالفاشل (قسم
         FAILED QUERIES) ليذكره كقيد بدل بناء أرقام عليه.
 
+        🆕 الاستعلامات التي رجعت بصفر صفوف بسبب قيمة نصية لا تطابق
+        البيانات (مثل «سانا جاز» مقابل SANA - GAS) تمر بالـ Value
+        Resolver: التصحيح المؤكد يُطبَّق ويُعاد في "value_fixes"، وغير
+        المؤكد يصل كتلميح لقسم NOTES في مرحلة الإجابة.
+
         يرجع (نفس شكل tell_story مع "answer" بدل "story"):
         {
             "ok", "tries", "queries": [...], "answer": "Markdown",
             "answer_length", "rows", "sql", "df",
+            "value_fixes" ← (اختياري),
             "error"/"error_type" ← عند الفشل
         }
         """
@@ -985,8 +1089,11 @@ class AIManager:
 
         # ── المرحلة ٢: تنفيذ كل استعلام (بدون Slicers) ──
         executed = []
+        all_value_fixes = []
+        value_notes = []
         # 🆕 كل استعلام يمر عبر الدالة الموحّدة _run_planned_query: تصحيح تلقائي
-        # للأعمدة ثم إعادة الـ SQL الفاشل للـ AI (حتى self.max_tries) مثل ask().
+        # للأعمدة ثم إعادة الـ SQL الفاشل للـ AI (حتى self.max_tries) مثل ask()،
+        # ثم Value Resolver لو رجع بصفر صفوف (resolve_values=True).
         for q in queries_plan:
             sql = str(q.get("sql", "")).strip()
             title = str(q.get("title") or "بيانات").strip()
@@ -995,8 +1102,12 @@ class AIManager:
             run_result = self._run_planned_query(
                 sql, title, question, builder, schema,
                 start_time=qa_start, budget=self.story_max_total_wait_seconds,
+                resolve_values=True,
             )
             if run_result["ok"]:
+                all_value_fixes.extend(run_result.get("value_fixes") or [])
+                if run_result.get("value_hint"):
+                    value_notes.append(f"استعلام «{title}» رجع 0 صف: {run_result['value_hint']}")
                 executed.append({
                     "title": title, "sql": run_result.get("sql", sql),
                     "ok": True, "df": run_result["df"], "rows": run_result["rows"],
@@ -1030,6 +1141,7 @@ class AIManager:
             failed=[{"title": e["title"], "error": e.get("error", "")} for e in failed],
             summary=summary,
             knowledge_context=self._knowledge_context(question, schema, "answer"),
+            notes=value_notes,
         )
 
         send_result = None
@@ -1067,7 +1179,7 @@ class AIManager:
         if not answer_text:
             return {"ok": False, "error": "رد AI فارغ عند توليد الإجابة", "tries": tries, "queries": executed}
 
-        return {
+        result = {
             "ok": True,
             "tries": tries,
             "queries": executed,
@@ -1077,6 +1189,9 @@ class AIManager:
             "sql": "\n\n".join(f"-- {e['title']}\n{e['sql']}" for e in successful),
             "df": successful[0]["df"],
         }
+        if all_value_fixes:
+            result["value_fixes"] = all_value_fixes
+        return result
 
 
     # ──────────────────────────────────────────────────────────
