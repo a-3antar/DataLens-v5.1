@@ -90,6 +90,9 @@ refresh_dashboard() أو refresh_single_cell() (المرتبطين بأزرار 
 في الواجهة).
 """
 
+
+from core.logger_config import trace_calls
+
 import json
 import sqlite3
 import logging
@@ -109,12 +112,14 @@ from config import DASHBOARD_GAUGE_COUNT, PROJECTS_DIR
 logger = logging.getLogger(__name__)
 
 
+@trace_calls
 def _now() -> str:
     """الوقت الحالي بصيغة ISO — نفس تنسيق core.project_db._now()."""
     return datetime.utcnow().isoformat()
 
 
 class DashboardManager:
+    @trace_calls
     def __init__(self, db: ProjectDB, ai: AIManager, qe: Optional[QueryEngine] = None):
         self.db = db
         self.ai = ai
@@ -125,10 +130,12 @@ class DashboardManager:
     #  خيارات الـ Slicers (جداول/أعمدة/قيم المشروع الكامل)
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def get_available_tables(self) -> list[str]:
         """كل الجداول المتاحة في المشروع (لاختيار الجدول في Slicer)."""
         return list(self.db.get_schema().keys())
 
+    @trace_calls
     def get_available_columns(self, table_name: str) -> list[str]:
         """كل أعمدة جدول معيّن (لاختيار العمود بعد اختيار الجدول)."""
         schema = self.db.get_schema()
@@ -137,6 +144,7 @@ class DashboardManager:
             return []
         return list(table_info.get("columns", {}).keys())
 
+    @trace_calls
     def get_distinct_values(self, table_name: str, column_name: str, limit: int = 200) -> dict:
         """
         القيم الفريدة لعمود معيّن (لقائمة اختيار القيم في Slicer).
@@ -158,6 +166,7 @@ class DashboardManager:
     #  إعادة تعيين الـ Slicers
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def reset_slicers(self, dashboard_id: str) -> None:
         """إعادة كل Slicers اللوحة للوضع الافتراضي وإزالة views فلاترها."""
         self.db.reset_dashboard_slicers(dashboard_id)
@@ -168,10 +177,12 @@ class DashboardManager:
     #  التفاصيل الكاملة في core/dashboard_views.py
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def sync_views(self, dashboard_id: str) -> dict:
         """إعادة بناء views هذه اللوحة من فلاترها المحفوظة الحالية."""
         return self.views.sync(dashboard_id)
 
+    @trace_calls
     def save_slicers(self, dashboard_id: str, rows: list) -> dict:
         """
         حفظ صفوف الـ Slicers (نفس شكل db.save_dashboard_slicer) ثم
@@ -185,11 +196,13 @@ class DashboardManager:
             )
         return self.views.sync(dashboard_id)
 
+    @trace_calls
     def delete_dashboard(self, dashboard_id: str) -> None:
         """حذف اللوحة (خلاياها وفلاترها) ثم حذف views فلاترها."""
         self.db.delete_dashboard(dashboard_id)
         self.views.drop(dashboard_id)
 
+    @trace_calls
     def duplicate_dashboard(self, dashboard_id: str, new_id: str, new_title: str) -> None:
         """تكرار لوحة ثم بناء views اللوحة الجديدة من فلاترها المنسوخة."""
         self.db.duplicate_dashboard(dashboard_id, new_id, new_title)
@@ -199,6 +212,7 @@ class DashboardManager:
     #  🆕 تعديل خصائص لوحة موجودة (قالب / عنوان) — sqlite3 مباشر
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _update_dashboard_columns(self, dashboard_id: str, columns: dict, touch_updated_at: bool) -> None:
         """
         نقطة التنفيذ المشتركة لأي تحديث مباشر على جدول dashboards عبر
@@ -225,6 +239,7 @@ class DashboardManager:
             )
             conn.commit()
 
+    @trace_calls
     def rename_dashboard(self, dashboard_id: str, new_title: str) -> dict:
         """
         🆕 تغيير عنوان لوحة موجودة — لا يمس الخلايا ولا الـ Slicers ولا
@@ -251,6 +266,7 @@ class DashboardManager:
             logger.error("rename_dashboard error: %s", e)
             return {"ok": False, "error": str(e)}
 
+    @trace_calls
     def _visible_cell_limit(self, dashboard: dict) -> int:
         """
         عدد المواضع المرئية فعلياً حسب قالب اللوحة الحالي: ٤ Gauges
@@ -261,6 +277,7 @@ class DashboardManager:
         template = get_template(dashboard.get("template_id", "A"))
         return DASHBOARD_GAUGE_COUNT + template["cell_count"]
 
+    @trace_calls
     def update_dashboard_template(self, dashboard_id: str, new_template_id: str) -> dict:
         """
         تغيير قالب لوحة موجودة مسبقاً — لا يحذف ولا يُعدِّل أي خلية
@@ -296,6 +313,7 @@ class DashboardManager:
     #  تنفيذ خلية واحدة (تُستدعى داخل thread — لا تكتب في DB)
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _process_cell(self, cell_obj, dashboard_id: str, ai_rules: Optional[str]) -> dict:
         """
         تنفيذ خلية واحدة فعلياً عبر cell_obj.execute() — بغض النظر عن
@@ -312,6 +330,7 @@ class DashboardManager:
 
         return {"cell_obj": cell_obj, "position": cell_obj.position, "result": r}
 
+    @trace_calls
     def _submit_with_context(self, executor: ThreadPoolExecutor, cell_obj, dashboard_id: str, ai_rules: Optional[str]):
         """
         🆕 إرسال _process_cell إلى الـ thread pool مع نقل سياق
@@ -335,6 +354,7 @@ class DashboardManager:
     #  تحديث البيانات (كل خلايا اللوحة) — متوازٍ عبر Threads
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def refresh_dashboard(
         self,
         dashboard_id: str,
@@ -390,6 +410,7 @@ class DashboardManager:
         total = len(cell_objs)
         done_count = [0]
 
+        @trace_calls
         def track_progress():
             """يُستدعى فقط من الـ main thread (داخل حلقة as_completed أدناه)
             حتى لا تُستدعى أي دالة st.* من داخل worker thread — استدعاء
@@ -493,6 +514,7 @@ class DashboardManager:
     #  تحديث خلية واحدة فقط
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def refresh_single_cell(self, dashboard_id: str, position: int, ai_rules: Optional[str] = None) -> dict:
         """
         تحديث خلية واحدة فقط بنفس منطق refresh_dashboard (AI فقط عند
@@ -537,6 +559,7 @@ class DashboardManager:
     # ──────────────────────────────────────────────────────────
     #  🆕 بناء خطة لوحة كاملة تلقائياً بالذكاء الاصطناعي
     # ──────────────────────────────────────────────────────────
+    @trace_calls
     def generate_dashboard_plan(self, description: str, ai_rules: Optional[str] = None) -> dict:
         """
         (نفس التوثيق السابق)

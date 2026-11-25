@@ -14,6 +14,9 @@ ui/dashboards.py كـ DISPLAY_TYPE_LABELS).
                بما لا يبرر ملفاً منفصلاً له.
 """
 
+
+from core.logger_config import trace_calls
+
 from core.dashboard_cells.base import DashboardCellBase
 from core.dashboard_cells.cells import (
     EmptyCell, TableCell, ChartCell, GaugeCell, KpiCell, StoryCell,
@@ -34,6 +37,7 @@ CELL_CLASSES = {
 DISPLAY_TYPE_LABELS = {key: cls.label for key, cls in CELL_CLASSES.items()}
 
 
+@trace_calls
 def create_cell(row: dict):
     """
     بناء كائن الخلية المناسب من صف dashboard_cells الخام (كما يُرجعه

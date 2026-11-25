@@ -5,6 +5,9 @@ ai/gemini.py
 يرث من BaseEngine ويطبق get_models / send / status.
 """
 
+
+from core.logger_config import trace_calls
+
 import logging
 from typing import Optional
 
@@ -29,6 +32,7 @@ class GeminiEngine(BaseEngine):
         result = engine.send("SELECT * FROM sales")
     """
 
+    @trace_calls
     def __init__(self, api_key: str, model: str = "gemini-2.0-flash", timeout: int = 30):
         super().__init__(api_key, model, timeout)
 
@@ -36,6 +40,7 @@ class GeminiEngine(BaseEngine):
     #  قائمة النماذج
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def get_models(self) -> dict:
         """إرجاع قائمة نماذج Gemini المتاحة."""
         if not self.api_key:
@@ -73,6 +78,7 @@ class GeminiEngine(BaseEngine):
     #  إرسال Prompt
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def send(self, prompt: str, temperature: float = 0.1, timeout_override: Optional[int] = None) -> dict:
         """
         إرسال prompt إلى Gemini وإرجاع الرد.
@@ -179,6 +185,7 @@ class GeminiEngine(BaseEngine):
     #  فحص الحالة
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def status(self) -> dict:
         """التحقق من أن Gemini API يعمل."""
         result = self.get_models()

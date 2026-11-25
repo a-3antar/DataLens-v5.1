@@ -89,6 +89,9 @@ project.db بنفس chat_id)، ثم st.rerun() — فلا يُعاد استدع�
 على core.query_engine — فقط طبقة العرض.
 """
 
+
+from core.logger_config import trace_calls
+
 import uuid
 import html
 import hashlib
@@ -139,6 +142,7 @@ _QA_THEMED_TABLE_MAX_ROWS = 200
 _RESOLVER_RESULT_TYPES = ("table", "chart", "gauge", "kpi")
 
 
+@trace_calls
 def _resolve_project_id(db) -> str:
     """استخراج معرّف المشروع الحالي بأمان لبدء محادثة جديدة عند تغييره."""
     for attr in ("project_id", "current_project_id", "id"):
@@ -151,6 +155,7 @@ def _resolve_project_id(db) -> str:
     return str(id(db))
 
 
+@trace_calls
 def _reset_session_thread_state() -> None:
     """تفريغ حالة المحادثة والذاكرة المؤقتة عند تغيير المشروع أو مسح السجل."""
     st.session_state[_THREAD_KEY] = []
@@ -160,6 +165,7 @@ def _reset_session_thread_state() -> None:
     st.session_state["_chat_options_section"] = ""
 
 
+@trace_calls
 def _trigger_scroll_to_bottom() -> None:
     """تمرير الحاوية النشطة في Streamlit إلى آخر المحادثة (أحدث رسالة ومنطقة الإدخال)."""
     anchor_id = "chat-bottom-anchor"
@@ -203,6 +209,7 @@ def _trigger_scroll_to_bottom() -> None:
     )
 
 
+@trace_calls
 def _chat_page_css(settings: dict) -> str:
     """تنسيق محلي لواجهة المحادثة دون الاعتماد على CSS خاص غير موجود في common.py."""
     return """
@@ -237,6 +244,7 @@ def _chat_page_css(settings: dict) -> str:
     """
 
 
+@trace_calls
 def show_chat():
     apply_rtl()
     require_login()
@@ -311,6 +319,7 @@ def show_chat():
 #  🆕 مرجع الأسئلة — popover يسرد أسئلة الجلسة + السجل المحفوظ
 # ══════════════════════════════════════════════════════════════
 
+@trace_calls
 def _render_question_reference(db) -> None:
     has_popover = hasattr(st, "popover")
     with st.container(key="chat_history_ref", border=False):
@@ -362,6 +371,7 @@ def _render_question_reference(db) -> None:
 #  منطقة الكتابة — خيارات مختصرة + حقل محادثة مثبت أسفل الصفحة
 # ══════════════════════════════════════════════════════════════
 
+@trace_calls
 def _render_input_area(db, ai, settings: dict) -> None:
     # تطبيق سؤال مختار من المحادثات السابقة قبل إنشاء chat_input.
     if st.session_state.pop(_CLEAR_QUESTION_KEY, False):
@@ -389,6 +399,7 @@ def _render_input_area(db, ai, settings: dict) -> None:
         _handle_submit(db, ai, settings, question)
 
 
+@trace_calls
 def _render_options_popover(db) -> None:
     """قائمة خيارات موحدة؛ اختيار أي بند يعرض إعداداته داخل النافذة نفسها."""
     sections = {
@@ -469,6 +480,7 @@ def _render_options_popover(db) -> None:
             _render_clear_history_button(db)
 
 
+@trace_calls
 def _render_latest_report_form(db, item: dict) -> None:
     """نموذج إضافة أحدث نتيجة ناجحة إلى أحد التقارير من قائمة الخيارات."""
     result = item["result"]
@@ -506,6 +518,7 @@ def _render_latest_report_form(db, item: dict) -> None:
                 notify(response["error"], kind="error")
 
 
+@trace_calls
 def _render_clear_history_button(db) -> None:
     """مسح سجل المحادثة والذاكرة الداخلية بعد تأكيد المستخدم."""
     confirm_key = "confirm_clear_chat_history"
@@ -525,6 +538,7 @@ def _render_clear_history_button(db) -> None:
         st.rerun()
 
 
+@trace_calls
 def _build_qa_history() -> list:
     """
     🆕 ذاكرة محادثة نوع "qa": أسئلة/أجوبة "qa" الناجحة فقط من هذه
@@ -539,6 +553,7 @@ def _build_qa_history() -> list:
     return turns
 
 
+@trace_calls
 def _flush_pending_summary(ai) -> None:
     """
     🆕 تنفيذ تحديث الملخص التراكمي المعلَّق (إن وُجد) كاستفسار AI
@@ -567,6 +582,7 @@ def _flush_pending_summary(ai) -> None:
         st.session_state.pop(_PENDING_SUMMARY_KEY, None)
 
 
+@trace_calls
 def _handle_submit(db, ai, settings: dict, question: str) -> None:
     if not question.strip():
         notify("الرجاء كتابة سؤال", kind="warning")
@@ -645,6 +661,7 @@ def _handle_submit(db, ai, settings: dict, question: str) -> None:
 #  بطاقة سؤال/إجابة واحدة
 # ══════════════════════════════════════════════════════════════
 
+@trace_calls
 def _render_qa_card(db, ai, settings: dict, item: dict) -> None:
     result = item["result"]
     result_type = item["result_type"]
@@ -738,12 +755,14 @@ def _render_qa_card(db, ai, settings: dict, item: dict) -> None:
 #  🆕 Smart Value Resolver — اختيار القيمة المقصودة
 # ══════════════════════════════════════════════════════════════
 
+@trace_calls
 def _candidate_label(cand: dict) -> str:
     """نص خيار واحد في قائمة الاختيار: القيمة · تصنيف المطابقة (الثقة) — السبب."""
     level = LEVEL_LABELS.get(cand["level"], cand["level"])
     return f"{cand['value']}  ·  {level} ({int(round(cand['score'] * 100))}%) — {cand['reason']}"
 
 
+@trace_calls
 def _render_value_resolution(db, ai, item: dict, resolution: dict) -> None:
     """
     رسالة + نموذج اختيار داخل بطاقة السؤال نفسها (راجع توثيق الوحدة أعلاه).
@@ -814,6 +833,7 @@ def _render_value_resolution(db, ai, item: dict, resolution: dict) -> None:
     st.rerun()
 
 
+@trace_calls
 def _render_query_data_block(settings, q: dict) -> None:
     """
     🆕 عرض بيانات استعلام واحد (نوع "qa") كاملة بلا اقتطاع — جدول
@@ -837,6 +857,7 @@ def _render_query_data_block(settings, q: dict) -> None:
         st.dataframe(qdf, width="stretch", hide_index=True)
 
 
+@trace_calls
 def _render_answer_body(settings, result: dict, result_type: str, chart_type: str, key_prefix: str) -> None:
     df: pd.DataFrame = result.get("df")
     chart_theme = get_chart_theme(settings)
@@ -900,6 +921,7 @@ def _render_answer_body(settings, result: dict, result_type: str, chart_type: st
 #  إرسال إلى تقرير — نموذج (form) مستقل لكل بطاقة
 # ══════════════════════════════════════════════════════════════
 
+@trace_calls
 def _render_send_to_report_form(db, item: dict) -> None:
     result = item["result"]
     if not result.get("ok"):
@@ -948,6 +970,7 @@ def _render_send_to_report_form(db, item: dict) -> None:
                     notify(r["error"], kind="error")
 
 
+@trace_calls
 def _add_block_for_type(rm, report_id, result_id, result_type, df: pd.DataFrame, label,
                          story_text: str = None, include_data_table: bool = False,
                          chart_type: str = "bar", queries: list = None):

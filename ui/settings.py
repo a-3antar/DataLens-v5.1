@@ -48,6 +48,9 @@ ai.engine_registry + OpenAICompatibleEngine — لا حاجة لأي كود إض
     الخادم فقط، وليست ميزة استرجاع ذاتية من التطبيق — راجع core/auth.py).
 """
 
+
+from core.logger_config import trace_calls
+
 import streamlit as st
 
 from ui.common import (
@@ -59,6 +62,7 @@ from core.auth import AuthManager
 from config import AI_ENGINES, THEMES, COMMON_TIMEZONES, DEFAULT_SETTINGS
 
 
+@trace_calls
 def show_settings():
     apply_rtl()
     require_login()
@@ -268,6 +272,7 @@ _ACCOUNT_SECTIONS = [
 ]
 
 
+@trace_calls
 def _render_account_tab(auth: AuthManager, user_id: str):
     """قائمة أقسام الحساب — راديو أفقي بدل تبويبات متداخلة (Streamlit
     لا يدعم تداخل st.tabs داخل st.tabs بشكل موثوق)."""
@@ -288,6 +293,7 @@ def _render_account_tab(auth: AuthManager, user_id: str):
         _render_delete_account_section(auth, user_id)
 
 
+@trace_calls
 def _render_change_password_section(auth: AuthManager, user_id: str):
     st.subheader("🔑 تغيير كلمة المرور")
     with st.form("change_password_form"):
@@ -306,6 +312,7 @@ def _render_change_password_section(auth: AuthManager, user_id: str):
                     st.error(r["error"])
 
 
+@trace_calls
 def _render_email_section(auth: AuthManager, user_id: str):
     """
     عرض البريد الحالي وحالة توثيقه + إرسال/إدخال رمز تأكيد للبريد
@@ -382,6 +389,7 @@ def _render_email_section(auth: AuthManager, user_id: str):
                 st.error(r["error"])
 
 
+@trace_calls
 def _render_profile_section(auth: AuthManager, user_id: str):
     """تعديل بيانات المستخدم — حالياً اسم المستخدم فقط."""
     st.subheader("👤 بيانات المستخدم")
@@ -404,6 +412,7 @@ def _render_profile_section(auth: AuthManager, user_id: str):
                     st.error(r["error"])
 
 
+@trace_calls
 def _render_delete_account_section(auth: AuthManager, user_id: str):
     st.subheader("⚠️ حذف الحساب نهائياً")
     st.error(
@@ -450,6 +459,7 @@ _COLOR_FIELDS = [
 _SEED_MARKER_KEY = "_custom_theme_seed_signature"
 
 
+@trace_calls
 def _render_theme_tab(db, settings: dict):
     current_theme = settings.get("theme", "ocean_dark")
     theme_key = st.radio(
@@ -465,6 +475,7 @@ def _render_theme_tab(db, settings: dict):
         _render_preset_theme_preview(db, theme_key)
 
 
+@trace_calls
 def _render_preset_theme_preview(db, theme_key: str):
     """معاينة ثيم جاهز (ألوانه ثابتة — للعرض فقط، غير قابلة للتعديل)."""
     colors = THEME_COLORS.get(theme_key, {})
@@ -485,6 +496,7 @@ def _render_preset_theme_preview(db, theme_key: str):
         st.rerun()
 
 
+@trace_calls
 def _seed_custom_color_pickers(settings: dict) -> None:
     """
     🆕 بذر منتقيات الألوان الخمسة تلقائياً بألوان الثيم الذي كان نشطاً
@@ -524,6 +536,7 @@ def _seed_custom_color_pickers(settings: dict) -> None:
         st.session_state[_SEED_MARKER_KEY] = signature
 
 
+@trace_calls
 def _render_custom_theme_editor(db, settings: dict):
     """محرر الثيم المخصص — المستخدم يختار كل الألوان الخمسة بحرّية."""
     st.caption(
@@ -571,6 +584,7 @@ def _render_custom_theme_editor(db, settings: dict):
             st.rerun()
 
 
+@trace_calls
 def _render_theme_preview_sample(preview_settings: dict):
     """
     عيّنة معاينة مصغّرة تشمل: نص عادي، جدول، رسم بياني، مقياس (Gauge)،

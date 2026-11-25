@@ -49,6 +49,9 @@ KNOWLEDGE_JOB_STALE_MINUTES تُعتبر ميتة (cleanup_dead_jobs_all/get_sta
 (قيم فئوية، عينات صفوف، لقطات نتائج)، وتُعطَّل الطبقة ج كلياً.
 """
 
+
+from core.logger_config import trace_calls
+
 import contextvars
 import hashlib
 import json
@@ -146,15 +149,18 @@ _SCHEMA_LOCK = threading.Lock()
 #  أدوات عامة
 # ══════════════════════════════════════════════════════════════
 
+@trace_calls
 def _now() -> str:
     return datetime.utcnow().isoformat()
 
 
+@trace_calls
 def _q(name) -> str:
     """اقتباس معرّف DuckDB/SQLite."""
     return '"' + str(name).replace('"', '""') + '"'
 
 
+@trace_calls
 def _json_safe(value):
     """تعقيم قيمة قبل التخزين كـ JSON (numpy/Timestamp/NaN) — نفس سلوك _sanitize_rows."""
     if value is None or value is pd.NaT:
@@ -175,10 +181,12 @@ def _json_safe(value):
     return value
 
 
+@trace_calls
 def _sanitize_rows(rows: list) -> list:
     return [{str(k): _json_safe(v) for k, v in row.items()} for row in rows]
 
 
+@trace_calls
 def _num(value, digits: int = 6):
     v = _json_safe(value)
     if v is None or isinstance(v, bool):
@@ -189,10 +197,12 @@ def _num(value, digits: int = 6):
         return None
 
 
+@trace_calls
 def _dumps(obj) -> str:
     return json.dumps(obj, ensure_ascii=False, default=_json_safe)
 
 
+@trace_calls
 def _loads(text: str):
     try:
         return json.loads(text) if text else {}
@@ -204,6 +214,7 @@ _AR_MAP = str.maketrans({"ة": "ه", "أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "
 _PUNCT_RE = re.compile(r"[^\w\s]|_", re.UNICODE)
 
 
+@trace_calls
 def _tokens(text) -> set:
     """كلمات منظَّمة للمقارنة (casefold + إزالة التشكيل + توحيد الإملاء العربي + حذف 'ال')."""
     t = unicodedata.normalize("NFKD", str(text or "")).casefold()
@@ -221,6 +232,7 @@ def _tokens(text) -> set:
 #  الاتصال والتخزين
 # ══════════════════════════════════════════════════════════════
 
+@trace_calls
 def _migrate(conn: sqlite3.Connection) -> None:
     for table, cols in _EXPECTED_COLUMNS.items():
         have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -230,6 +242,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
+@trace_calls
 def _open(db):
     """اتصال sqlite خاص بالعملية (timeout طويل لتفادي database is locked) + commit/close."""
     path = str(db.db_path)
@@ -257,6 +270,7 @@ def _open(db):
         conn.close()
 
 
+@trace_calls
 def _upsert(conn, scope, alias, column, layer, item_key, content, signature, source,
             user_edited: int = 0, stale: int = 0) -> None:
     conn.execute(
@@ -268,6 +282,7 @@ def _upsert(conn, scope, alias, column, layer, item_key, content, signature, sou
     )
 
 
+@trace_calls
 def _row_dict(r) -> dict:
     return {
         "scope": r["scope"], "table_alias": r["table_alias"], "column_name": r["column_name"],
@@ -278,11 +293,13 @@ def _row_dict(r) -> dict:
     }
 
 
+@trace_calls
 def _select(conn, where: str = "", params: tuple = ()) -> list:
     sql = "SELECT * FROM project_knowledge" + (f" WHERE {where}" if where else "")
     return [_row_dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
+@trace_calls
 def _project_signature(conn) -> str:
     rows = conn.execute(
         "SELECT table_alias, data_signature FROM project_knowledge "
@@ -291,6 +308,7 @@ def _project_signature(conn) -> str:
     return hashlib.sha1(_dumps([[r[0], r[1]] for r in rows]).encode()).hexdigest() if rows else ""
 
 
+@trace_calls
 def _sync_table_stale(conn, alias: str, sig: str) -> None:
     """stale = (بصمة صف الطبقة ب ≠ بصمة بيانات الجدول الحالية)."""
     conn.execute(
@@ -298,6 +316,7 @@ def _sync_table_stale(conn, alias: str, sig: str) -> None:
         "WHERE table_alias = ? AND layer = 'semantic'", (sig, alias))
 
 
+@trace_calls
 def _sync_project_stale(conn) -> None:
     sig = _project_signature(conn)
     conn.execute(
@@ -316,6 +335,7 @@ _MEASURE_NAME_RE = re.compile(
 _CATEGORY_NUM_NAME_RE = re.compile(r"year|month|quarter|day|week|level|grade|rank|سنه|سنة|شهر|ربع|اسبوع|مستوى|درجه|درجة", re.I)
 
 
+@trace_calls
 def _kind_of(s: pd.Series) -> str:
     if pd.api.types.is_bool_dtype(s.dtype):
         return "boolean"
@@ -326,6 +346,7 @@ def _kind_of(s: pd.Series) -> str:
     return "text"
 
 
+@trace_calls
 def classify_role(name: str, kind: str, non_null: int, distinct: int,
                   avg_len: Optional[float] = None, integer_like: bool = False) -> str:
     """تصنيف دور العمود بقواعد حتمية (نوع، تفرّد، كاردينالية، اسم العمود)."""
@@ -362,6 +383,7 @@ def classify_role(name: str, kind: str, non_null: int, distinct: int,
 class _TableProfiler:
     """بروفايل جدول واحد عبر DuckDB (يملك df ويعدّل أعمدته النصية المختلطة في مكانها)."""
 
+    @trace_calls
     def __init__(self, df: pd.DataFrame):
         self.df = self._prepare(df)
         self.cols = [str(c) for c in self.df.columns]
@@ -371,6 +393,7 @@ class _TableProfiler:
         self.con.register("t", self.df)
         self._basic = None
 
+    @trace_calls
     def close(self) -> None:
         try:
             self.con.close()
@@ -378,6 +401,7 @@ class _TableProfiler:
             pass
 
     @staticmethod
+    @trace_calls
     def _prepare(df: pd.DataFrame) -> pd.DataFrame:
         df.columns = [str(c) for c in df.columns]
         for c in df.columns:
@@ -389,11 +413,13 @@ class _TableProfiler:
                 df[c] = s.where(s.isna(), s.astype(str))
         return df
 
+    @trace_calls
     def _rows(self, sql: str) -> list:
         return self.con.execute(sql).fetchall()
 
     # ── الأرقام الأساسية + البصمة ──
 
+    @trace_calls
     def basic(self) -> dict:
         if self._basic is not None:
             return self._basic
@@ -411,6 +437,7 @@ class _TableProfiler:
                               "sum": _num(row[3 * i + 2], 4)}
         return self._basic
 
+    @trace_calls
     def signature(self) -> str:
         b = self.basic()
         payload = [self.n, [[c, str(self.df[c].dtype), b[c]["non_null"], b[c]["distinct"], b[c]["sum"]]
@@ -419,6 +446,7 @@ class _TableProfiler:
 
     # ── إحصاءات حسب النوع ──
 
+    @trace_calls
     def _numeric(self, c: str) -> dict:
         x = f"CAST({_q(c)} AS DOUBLE)"
         r = self._rows(
@@ -432,6 +460,7 @@ class _TableProfiler:
                 "zero_pct": round(100 * (r[8] or 0) / nn, 2), "negative_pct": round(100 * (r[9] or 0) / nn, 2),
                 "integer_like": (r[10] or 0) == 0}
 
+    @trace_calls
     def _date(self, c: str) -> dict:
         q = _q(c)
         mn, mx = self._rows(f"SELECT MIN({q}), MAX({q}) FROM t")[0]
@@ -459,23 +488,27 @@ class _TableProfiler:
                                         "to": end.date().isoformat(), "days": int(gap)})
         return out
 
+    @trace_calls
     def _text_len(self, c: str) -> dict:
         q = _q(c)
         r = self._rows(f"SELECT AVG(LENGTH(CAST({q} AS VARCHAR))), MAX(LENGTH(CAST({q} AS VARCHAR))) "
                        f"FROM t WHERE {q} IS NOT NULL")[0]
         return {"avg_length": _num(r[0], 2), "max_length": _num(r[1], 0)}
 
+    @trace_calls
     def _sample(self, c: str, n: int) -> list:
         q = _q(c)
         return [str(r[0])[:60] for r in self._rows(
             f"SELECT DISTINCT CAST({q} AS VARCHAR) FROM t WHERE {q} IS NOT NULL LIMIT {int(n)}")]
 
+    @trace_calls
     def _top_values(self, c: str) -> list:
         q = _q(c)
         return [{"value": str(r[0])[:80], "count": int(r[1])} for r in self._rows(
             f"SELECT CAST({q} AS VARCHAR) AS v, COUNT(*) AS n FROM t WHERE {q} IS NOT NULL "
             f"GROUP BY 1 ORDER BY n DESC, v LIMIT {int(KNOWLEDGE_TOP_VALUES)}")]
 
+    @trace_calls
     def column(self, c: str) -> dict:
         kind, b = self.kinds[c], self.basic()[c]
         nn, distinct = b["non_null"], b["distinct"]
@@ -515,6 +548,7 @@ class _TableProfiler:
             cp["error"] = str(e)[:200]
         return cp
 
+    @trace_calls
     def duplicates(self) -> Optional[int]:
         if not self.cols or self.n == 0:
             return 0
@@ -524,6 +558,7 @@ class _TableProfiler:
             logger.debug("duplicate count skipped: %s", e)
             return None
 
+    @trace_calls
     def correlations(self, cps: dict) -> list:
         measures = [c for c in self.cols if cps[c].get("role") == "measure" and cps[c].get("non_null", 0) > 2][:_CORR_MAX_COLUMNS]
         pairs = [(a, b) for i, a in enumerate(measures) for b in measures[i + 1:]]
@@ -540,6 +575,7 @@ class _TableProfiler:
         found.sort(key=lambda x: -abs(x["r"]))
         return found[:KNOWLEDGE_MAX_CORRELATIONS]
 
+    @trace_calls
     def profile(self, alias: str, relations: list) -> tuple:
         cps = {c: self.column(c) for c in self.cols} if self.n else {
             c: {"name": c, "dtype": str(self.df[c].dtype), "kind": self.kinds[c], "role": "constant",
@@ -552,6 +588,7 @@ class _TableProfiler:
         return table, cps
 
 
+@trace_calls
 def _layer_a(db, alias: str, force: bool, relations: list) -> dict:
     """حساب بروفايل جدول وتخزينه — يتخطى الكتابة لو البصمة لم تتغير ولا يوجد تلميح تقادم."""
     df = db.get_clean_data(alias)
@@ -589,6 +626,7 @@ def _layer_a(db, alias: str, force: bool, relations: list) -> dict:
 _AI_TEMPERATURE = 0.0
 
 
+@trace_calls
 def _send_ai(ai, prompt: str, start: float) -> dict:
     """إرسال prompt بحرارة 0.0 مع احترام max_tries/retry_delay/story_timeout والميزانية الكلية."""
     last = ""
@@ -607,6 +645,7 @@ def _send_ai(ai, prompt: str, start: float) -> dict:
     return {"ok": False, "error": last or "فشل الاتصال بمحرك AI"}
 
 
+@trace_calls
 def _ask_json(ai, prompt: str, start: float) -> dict:
     """إرسال + تحليل JSON (يُعاد الإرسال عند رد غير صالح حتى max_tries)."""
     last = ""
@@ -625,10 +664,12 @@ def _ask_json(ai, prompt: str, start: float) -> dict:
     return {"ok": False, "error": last}
 
 
+@trace_calls
 def _clip(value, limit: int) -> str:
     return str(value or "").strip()[:limit]
 
 
+@trace_calls
 def _str_list(value, max_items: int, limit: int) -> list:
     if not isinstance(value, list):
         return []
@@ -660,6 +701,7 @@ _SEMANTIC_RULES = """أنت محلل بيانات خبير تصف جدولاً �
 7. role وaggregation المقترحان يجب أن يتسقا مع الإحصاءات (مثلاً عمود نصي فريد بالكامل غالباً id)."""
 
 
+@trace_calls
 def _fmt_col_for_ai(cp: dict, send_values: bool) -> str:
     line = f"- {cp['name']} [{cp.get('dtype')}] role={cp.get('role')} null={cp.get('null_pct')}% distinct={cp.get('distinct')}"
     if cp.get("kind") == "numeric" and cp.get("min") is not None:
@@ -676,6 +718,7 @@ def _fmt_col_for_ai(cp: dict, send_values: bool) -> str:
     return line
 
 
+@trace_calls
 def _sample_rows(db, alias: str, cols: list, n: int = _SAMPLE_ROWS_FOR_AI) -> list:
     try:
         with _open(db) as conn:
@@ -687,6 +730,7 @@ def _sample_rows(db, alias: str, cols: list, n: int = _SAMPLE_ROWS_FOR_AI) -> li
         return []
 
 
+@trace_calls
 def _semantic_prompt(db, alias, table, cps, chunk, send_values, known_purpose="") -> str:
     parts = [f"[RULES]\n{_SEMANTIC_RULES}",
              f"[TABLE]\nالجدول: {alias} — {table.get('rows')} صف، {table.get('cols')} عمود، صفوف مكررة: {table.get('duplicate_rows')}"]
@@ -708,6 +752,7 @@ def _semantic_prompt(db, alias, table, cps, chunk, send_values, known_purpose=""
     return "\n\n".join(parts)
 
 
+@trace_calls
 def _validate_semantic(obj: dict, cps: dict, chunk: list) -> dict:
     """تحقق برمجي: أي عمود غير موجود في الجدول يُهمَل، والقيم تُقيَّد بالمسموح."""
     lookup = {c.casefold(): c for c in chunk}
@@ -733,6 +778,7 @@ def _validate_semantic(obj: dict, cps: dict, chunk: list) -> dict:
             "quality_notes": _str_list(obj.get("quality_notes"), 6, 200), "columns": cols}
 
 
+@trace_calls
 def _layer_b_table(db, ai, alias, table, cps, send_values, start) -> dict:
     """استدعاء/استدعاءات AI لوصف جدول (تُقسَّم الأعمدة الكثيرة على دفعات). لا تكتب في DB."""
     order = [c for c in table.get("column_order", list(cps)) if c in cps]
@@ -756,6 +802,7 @@ def _layer_b_table(db, ai, alias, table, cps, send_values, start) -> dict:
     return {"ok": True, "alias": alias, "result": result, "partial_error": errors[0] if errors else ""}
 
 
+@trace_calls
 def _store_semantic(db, alias: str, res: dict, sig: str) -> None:
     with _open(db) as conn:
         _upsert(conn, "table", alias, "", LAYER_SEMANTIC, "",
@@ -783,6 +830,7 @@ _PROJECT_RULES = """أنت محلل بيانات تلخّص مشروع بيان�
 استخدم أسماء الجداول حرفياً من القائمة فقط ولا تخترع جداول."""
 
 
+@trace_calls
 def _layer_b_project(ai, tables: dict, relations: list, start: float) -> dict:
     lines = []
     for alias, t in tables.items():
@@ -839,6 +887,7 @@ _NUM_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
 _AR_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩٫٬", "0123456789.,")
 
 
+@trace_calls
 def _numbers_in(text) -> list:
     out = []
     for tok in _NUM_RE.findall(str(text).translate(_AR_DIGITS)):
@@ -849,6 +898,7 @@ def _numbers_in(text) -> list:
     return out
 
 
+@trace_calls
 def _evidence_numbers(df: pd.DataFrame) -> list:
     """كل الأرقام المسموحة لنص insight: خلايا النتيجة + مجموع/متوسط/أدنى/أعلى كل عمود رقمي + حصص % + عدد الصفوف."""
     cands = [float(len(df))]
@@ -871,6 +921,7 @@ def _evidence_numbers(df: pd.DataFrame) -> list:
     return [v for v in cands if not math.isnan(v) and not math.isinf(v)]
 
 
+@trace_calls
 def _number_supported(x: float, cands: list) -> bool:
     if abs(x) < 10 and float(x).is_integer():
         return True   # ترتيب/عدد صغير لا يُعدّ ادعاءً رقمياً
@@ -878,6 +929,7 @@ def _number_supported(x: float, cands: list) -> bool:
     return any(abs(x - c * k) <= tol for c in cands for k in (1.0, 1e-3, 1e-6))
 
 
+@trace_calls
 def _validate_insight(item, results: dict) -> Optional[dict]:
     """رفض أي insight بلا دليل صالح أو بأرقام غير مدعومة بنتيجة الاستعلام."""
     if not isinstance(item, dict):
@@ -903,6 +955,7 @@ def _validate_insight(item, results: dict) -> Optional[dict]:
                          "rows": _sanitize_rows(df.to_dict(orient="records")), "total_rows": int(len(ev["df"]))}}
 
 
+@trace_calls
 def _layer_c(db, km, ai, start: float) -> dict:
     from ai.prompt_builder import PromptBuilder, SQL_COMMON_CONSTRAINTS
     schema = db.get_schema()
@@ -982,11 +1035,13 @@ class KnowledgeManager:
     كل دوال القراءة لا ترمي استثناءً أبداً (قيم فارغة عند أي خلل).
     """
 
+    @trace_calls
     def __init__(self, db):
         self.db = db
 
     # ── قراءة ──
 
+    @trace_calls
     def get_profile(self, alias: Optional[str] = None) -> dict:
         """{alias: {"table": {...محتوى + signature/generated_at/stale}, "columns": {col: {...}}}}"""
         out = {}
@@ -1006,6 +1061,7 @@ class KnowledgeManager:
                 entry["columns"][r["column_name"]] = meta
         return {a: e for a, e in out.items() if e["table"] is not None}
 
+    @trace_calls
     def get_semantic(self, alias: Optional[str] = None) -> dict:
         """{"project": {...}|None, "tables": {alias: {"table": {...}, "columns": {col: {...}}}}}"""
         out = {"project": None, "tables": {}}
@@ -1028,6 +1084,7 @@ class KnowledgeManager:
                     entry["columns"][r["column_name"]] = meta
         return out
 
+    @trace_calls
     def get_insights(self) -> list:
         try:
             with _open(self.db) as conn:
@@ -1038,6 +1095,7 @@ class KnowledgeManager:
         return [dict(r["content"], item_key=r["item_key"], generated_at=r["generated_at"], stale=r["stale"])
                 for r in sorted(rows, key=lambda x: x["item_key"])]
 
+    @trace_calls
     def get_status(self) -> dict:
         """حالة آخر مهمة + ملخص الحالة (مع إنهاء المهمة الميتة)."""
         status = {"state": "idle", "stage": "", "progress_done": 0, "progress_total": 0, "started_at": "",
@@ -1063,6 +1121,7 @@ class KnowledgeManager:
             logger.warning("get_status failed: %s", e)
         return status
 
+    @trace_calls
     def _expire_dead_job(self) -> None:
         cutoff = (datetime.utcnow() - timedelta(minutes=KNOWLEDGE_JOB_STALE_MINUTES)).isoformat()
         with _open(self.db) as conn:
@@ -1070,6 +1129,7 @@ class KnowledgeManager:
                 "UPDATE knowledge_jobs SET state='error', finished_at=?, error='انتهت مهلة المهمة دون اكتمال' "
                 "WHERE project_id=? AND state='running' AND started_at < ?", (_now(), self.db.project_id, cutoff))
 
+    @trace_calls
     def is_stale(self, alias: Optional[str] = None) -> bool:
         """alias: هل بيانات الجدول تغيّرت منذ توليد معرفته؟ بدون alias: على مستوى المشروع كله."""
         try:
@@ -1081,6 +1141,7 @@ class KnowledgeManager:
         except Exception:
             return False
 
+    @trace_calls
     def table_state(self) -> dict:
         """{alias: {"profile": bool, "profile_stale": bool, "semantic": bool, "semantic_stale": bool}}"""
         out = {}
@@ -1095,6 +1156,7 @@ class KnowledgeManager:
 
     # ── علامات التقادم والحذف ──
 
+    @trace_calls
     def mark_stale(self, alias: str) -> None:
         """تلميح فوري (بلا حساب) بأن بيانات الجدول تغيّرت — لا يرمي استثناءً."""
         try:
@@ -1104,6 +1166,7 @@ class KnowledgeManager:
         except Exception as e:
             logger.warning("mark_stale failed (%s): %s", alias, e)
 
+    @trace_calls
     def drop_for_table(self, alias: str) -> None:
         try:
             with _open(self.db) as conn:
@@ -1112,6 +1175,7 @@ class KnowledgeManager:
         except Exception as e:
             logger.warning("drop_for_table failed (%s): %s", alias, e)
 
+    @trace_calls
     def clear_all(self) -> None:
         try:
             with _open(self.db) as conn:
@@ -1122,6 +1186,7 @@ class KnowledgeManager:
 
     # ── تحرير المستخدم ──
 
+    @trace_calls
     def save_user_edit(self, alias: str, column: str, fields: dict) -> dict:
         """حفظ تعديل يدوي لوصف/مرادفات/تجميع عمود (user_edited=1)."""
         try:
@@ -1160,6 +1225,7 @@ class KnowledgeManager:
             logger.error("save_user_edit failed: %s", e)
             return {"ok": False, "error": str(e)}
 
+    @trace_calls
     def restore_ai(self, alias: str, column: str) -> dict:
         """استعادة قيم AI لعمود (أو حذف صفّه لو أُنشئ يدوياً بلا توليد AI)."""
         try:
@@ -1186,6 +1252,7 @@ class KnowledgeManager:
 
     # ── بناء السياق للـ prompts ──
 
+    @trace_calls
     def build_context(self, question: str, schema: Optional[dict] = None,
                       max_chars: int = KNOWLEDGE_CONTEXT_MAX_CHARS, mode: str = "sql",
                       filtered: bool = False, ignore_setting: bool = False) -> str:
@@ -1208,6 +1275,7 @@ class KnowledgeManager:
                 return ""
             qtok = _tokens(question)
 
+            @trace_calls
             def score(*texts) -> int:
                 toks = set()
                 for t in texts:
@@ -1257,6 +1325,7 @@ class KnowledgeManager:
             return ""
 
     @staticmethod
+    @trace_calls
     def _table_block(alias, prof, sem, colscore: dict, mode: str, send_values: bool) -> str:
         st = (sem or {}).get("table") or {}
         t = (prof or {}).get("table") or {}
@@ -1313,10 +1382,12 @@ _ACTIVE: set = set()
 _PENDING: dict = {}
 
 
+@trace_calls
 def _job_key(db) -> str:
     return f"{db.user_id}/{db.project_id}"
 
 
+@trace_calls
 def _job_write(db, sql: str, params: tuple) -> None:
     try:
         with _open(db) as conn:
@@ -1325,6 +1396,7 @@ def _job_write(db, sql: str, params: tuple) -> None:
         logger.warning("knowledge job state write failed: %s", e)
 
 
+@trace_calls
 def _merge_requests(old: Optional[dict], new: dict) -> dict:
     if old is None:
         return new
@@ -1333,6 +1405,7 @@ def _merge_requests(old: Optional[dict], new: dict) -> dict:
             "notes": old["notes"] + [n for n in new["notes"] if n not in old["notes"]]}
 
 
+@trace_calls
 def request_refresh(db, ai, layers=ALL_LAYERS, force: bool = False, tables=None,
                     triggered_by: str = "manual") -> dict:
     """
@@ -1380,6 +1453,7 @@ def request_refresh(db, ai, layers=ALL_LAYERS, force: bool = False, tables=None,
     return {"ok": True, "queued": False}
 
 
+@trace_calls
 def trigger_after_load(db, table_alias: Optional[str] = None, triggered_by: str = "auto") -> dict:
     """
     تشغيل تلقائي بعد رفع/تحديث ملف: الطبقة أ دائماً، و(ب+ج) لو knowledge_auto_refresh مفعّل.
@@ -1401,11 +1475,13 @@ def trigger_after_load(db, table_alias: Optional[str] = None, triggered_by: str 
         return {"ok": False, "error": str(e)}
 
 
+@trace_calls
 def _submit(req: dict) -> None:
     ctx = contextvars.copy_context()
     _EXECUTOR.submit(ctx.run, _run_job, req)
 
 
+@trace_calls
 def _write_job_start(db, req: dict) -> None:
     with _open(db) as conn:
         conn.execute(
@@ -1415,6 +1491,7 @@ def _write_job_start(db, req: dict) -> None:
             (db.project_id, _now(), _dumps(sorted(req["layers"])), req["triggered_by"]))
 
 
+@trace_calls
 def _run_job(req: dict) -> None:
     db, key = req["db"], _job_key(req["db"])
     outcome = {"state": "error", "stage": "فشل غير متوقع", "error": ""}
@@ -1429,6 +1506,7 @@ def _run_job(req: dict) -> None:
         _release_and_chain(key)
 
 
+@trace_calls
 def _release_and_chain(key: str) -> None:
     with _GUARD:
         nxt = _PENDING.pop(key, None)
@@ -1445,9 +1523,11 @@ def _release_and_chain(key: str) -> None:
 
 
 class _Progress:
+    @trace_calls
     def __init__(self, db, total: int):
         self.db, self.done, self.total = db, 0, total
 
+    @trace_calls
     def step(self, stage: str, advance: bool = True, total: Optional[int] = None) -> None:
         if advance:
             self.done += 1
@@ -1457,6 +1537,7 @@ class _Progress:
                    (stage, self.done, max(self.total, self.done), self.db.project_id))
 
 
+@trace_calls
 def _execute(req: dict) -> dict:
     db, ai, layers, force, only = req["db"], req["ai"], req["layers"], req["force"], req["tables"]
     km = KnowledgeManager(db)
@@ -1565,6 +1646,7 @@ def _execute(req: dict) -> dict:
 _STARTUP_DONE = False
 
 
+@trace_calls
 def cleanup_dead_jobs_all() -> int:
     """مرة واحدة لكل عملية تشغيل: أي مهمة running أقدم من الحد في أي مشروع تُعاد إلى error."""
     global _STARTUP_DONE

@@ -13,6 +13,9 @@ core/dashboard_templates.py
 لا حاجة لتعديل أي شيء آخر — لا قاعدة البيانات ولا بقية المنطق يتأثران.
 """
 
+
+from core.logger_config import trace_calls
+
 DASHBOARD_TEMPLATES = {
     "A": {
         "name": "شبكة متوازنة",
@@ -59,5 +62,6 @@ DASHBOARD_TEMPLATES = {
 }
 
 
+@trace_calls
 def get_template(template_id: str) -> dict:
     return DASHBOARD_TEMPLATES.get(template_id, DASHBOARD_TEMPLATES["A"])

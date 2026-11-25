@@ -29,6 +29,9 @@ title_font) كطبقة أمان إضافية بغض النظر عن حجم ال�
 pdf_exporter.py (راجع _render_dashboard هناك).
 """
 
+
+from core.logger_config import trace_calls
+
 import logging
 from io import BytesIO
 from pathlib import Path
@@ -71,6 +74,7 @@ FONT_CANDIDATES = [
 ]
 
 
+@trace_calls
 def _find_font() -> Optional[str]:
     for path in FONT_CANDIDATES:
         if Path(path).exists():
@@ -81,16 +85,19 @@ def _find_font() -> Optional[str]:
 _FONT_PATH = _find_font()
 
 
+@trace_calls
 def _font(size: int):
     if _FONT_PATH:
         return ImageFont.truetype(_FONT_PATH, size)
     return ImageFont.load_default()
 
 
+@trace_calls
 def _is_arabic(text: str) -> bool:
     return any("\u0600" <= c <= "\u06FF" for c in str(text))
 
 
+@trace_calls
 def prep_text(text: str) -> str:
     """
     تجهيز النص حسب قدرة Pillow المتاحة:
@@ -108,6 +115,7 @@ def prep_text(text: str) -> str:
         return text
 
 
+@trace_calls
 def _draw_text(draw: ImageDraw.ImageDraw, xy, text, font, fill, anchor="la", rtl=False):
     """رسم نص مع تمرير direction عندما يكون raqm متاحاً ونصاً عربياً."""
     text = prep_text(text)
@@ -121,6 +129,7 @@ def _draw_text(draw: ImageDraw.ImageDraw, xy, text, font, fill, anchor="la", rtl
         draw.text(xy, text, font=font, fill=fill)
 
 
+@trace_calls
 def _text_size(draw, text, font, rtl=False):
     text = prep_text(text)
     kwargs = {"direction": "rtl"} if (HAS_RAQM and rtl) else {}
@@ -131,6 +140,7 @@ def _text_size(draw, text, font, rtl=False):
     return bbox[2] - bbox[0], bbox[3] - bbox[1]
 
 
+@trace_calls
 def _hex_to_rgb(h):
     h = h.lstrip("#")
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
@@ -140,6 +150,7 @@ def _hex_to_rgb(h):
 #  رسم بياني (bar / line / area / pie / scatter)
 # ══════════════════════════════════════════════════════════════
 
+@trace_calls
 def render_chart(data, x_col, y_cols, chart_type="bar", title="",
                   width=1000, height=560, scale=2) -> BytesIO:
     """
@@ -193,6 +204,7 @@ def render_chart(data, x_col, y_cols, chart_type="bar", title="",
 
     d.line([(plot_x0, plot_y1), (plot_x1, plot_y1)], fill=COLOR_AXIS, width=2)
 
+    @trace_calls
     def val_to_y(v):
         return plot_y1 - (plot_y1 - plot_y0) * (v / max_val if max_val else 0)
 
@@ -266,6 +278,7 @@ def render_chart(data, x_col, y_cols, chart_type="bar", title="",
     return buf
 
 
+@trace_calls
 def _draw_rotated_label(img, d, cx, top_y, text, font, color):
     """رسم تصنيف مائل (لتفادي التداخل) بلصق صورة نص مُدارة."""
     text = prep_text(text)
@@ -286,6 +299,7 @@ def _draw_rotated_label(img, d, cx, top_y, text, font, color):
     img.paste(rotated, (paste_x, paste_y), rotated)
 
 
+@trace_calls
 def _render_pie(d, data, y_col, categories, W, H, margin_top, label_font):
     cx, cy = W / 2, margin_top + (H - margin_top) / 2 - 20
     radius = min(W, H - margin_top) * 0.28
@@ -311,6 +325,7 @@ def _render_pie(d, data, y_col, categories, W, H, margin_top, label_font):
 #  Gauge (نصف دائري)
 # ══════════════════════════════════════════════════════════════
 
+@trace_calls
 def render_gauge(current_value, min_value, max_value, label="",
                   width=900, height=560, scale=2) -> BytesIO:
     W, H = width * scale, height * scale
@@ -371,6 +386,7 @@ def render_gauge(current_value, min_value, max_value, label="",
     return buf
 
 
+@trace_calls
 def _format_number(v) -> str:
     try:
         v = float(v)

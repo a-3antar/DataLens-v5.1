@@ -12,6 +12,9 @@ exporters/report_manager.py
   kpi       : مؤشر         {"result_id": "...", "actual": N, "target": N, "label": "..."}
 """
 
+
+from core.logger_config import trace_calls
+
 import uuid
 import logging
 import datetime as _dt
@@ -26,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 
+@trace_calls
 def _json_safe(value):
     """
     تحويل قيمة واحدة إلى نوع قابل للتسلسل عبر json.dumps مباشرة.
@@ -53,8 +57,10 @@ def _json_safe(value):
     return value
 
 
+@trace_calls
 def _sanitize_content(content: dict) -> dict:
     """تطبيق _json_safe على كل قيمة داخل content، بشكل متكرر (dict/list متداخلة)."""
+    @trace_calls
     def walk(obj):
         if isinstance(obj, dict):
             return {k: walk(v) for k, v in obj.items()}
@@ -78,12 +84,14 @@ class ReportManager:
 
     VALID_BLOCK_TYPES = {"paragraph", "table", "chart", "gauge", "kpi", "dashboard"}
 
+    @trace_calls
     def __init__(self, db: ProjectDB):
         self.db = db
 
     # ──────────────────────────────────────────────────────────
     #  إضافة "لقطة" من لوحة معلومات (داشبورد) إلى تقرير
     # ──────────────────────────────────────────────────────────
+    @trace_calls
     def add_dashboard(self, report_id: str, title: str, gauges: list, columns: list) -> dict:
         """
         🆕 إضافة "لقطة" كاملة من لوحة معلومات بنفس تخطيطها (أعمدة).
@@ -99,6 +107,7 @@ class ReportManager:
     #  إنشاء وحذف التقارير
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def create(self, title: str) -> dict:
         """
         إنشاء تقرير جديد.
@@ -116,6 +125,7 @@ class ReportManager:
             logger.error("create report error: %s", e)
             return {"ok": False, "error": str(e)}
 
+    @trace_calls
     def delete(self, report_id: str) -> dict:
         """حذف تقرير وكل بلوكاته."""
         reports = self.db.get_reports()
@@ -129,6 +139,7 @@ class ReportManager:
             logger.error("delete report error: %s", e)
             return {"ok": False, "error": str(e)}
 
+    @trace_calls
     def rename(self, report_id: str, new_title: str) -> dict:
         """إعادة تسمية تقرير."""
         new_title = new_title.strip()
@@ -161,10 +172,12 @@ class ReportManager:
     #  قراءة التقارير
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def list_reports(self) -> list[dict]:
         """قائمة كل التقارير."""
         return self.db.get_reports()
 
+    @trace_calls
     def get_blocks(self, report_id: str) -> list[dict]:
         """بلوكات تقرير مرتبة حسب الموضع."""
         return self.db.get_report_blocks(report_id)
@@ -173,17 +186,20 @@ class ReportManager:
     #  إضافة بلوكات
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _next_position(self, report_id: str) -> int:
         """حساب الموضع التالي في التقرير."""
         blocks = self.db.get_report_blocks(report_id)
         return len(blocks)
 
+    @trace_calls
     def add_paragraph(self, report_id: str, text: str) -> dict:
         """إضافة فقرة نصية (Markdown)."""
         if not text.strip():
             return {"ok": False, "error": "النص مطلوب"}
         return self._add_block(report_id, "paragraph", {"text": text})
 
+    @trace_calls
     def add_table(
         self,
         report_id: str,
@@ -202,6 +218,7 @@ class ReportManager:
             "columns"  : columns,
         })
 
+    @trace_calls
     def add_chart(
         self,
         report_id : str,
@@ -227,6 +244,7 @@ class ReportManager:
             "title"     : title,
         })
 
+    @trace_calls
     def add_gauge(
         self,
         report_id    : str,
@@ -247,6 +265,7 @@ class ReportManager:
             "label"        : label,
         })
 
+    @trace_calls
     def add_kpi(
         self,
         report_id   : str,
@@ -265,6 +284,7 @@ class ReportManager:
             "unit"        : unit,
         })
 
+    @trace_calls
     def _add_block(self, report_id: str, block_type: str, content: dict) -> dict:
         """إضافة بلوك عام للتقرير."""
         reports = self.db.get_reports()
@@ -287,6 +307,7 @@ class ReportManager:
     #  حذف بلوك
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def delete_block(self, report_id: str, block_id: int) -> dict:
         """حذف بلوك محدد من التقرير."""
         try:

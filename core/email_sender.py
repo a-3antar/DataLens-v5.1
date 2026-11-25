@@ -15,6 +15,9 @@ core/email_sender.py
     DATALENS_SMTP_USE_TLS   "1" أو "0" (افتراضي "1" — STARTTLS)
 """
 
+
+from core.logger_config import trace_calls
+
 import logging
 import os
 import smtplib
@@ -26,6 +29,7 @@ from core.mail_param import *
 logger = logging.getLogger(__name__)
 
 
+@trace_calls
 def _smtp_config() -> dict:
     port = int(DATALENS_SMTP_PORT or os.environ.get("DATALENS_SMTP_PORT", "587") or 587)
     use_ssl_env = globals().get("DATALENS_SMTP_USE_SSL", None) or os.environ.get("DATALENS_SMTP_USE_SSL")
@@ -40,12 +44,14 @@ def _smtp_config() -> dict:
         "use_ssl"  : use_ssl,
     }
     
+@trace_calls
 def is_configured() -> bool:
     """هل خادم SMTP مضبوط فعلياً على هذا السيرفر؟"""
     cfg = _smtp_config()
     return bool(cfg["host"] and cfg["user"] and cfg["password"])
 
 
+@trace_calls
 def send_email(
     to_email: str, subject: str, body: str, is_html: bool = False
 ) -> dict:

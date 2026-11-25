@@ -38,6 +38,9 @@ Streamlit Community Cloud) — يُضبط مرة واحدة عبر "Secrets" ف�
 (مثلاً بعد ضغط "حفظ" في صفحة الإعدادات) ستُشفِّره تلقائياً.
 """
 
+
+from core.logger_config import trace_calls
+
 import os
 import logging
 
@@ -53,6 +56,7 @@ _KEY_FILE = DATA_DIR / "secret.key"
 _fernet: Fernet = None
 
 
+@trace_calls
 def _load_or_create_key() -> bytes:
     """
     مصدر المفتاح بالترتيب:
@@ -83,6 +87,7 @@ def _load_or_create_key() -> bytes:
     return key
 
 
+@trace_calls
 def _get_fernet() -> Fernet:
     global _fernet
     if _fernet is None:
@@ -90,6 +95,7 @@ def _get_fernet() -> Fernet:
     return _fernet
 
 
+@trace_calls
 def encrypt_value(value: str) -> str:
     """تشفير نص (مفتاح API عادة). قيمة فارغة/None تبقى كما هي."""
     if not value:
@@ -101,6 +107,7 @@ def encrypt_value(value: str) -> str:
         return value
 
 
+@trace_calls
 def decrypt_value(value: str) -> str:
     """
     فك تشفير نص. لو كانت القيمة غير مُشفَّرة أصلاً (مفتاح قديم قبل

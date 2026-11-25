@@ -20,6 +20,9 @@ core.dashboard_cells.cells._build_chart_figure/_apply_chart_layout_tweaks
 والدالة المشتركة تتعامل مع كل الحالات (عمود واحد أو أكثر) تلقائياً.
 """
 
+
+from core.logger_config import trace_calls
+
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -35,6 +38,7 @@ from exporters.pdf_exporter import PDFExporter
 from exporters.excel_exporter import ExcelExporter
 from exporters.markdown_exporter import MarkdownExporter
 
+@trace_calls
 def show_reports():
     apply_rtl()
     require_login()
@@ -125,6 +129,7 @@ def show_reports():
             _export_and_offer(MarkdownExporter(rm), report_id, "md", chosen_title)
 
 
+@trace_calls
 def _export_and_offer(exporter, report_id, ext, title):
     with temp_export_dir() as out_dir:
         out_path = out_dir / f"{title}.{ext}"
@@ -138,6 +143,7 @@ def _export_and_offer(exporter, report_id, ext, title):
             st.error(r["error"])
 
 
+@trace_calls
 def _render_block(block: dict, settings: dict = None):
     btype = block["block_type"]
     content = block["content"]
@@ -192,6 +198,7 @@ def _render_block(block: dict, settings: dict = None):
         _render_dashboard_snapshot_block(content, settings)
 
 
+@trace_calls
 def _render_dashboard_snapshot_block(content: dict, settings: dict = None):
     title = content.get("title", "")
     if title:
@@ -214,6 +221,7 @@ def _render_dashboard_snapshot_block(content: dict, settings: dict = None):
                     st.markdown("")
 
 
+@trace_calls
 def _render_snapshot_cell(cell: dict, settings: dict = None):
     ctype = cell.get("type")
     data = cell.get("content", {}) or {}

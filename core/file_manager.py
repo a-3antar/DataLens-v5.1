@@ -18,6 +18,9 @@ DataFrames — بدون أي نسخ دائم على قرص السيرفر.
 مخزّنة على السيرفر.
 """
 
+
+from core.logger_config import trace_calls
+
 import io
 import logging
 from pathlib import Path
@@ -35,6 +38,7 @@ class FileManager:
     لا يحتفظ هذا الكائن بأي حالة دائمة على القرص — كل شيء عبر bytes.
     """
 
+    @trace_calls
     def __init__(self, user_id: str, project_id: str):
         # أُبقيا للتوافق مع استدعاءات قديمة قد تمرر user_id/project_id،
         # لكنهما لم يعودا يُستخدمان لإنشاء أي مسار على القرص.
@@ -45,6 +49,7 @@ class FileManager:
     #  فحص الملف (بدون تحميل كامل البيانات بعد)
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def inspect(self, file_bytes: bytes, original_name: str) -> dict:
         """
         فحص سريع للملف من الذاكرة: التحقق من الامتداد وإرجاع أسماء
@@ -74,6 +79,7 @@ class FileManager:
     #  قراءة البيانات الفعلية
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def read_bytes(self, file_bytes: bytes, extension: str,
                     sheet=None, columns=None) -> dict:
         """قراءة DataFrame مباشرة من bytes في الذاكرة."""
@@ -94,6 +100,7 @@ class FileManager:
 
         return {"ok": True, "df": df}
 
+    @trace_calls
     def _read_csv_bytes(self, file_bytes: bytes):
         for enc in ["utf-8", "utf-8-sig", "windows-1256", "latin-1"]:
             try:
@@ -102,6 +109,7 @@ class FileManager:
                 continue
         raise ValueError("encoding غير معروف")
 
+    @trace_calls
     def get_columns_from_bytes(self, file_bytes: bytes, extension: str, sheet=None) -> dict:
         r = self.read_bytes(file_bytes, extension, sheet)
         if not r["ok"]:

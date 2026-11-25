@@ -30,6 +30,9 @@ core/query_engine.py
 منفصلاً تماماً عن أي استدعاء آخر.
 """
 
+
+from core.logger_config import trace_calls
+
 import re
 import logging
 from difflib import SequenceMatcher
@@ -57,6 +60,7 @@ _MAX_AUTO_FIX_ATTEMPTS = 3
 _MIN_SIMILARITY = 0.5
 
 
+@trace_calls
 def _is_confident_match(wrong: str, candidate: str) -> bool:
     """هل نثق بأن candidate هو المقصود الفعلي بدل wrong؟"""
     if not wrong or not candidate:
@@ -83,6 +87,7 @@ class QueryEngine:
         result = qe.run("SELECT ...", dashboard_id="...")
     """
 
+    @trace_calls
     def __init__(self, db: ProjectDB):
         self.db = db
         self.views = DashboardViews(db)
@@ -91,6 +96,7 @@ class QueryEngine:
     #  فحص الأمان
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def validate(self, sql: str) -> dict:
         """
         فحص SQL قبل التنفيذ.
@@ -120,6 +126,7 @@ class QueryEngine:
     #  تحميل الجداول في DuckDB
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _load_tables(self, conn: duckdb.DuckDBPyConnection, dashboard_id: Optional[str] = None) -> list[str]:
         """
         تحميل كل الجداول النظيفة من project.db إلى DuckDB بأسمائها
@@ -159,6 +166,7 @@ class QueryEngine:
     #  تصحيح تلقائي لاسم عمود خاطئ بناءً على رسالة DuckDB
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _try_auto_fix_column(self, sql: str, error_msg: str) -> Optional[tuple[str, str, str]]:
         """
         يحاول استخراج اسم العمود الخاطئ وأفضل بديل من رسالة الخطأ،
@@ -206,6 +214,7 @@ class QueryEngine:
     #  تنفيذ الاستعلام
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def run(self, sql: str, dashboard_id: Optional[str] = None) -> dict:
         """
         تنفيذ SQL وإرجاع النتيجة كـ DataFrame.
@@ -262,6 +271,7 @@ class QueryEngine:
     #  تنفيذ SQL جاهز (base_sql) على بيانات لوحة — بدون AI
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def run_with_filters(self, base_sql: str, dashboard_id: Optional[str] = None) -> dict:
         """
         تنفيذ SQL أساسي (تم توليده سابقاً عبر AI مرة واحدة، ومحفوظ
@@ -279,6 +289,7 @@ class QueryEngine:
 
         return self.run(base_sql, dashboard_id=dashboard_id)
 
+    @trace_calls
     def _execute_once(self, sql: str, dashboard_id: Optional[str] = None) -> dict:
         """تنفيذ استعلام واحد فعلياً (بدون منطق التصحيح التلقائي)."""
         conn = None

@@ -4,8 +4,21 @@ main.py
 نقطة الدخول لتطبيق DataLens V5.0 (Streamlit).
 """
 
+import logging
+import os
 
 import streamlit as st
+
+from config import APP_NAME, APP_VERSION, APP_ICON
+from core.logger_config import setup_logging, drain_ui_log_messages
+
+_requested_level = os.getenv("DATALENS_LOG_LEVEL", "INFO").strip().upper()
+LOG_LEVEL = getattr(logging, _requested_level, logging.INFO)
+if not isinstance(LOG_LEVEL, int):
+    LOG_LEVEL = logging.INFO
+
+setup_logging(LOG_LEVEL)
+logger = logging.getLogger(__name__)
 
 from ui.common import apply_rtl, cleanup_stale_temp_dirs
 from ui.login import show_login
@@ -18,13 +31,13 @@ from ui.dashboards import show_dashboards
 from ui.reports import show_reports
 from ui.settings import show_settings
 from core.auth import AuthManager
-from config import APP_NAME, APP_VERSION, APP_ICON
-from core.logger_config import setup_logging
 from core.knowledge_manager import cleanup_dead_jobs_all
-import logging
 
-setup_logging(logging.INFO)
 
+logger.info(
+    "Application startup | app=%s | version=%s | log_level=%s",
+    APP_NAME, APP_VERSION, logging.getLevelName(LOG_LEVEL),
+)
 
 st.set_page_config(
     page_title=APP_NAME,
@@ -33,28 +46,70 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-apply_rtl()
 
-# ── شبكة أمان: تنظيف تلقائي بدون أي تدخل من المستخدم ─────────
-# (١) مجلدات تصدير مؤقتة متروكة من تشغيل سابق تعطّل قبل حذفها تلقائياً
-# (٢) جلسات دخول منتهية الصلاحية في users.db (كانت الدالة موجودة
-#     ولم تُستدعَ من قبل — تتراكم بلا نهاية بدون هذا الاستدعاء)
-# (٣) أرشيفات حسابات محذوفة تجاوزت مهلة الاحتفاظ (30 يوماً) —
-#     راجع core/auth.py::delete_account/purge_expired_deletions
-#     للتفاصيل الكاملة عن سياسة الأرشفة المؤقتة قبل الحذف النهائي.
-if "_startup_cleanup_done" not in st.session_state:
-    cleanup_stale_temp_dirs(max_age_hours=2)
-    AuthManager().clean_expired_sessions()
-    AuthManager().purge_expired_deletions()
-    cleanup_dead_jobs_all()
+def _show_log_notifications() -> None:
+    """عرض تحذيرات وأخطاء دورة التنفيذ الحالية دون إظهار Stack Trace للمستخدم."""
+    for item in drain_ui_log_messages():
+        message = f"{item['logger']}: {item['message']}"
+        if item["level"] == "ERROR" or item["level"] == "CRITICAL":
+            st.error(message)
+        else:
+            st.warning(message)
+
+
+try:
+    apply_rtl()
+    logger.debug("RTL layout applied")
+except Exception:
+    logger.exception("Failed to apply RTL layout")
+    st.error("تعذر إعداد اتجاه الواجهة. راجع سجل التطبيق إذا استمرت المشكلة.")
+
+
+def _run_startup_task(task_name: str, task) -> bool:
+    """تشغيل مهمة تنظيف مستقلة حتى لا يمنع فشل مهمة بقية مهام البداية."""
+    logger.debug("Startup task started | task=%s", task_name)
+    try:
+        task()
+        logger.info("Startup task completed | task=%s", task_name)
+        return True
+    except Exception:
+        logger.exception("Startup task failed | task=%s", task_name)
+        return False
+
+
+if not st.session_state.get("_startup_cleanup_done", False):
+    logger.info("Startup cleanup started")
+    cleanup_tasks = (
+        ("stale_temp_dirs", lambda: cleanup_stale_temp_dirs(max_age_hours=2)),
+        ("expired_sessions", lambda: AuthManager().clean_expired_sessions()),
+        ("expired_account_deletions", lambda: AuthManager().purge_expired_deletions()),
+        ("dead_knowledge_jobs", cleanup_dead_jobs_all),
+    )
+    cleanup_failures = [
+        name for name, task in cleanup_tasks if not _run_startup_task(name, task)
+    ]
     st.session_state["_startup_cleanup_done"] = True
 
-# ── التأكد من تسجيل الدخول ──────────────────────────────────
+    if cleanup_failures:
+        logger.warning(
+            "Startup cleanup completed with failures | tasks=%s",
+            ", ".join(cleanup_failures),
+        )
+    else:
+        logger.info("Startup cleanup completed successfully")
+
+
 if "token" not in st.session_state:
-    show_login()
+    logger.debug("Unauthenticated session; rendering login")
+    try:
+        show_login()
+    except Exception:
+        logger.exception("Login page rendering failed")
+        st.error("حدث خطأ أثناء تحميل صفحة تسجيل الدخول.")
+    _show_log_notifications()
     st.stop()
 
-# ── التنقل بين الصفحات ──────────────────────────────────────
+
 PAGES = {
     "📁 المشاريع": show_projects,
     "📄 الملفات": show_files,
@@ -67,48 +122,42 @@ PAGES = {
 }
 _PAGE_KEYS = list(PAGES.keys())
 
-# 🆕 لو طُلب القفز إلى صفحة معيّنة برمجياً (مثلاً زر "⚙️ إعدادات
-# الحساب" في قائمة الحساب السريعة بالشريط الجانبي — راجع
-# ui/common.py::_render_account_quick_menu)، نحدد الفهرس الافتراضي
-# للراديو بناءً على ذلك بدل تركه دائماً على أول صفحة.
-#
-# 🆕 "dashboards": يُستخدم من ui/projects.py عند فتح مشروع موجود —
-# بعد الفتح لا فائدة من البقاء في صفحة المشاريع، فننتقل مباشرة إلى
-# لوحاته.
-# 🆕 "files": يُستخدم من ui/projects.py عند إنشاء مشروع جديد — على
-# عكس فتح مشروع موجود، المشروع الجديد لا يملك أي بيانات بعد، فالانتقال
-# إلى لوحات معلومات فارغة لا فائدة منه؛ التوجيه إلى صفحة الملفات
-# يقود المستخدم مباشرة للخطوة المنطقية التالية (رفع بيانات).
 _JUMP_TARGETS = {
     "settings": "⚙️ الإعدادات",
     "dashboards": "📊 لوحات المعلومات",
     "files": "📄 الملفات",
 }
 
-# 🆕 إصلاح مشكلة "يرجع لصفحة المشاريع تلقائياً":
-# -----------------------------------------------
-# الراديو أدناه كان بلا key صريح، فـ Streamlit يبني معرّفه الداخلي
-# جزئياً من قيمة index الممرَّرة له. بما أن default_index كانت تُحسب
-# من جديد كل تشغيل (0 ما لم يوجد jump_to)، فأي رجوع لـ 0 بعد أن كانت
-# مثلاً 1 (لوحات المعلومات) يجعل Streamlit يعامل الراديو كعنصر جديد
-# تماماً ويفقد اختيار المستخدم الفعلي — فيرتد فوراً لصفحة المشاريع
-# عند أي rerun لاحق لا علاقة له بالتنقل (كالضغط على أي زر داخل صفحة
-# لوحات المعلومات نفسها، مثلاً فتح لوحة). الحل: key ثابت صريح على
-# الراديو، وضبط القيمة في session_state مباشرة بدل الاعتماد على index
-# متغيّر — بهذا يحافظ الراديو على حالته عبر أي rerun لا علاقة له
-# بالتنقل، وينتقل فقط عندما نضبط session_state["_current_page"] نحن.
 if "_current_page" not in st.session_state:
     st.session_state["_current_page"] = _PAGE_KEYS[0]
 
 jump_to = st.session_state.pop("_jump_to_page", None)
 if jump_to in _JUMP_TARGETS:
-    st.session_state["_current_page"] = _JUMP_TARGETS[jump_to]
+    target = _JUMP_TARGETS[jump_to]
+    logger.info("Programmatic navigation | source=%s | target=%s", jump_to, target)
+    st.session_state["_current_page"] = target
+elif jump_to is not None:
+    logger.warning("Unknown page navigation target ignored: %r", jump_to)
 
 with st.sidebar:
     st.markdown(f"## {APP_ICON} {APP_NAME} V{APP_VERSION}")
     choice = st.radio(
-        "الانتقال إلى", _PAGE_KEYS,
-        key="_current_page", label_visibility="collapsed",
+        "الانتقال إلى",
+        _PAGE_KEYS,
+        key="_current_page",
+        label_visibility="collapsed",
     )
 
-PAGES[choice]()
+logger.debug("Page selected | page=%s", choice)
+try:
+    logger.info("Page rendering started | page=%s", choice)
+    PAGES[choice]()
+    logger.debug("Page rendering completed | page=%s", choice)
+except Exception:
+    logger.exception("Unhandled page rendering error | page=%s", choice)
+    st.error(
+        "حدث خطأ غير متوقع أثناء تنفيذ الصفحة. "
+        "تم تسجيل التفاصيل الفنية في سجل التطبيق."
+    )
+
+_show_log_notifications()

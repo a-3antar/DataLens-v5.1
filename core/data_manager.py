@@ -35,6 +35,9 @@ _basic_clean يغيّر أسماء الأعمدة (strip + مسافة → "_" + 
     سُجّلت الأسماء بصيغتها الأصلية أو المنظَّفة.
 """
 
+
+from core.logger_config import trace_calls
+
 import logging
 from typing import Optional
 
@@ -63,6 +66,7 @@ class DataManager:
     # طرق حذف الصفوف الفارغة المدعومة
     VALID_DROP_MODES = {"all", "any", "column"}
 
+    @trace_calls
     def __init__(self, db: ProjectDB, fm: FileManager):
         self.db = db
         self.fm = fm
@@ -71,6 +75,7 @@ class DataManager:
     #  تحميل ملف وحفظ البيانات النظيفة
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _mark_knowledge_stale(self, table_alias: str) -> None:
         """وسم معرفة الجدول stale بعد تعديل بياناته (تلميح فقط بلا حساب؛ لا يكسر أي عملية)."""
         try:
@@ -80,6 +85,7 @@ class DataManager:
             logger.debug("mark_knowledge_stale skipped: %s", e)
 
     @staticmethod
+    @trace_calls
     def _normalize_col_name(name) -> str:
         """
         توحيد اسم عمود بنفس قاعدة _basic_clean بالضبط (strip + مسافة
@@ -87,6 +93,7 @@ class DataManager:
         """
         return str(name).strip().replace(" ", "_").lower()
 
+    @trace_calls
     def _store_dataframe(
         self,
         df           : pd.DataFrame,
@@ -107,6 +114,7 @@ class DataManager:
             df, table_alias, extension, sheet, selected_cols, original_name, file_id,
         )
 
+    @trace_calls
     def _save_clean_and_register(
         self,
         df           : pd.DataFrame,
@@ -140,6 +148,7 @@ class DataManager:
         logger.info("table saved: '%s' — %d rows, %d cols", table_alias, len(df), len(df.columns))
         return {"ok": True, "rows": len(df), "cols": len(df.columns), "file_id": record_id}
 
+    @trace_calls
     def load_file(
         self,
         file_bytes : bytes,
@@ -165,6 +174,7 @@ class DataManager:
             result["df"], table_alias, extension, sheet, columns, original_name, file_id,
         )
 
+    @trace_calls
     def _basic_clean(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         تنظيف أولي تلقائي لكل DataFrame عند التحميل:
@@ -184,6 +194,7 @@ class DataManager:
 
         return df.reset_index(drop=True)
 
+    @trace_calls
     def _select_columns_after_clean(self, df: pd.DataFrame, wanted: Optional[list]) -> dict:
         """
         🆕 تصفية أعمدة DataFrame منظَّف بحسب قائمة الأعمدة المسجَّلة
@@ -219,6 +230,7 @@ class DataManager:
     #  تغيير نوع البيانات
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def change_dtype(self, table_alias: str, column: str, new_type: str) -> dict:
         """
         تغيير نوع عمود وحفظ التعديل.
@@ -260,6 +272,7 @@ class DataManager:
     #  تصفية الصفوف
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _coerce_filter_value(self, col: pd.Series, operator: str, raw_value: object):
         """
         تحويل القيمة المُدخلة (نصية دائماً من st.text_input) إلى نوع
@@ -300,6 +313,7 @@ class DataManager:
         # عمود نصي عادي — بدون تحويل
         return raw_value, None
 
+    @trace_calls
     def filter_rows(
         self,
         table_alias: str,
@@ -355,6 +369,7 @@ class DataManager:
     #  حذف الصفوف الفارغة
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def drop_empty_rows(
         self,
         table_alias: str,
@@ -409,18 +424,23 @@ class DataManager:
     #  تنظيف النصوص
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def strip_text(self, table_alias: str, column: str) -> dict:
         return self._text_op(table_alias, column, "strip")
 
+    @trace_calls
     def capitalize_text(self, table_alias: str, column: str) -> dict:
         return self._text_op(table_alias, column, "capitalize")
 
+    @trace_calls
     def uppercase_text(self, table_alias: str, column: str) -> dict:
         return self._text_op(table_alias, column, "upper")
 
+    @trace_calls
     def lowercase_text(self, table_alias: str, column: str) -> dict:
         return self._text_op(table_alias, column, "lower")
 
+    @trace_calls
     def _text_op(self, table_alias: str, column: str, op: str) -> dict:
         df = self.db.get_clean_data(table_alias)
         if df is None:
@@ -448,6 +468,7 @@ class DataManager:
     #  معالجة القيم الفارغة
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def fill_nulls(
         self,
         table_alias: str,
@@ -507,6 +528,7 @@ class DataManager:
     #  معلومات الجدول
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def get_preview(self, table_alias: str, rows: int = 10) -> dict:
         """أول N صفوف من الجدول للمعاينة."""
         df = self.db.get_clean_data(table_alias)
@@ -519,6 +541,7 @@ class DataManager:
             "total"  : len(df),
         }
 
+    @trace_calls
     def get_stats(self, table_alias: str, column: str) -> dict:
         """
         إحصاءات أساسية لعمود، مبنية على نوعه الفعلي بدل فرض تحويل
@@ -598,6 +621,7 @@ class DataManager:
     #  إعادة تحميل (تحديث) جدول موجود
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def refresh_from_bytes(
         self,
         file_id    : str,

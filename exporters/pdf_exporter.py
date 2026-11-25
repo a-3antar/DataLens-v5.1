@@ -29,6 +29,9 @@ exporters/pdf_exporter.py
 حشره هنا بسرعة على حساب استقرار بقية التصدير.
 """
 
+
+from core.logger_config import trace_calls
+
 import logging
 from pathlib import Path
 from typing  import Optional
@@ -83,6 +86,7 @@ _DEFAULT_PDF_COLORS = {
 }
 
 
+@trace_calls
 def _reshape(text: str) -> str:
     """إعادة تشكيل النص العربي للعرض الصحيح في PDF."""
     if not text:
@@ -97,6 +101,7 @@ def _reshape(text: str) -> str:
         return str(text)
 
 
+@trace_calls
 def _is_arabic(text: str) -> bool:
     """هل النص يحتوي على أحرف عربية؟"""
     if not text:
@@ -104,6 +109,7 @@ def _is_arabic(text: str) -> bool:
     return any("\u0600" <= c <= "\u06FF" for c in str(text))
 
 
+@trace_calls
 def _prepare_text(text: str) -> str:
     """تجهيز النص: إعادة تشكيل لو كان عربياً."""
     text = str(text)
@@ -112,6 +118,7 @@ def _prepare_text(text: str) -> str:
     return text
 
 
+@trace_calls
 def _prepare_rich_text(text: str) -> str:
     """
     تحويل **نص عريض** (Markdown) إلى <b>...</b> (وسم ReportLab)، مع
@@ -129,6 +136,7 @@ def _prepare_rich_text(text: str) -> str:
     return "".join(out)
 
 
+@trace_calls
 def _lighten_hex(hex_color: str, amount: float) -> "colors.Color":
     """
     🆕 مزج لون hex مع الأبيض بنسبة amount (0=بدون تغيير، 1=أبيض تماماً)
@@ -149,6 +157,7 @@ def _lighten_hex(hex_color: str, amount: float) -> "colors.Color":
     return colors.Color(r, g, b)
 
 
+@trace_calls
 def _is_numeric_like(value) -> bool:
     """
     هل القيمة رقمية فعلياً أو نص يمثّل رقماً (بعد إزالة فواصل الآلاف)؟
@@ -165,6 +174,7 @@ def _is_numeric_like(value) -> bool:
         return False
 
 
+@trace_calls
 def _column_is_numeric(rows: list, col_name: str) -> bool:
     """
     🆕 يفحص عيّنة من قيم عمود جدول (حتى 20 صفاً) ليقرر هل غالبيتها
@@ -193,6 +203,7 @@ class PDFExporter:
     project_name: اسم المشروع — يظهر في صفحة الغلاف فقط إن وُجد.
     """
 
+    @trace_calls
     def __init__(self, report_manager: ReportManager, theme_colors: dict = None,
                  project_name: str = ""):
         self.rm           = report_manager
@@ -208,6 +219,7 @@ class PDFExporter:
     #  إعداد الخط
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _setup_font(self) -> None:
         """
         تسجيل خط عربي إن وُجد.
@@ -239,6 +251,7 @@ class PDFExporter:
     #  🆕 رأس/تذييل ثابتان على كل صفحة (عدا الغلاف)
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _draw_header_footer(self, canvas, doc) -> None:
         """
         onPage callback يُستدعى تلقائياً من ReportLab بعد رسم كل صفحة —
@@ -271,6 +284,7 @@ class PDFExporter:
 
         canvas.restoreState()
 
+    @trace_calls
     def _build_doc_templates(self, doc: BaseDocTemplate) -> None:
         """
         قالب 'single': إطار واحد عادي (نفس سلوك SimpleDocTemplate
@@ -316,6 +330,7 @@ class PDFExporter:
     #  أنماط النص
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _build_styles(self) -> dict:
         base = getSampleStyleSheet()
         fn   = self._font_name
@@ -416,6 +431,7 @@ class PDFExporter:
     #  التصدير الرئيسي
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def export(self, report_id: str, output_path: Path) -> dict:
         """
         تصدير تقرير إلى PDF.
@@ -463,6 +479,7 @@ class PDFExporter:
     #  🆕 صفحة الغلاف
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _build_cover_page(self, title: str) -> list:
         """
         صفحة غلاف بسيطة: عنوان التقرير، اسم المشروع (إن وُجد)، تاريخ
@@ -487,6 +504,7 @@ class PDFExporter:
         items.append(Paragraph(_prepare_text("DataLens — منصة تحليل البيانات"), self._styles["cover_meta"]))
         return items
 
+    @trace_calls
     def _build_story(self, title: str, blocks: list) -> list:
         """بناء قائمة العناصر لـ ReportLab."""
         story = []
@@ -536,6 +554,7 @@ class PDFExporter:
 
         return story
 
+    @trace_calls
     def _render_paragraph(self, content: dict, width: float = None) -> list:
         """
         تحويل نص فقرة/تحليل (Markdown خفيف) إلى Flowables حقيقية:
@@ -585,6 +604,7 @@ class PDFExporter:
 
         return items
 
+    @trace_calls
     def _render_markdown_table(self, lines: list[str], width: float = None) -> Optional[Table]:
         """
         تحويل جدول Markdown (| عمود | عمود |) إلى جدول ReportLab حقيقي.
@@ -639,6 +659,7 @@ class PDFExporter:
         tbl.setStyle(TableStyle(style_cmds))
         return tbl
 
+    @trace_calls
     def _render_table(self, content: dict, width: float = None) -> list:
         """
         تحويل بيانات جدول إلى ReportLab Table.
@@ -687,6 +708,7 @@ class PDFExporter:
         tbl.setStyle(TableStyle(style_cmds))
         return [tbl]
 
+    @trace_calls
     def _render_kpi(self, content: dict) -> list:
         """
         🆕 بطاقة KPI حقيقية: خلية جدول واحدة بخلفية ملوّنة (لون card)
@@ -728,6 +750,7 @@ class PDFExporter:
         ]))
         return [card]
 
+    @trace_calls
     def _render_gauge(self, content: dict, width: float = None) -> list:
         """
         رسم Gauge فعلي (صورة PNG)، بعرض العمود/الإطار الفعلي المتاح.
@@ -758,6 +781,7 @@ class PDFExporter:
             items.append(Paragraph(_prepare_text(f"مقياس: {label}"), self._styles["caption"]))
         return items
 
+    @trace_calls
     def _render_chart(self, content: dict, width: float = None) -> list:
         """
         توليد صورة رسم بياني وتضمينها بعرض العمود/الإطار الفعلي المتاح.
@@ -792,15 +816,18 @@ class PDFExporter:
             items.append(Paragraph(_prepare_text(f"شكل {fig_num}: {title}"), self._styles["caption"]))
         return items
 
+    @trace_calls
     def _figure_count(self) -> int:
         if not hasattr(self, "_fig_counter"):
             self._fig_counter = 0
         return self._fig_counter
 
+    @trace_calls
     def _next_figure_number(self) -> int:
         self._fig_counter = getattr(self, "_fig_counter", 0) + 1
         return self._fig_counter
 
+    @trace_calls
     def _frame_image(self, img: Image, width: float) -> Table:
         """
         🆕 وضع صورة (رسم/مقياس) داخل خلية جدول بإطار خفيف بلون accent —
@@ -816,6 +843,7 @@ class PDFExporter:
         ]))
         return framed
 
+    @trace_calls
     def _render_dashboard(self, content: dict, is_last_block: bool = False) -> list:
         """
         عرض لقطة لوحة كاملة بتخطيط أعمدة حقيقي:
@@ -896,6 +924,7 @@ class PDFExporter:
 
         return story
 
+    @trace_calls
     def _render_snapshot_cell(self, cell: dict, width: float = None) -> list:
         """تحويل خلية لوحة واحدة إلى flowables، بعرض محدَّد فعلياً
         (عرض العمود داخل بلوك dashboard، أو عرض خلية Gauge)."""

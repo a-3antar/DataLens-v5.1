@@ -43,6 +43,9 @@ ui/dashboards.py
    "لا base_sql" في كل المسارات (execute/حفظ الأساس الجديد).
 """
 
+
+from core.logger_config import trace_calls
+
 from core import dashboard_cells
 import uuid
 
@@ -61,6 +64,7 @@ from config import DASHBOARD_SLICER_COUNT, DASHBOARD_GAUGE_COUNT, DASHBOARD_SLIC
 _BUSY_FRAMES = ["⏳", "⌛"]
 
 
+@trace_calls
 def show_dashboards():
     apply_rtl()
     require_login()
@@ -75,6 +79,7 @@ def show_dashboards():
         _show_dashboard_gallery(db)
 
 
+@trace_calls
 def _show_dashboard_gallery(db):
     st.title("📊 لوحات المعلومات")
 
@@ -149,6 +154,7 @@ def _show_dashboard_gallery(db):
         _render_dashboard_card(db, d, settings)
 
 
+@trace_calls
 def _render_manual_create_flow(db) -> None:
     """
     🆕 تدفق إنشاء لوحة يدوي واحد وواضح مرقّم بخطوتين:
@@ -191,6 +197,7 @@ def _render_manual_create_flow(db) -> None:
             st.rerun()
 
 
+@trace_calls
 def _render_rename_dashboard_form(db, d: dict) -> None:
     """
     🆕 نموذج إعادة تسمية لوحة موجودة — يُرسم داخل قوائم "⁝" (بطاقة اللوحة
@@ -224,6 +231,7 @@ def _render_rename_dashboard_form(db, d: dict) -> None:
                 notify(r.get("error", "فشلت إعادة التسمية"), kind="error")
 
 
+@trace_calls
 def _render_dashboard_card(db, d: dict, settings: dict) -> None:
     """
     🆕 بطاقة لوحة موحّدة الشكل (نفس نمط بطاقات المشاريع): عنوان
@@ -272,6 +280,7 @@ def _render_dashboard_card(db, d: dict, settings: dict) -> None:
             st.rerun()
 
 
+@trace_calls
 def _build_ai_manager(db):
     """مفتاح API يُقرأ من إعدادات المشروع (project.db) كما كان دائماً."""
     return _core_build_ai_manager(db)
@@ -281,6 +290,7 @@ def _build_ai_manager(db):
 #  🆕 تحديث البيانات (عادي / إجباري)
 # ══════════════════════════════════════════════════════════════
 
+@trace_calls
 def _clear_base_sql_for_visible_cells(db, dashboard_id: str, template: dict) -> int:
     """
     إفراغ base_sql للخلايا المُهيَّأة والمرئية فقط (position ضمن نطاق
@@ -305,6 +315,7 @@ def _clear_base_sql_for_visible_cells(db, dashboard_id: str, template: dict) -> 
     return cleared
 
 
+@trace_calls
 def _run_refresh(db, dm, settings: dict, dashboard_id: str, template: dict,
                  engine_name: str, force: bool) -> None:
     """
@@ -324,6 +335,7 @@ def _run_refresh(db, dm, settings: dict, dashboard_id: str, template: dict,
     else:
         status_placeholder.markdown("⏳ جاري تحديث خلايا اللوحة...")
 
+    @trace_calls
     def on_progress(done, total):
         frame = _BUSY_FRAMES[done % len(_BUSY_FRAMES)]
         status_placeholder.markdown(f"{frame} جاري التحديث... تم {done} من {total}")
@@ -353,6 +365,7 @@ def _run_refresh(db, dm, settings: dict, dashboard_id: str, template: dict,
     st.rerun()
 
 
+@trace_calls
 def _render_dashboard_actions_menu(db, dashboard_id: str, dashboard: dict, template: dict):
     """
     🆕 قائمة إجراءات اللوحة الواحدة (popover): تحديث البيانات، تحديث
@@ -389,6 +402,7 @@ def _render_dashboard_actions_menu(db, dashboard_id: str, dashboard: dict, templ
     return refresh_clicked, force_clicked
 
 
+@trace_calls
 def _show_dashboard_detail(db):
     dashboard_id = st.session_state.current_dashboard_id
     dashboard = db.get_dashboard(dashboard_id)
@@ -478,6 +492,7 @@ def _show_dashboard_detail(db):
     layout_fn = LAYOUT_REGISTRY[template["layout_fn"]]
     base = DASHBOARD_GAUGE_COUNT
 
+    @trace_calls
     def render_cell(idx_in_template):
         position = base + idx_in_template
         _render_dashboard_cell(db, dm, settings, dashboard_id, position, cells.get(position))
@@ -485,6 +500,7 @@ def _show_dashboard_detail(db):
     layout_fn(render_cell)
 
 
+@trace_calls
 def _render_template_switcher(db, dm, dashboard: dict, dashboard_id: str) -> None:
     """
     🆕 قائمة مطوية لتغيير قالب اللوحة الحالية في أي وقت بعد إنشائها.
@@ -543,6 +559,7 @@ def _render_template_switcher(db, dm, dashboard: dict, dashboard_id: str) -> Non
                 notify(r.get("error", "فشل تغيير القالب"), kind="error")
 
 
+@trace_calls
 def _render_send_all_to_report_fields(db, dashboard_id: str, dashboard: dict, template: dict) -> None:
     """
     🆕 حقول إرسال اللوحة إلى تقرير — تُرسم مباشرة داخل السياق الحالي
@@ -598,6 +615,7 @@ def _render_send_all_to_report_fields(db, dashboard_id: str, dashboard: dict, te
                 notify("لا توجد خلايا محدَّثة (بنتيجة محفوظة) لإرسالها", kind="warning")
 
 
+@trace_calls
 def _render_slicer_panel(db, dm, dashboard_id, slicers, date_filter_position, date_filter):
     """
     🆕 عنوان القائمة المطوية الخارجية (المُعرَّف في المُستدعي أعلاه)
@@ -646,6 +664,7 @@ def _render_slicer_panel(db, dm, dashboard_id, slicers, date_filter_position, da
             st.rerun()
 
 #----------------------------------------------
+@trace_calls
 def _render_filter_fields_block(dm, id_for_keys: str, slicers_existing: dict,
                                  date_filter_existing: dict, db=None) -> list[dict]:
     """
@@ -738,6 +757,7 @@ def _render_filter_fields_block(dm, id_for_keys: str, slicers_existing: dict,
     return pending_rows
 # ----------------------------------------------
 
+@trace_calls
 def _render_date_filter_fields_generic(dm, id_for_keys: str, existing: dict, db=None):
     """
     نفس _render_date_filter_fields القديمة، مُعمَّمة لقبول id_for_keys
@@ -801,10 +821,12 @@ def _render_date_filter_fields_generic(dm, id_for_keys: str, existing: dict, db=
     return sel_table, sel_column, []
 
 
+@trace_calls
 def _render_date_filter_fields(db, dm, dashboard_id, existing):
     """يبقى بنفس التوقيع القديم للتوافق — يُفوّض للنسخة المُعمَّمة."""
     return _render_date_filter_fields_generic(dm, dashboard_id, existing, db=db)
 
+@trace_calls
 def _render_dashboard_cell(db, dm, settings, dashboard_id, position, cell_row):
     """
     نقطة الدخول الموحّدة لعرض/تحرير خلية واحدة — تبني كائن الخلية
@@ -837,6 +859,7 @@ def _render_dashboard_cell(db, dm, settings, dashboard_id, position, cell_row):
             cell_obj.render_editor(db, dm, settings, dashboard_id, is_gauge_row, edit_key)
 
 
+@trace_calls
 def layout_2x2(render_cell):
     """القالب A: عمودان × صفان (٤ خلايا متساوية)."""
     row1 = st.columns(2)
@@ -851,6 +874,7 @@ def layout_2x2(render_cell):
         render_cell(3)
 
 
+@trace_calls
 def layout_main_and_split(render_cell):
     """القالب B: عمود كبير + عمود جانبي مقسوم لثلاثة صفوف."""
     left, right = st.columns([2, 1])
@@ -862,6 +886,7 @@ def layout_main_and_split(render_cell):
         render_cell(3)
 
 
+@trace_calls
 def layout_3col(render_cell):
     """القالب C: ٣ أعمدة متساوية."""
     cols = st.columns(3)
@@ -870,11 +895,13 @@ def layout_3col(render_cell):
             render_cell(i)
 
 
+@trace_calls
 def layout_full(render_cell):
     """القالب D: خلية واحدة بعرض الصفحة."""
     render_cell(0)
 
 
+@trace_calls
 def layout_2x3(render_cell):
     """القالب E: ٣ أعمدة × صفان (٦ خلايا)."""
     row1 = st.columns(3)
@@ -887,6 +914,7 @@ def layout_2x3(render_cell):
             render_cell(3 + i)
 
 
+@trace_calls
 def layout_2col_big(render_cell):
     """القالب F: عمودان كبيران متساويان."""
     cols = st.columns(2)
@@ -905,6 +933,7 @@ LAYOUT_REGISTRY = {
     "layout_2col_big": layout_2col_big,
 }
 
+@trace_calls
 def _cell_payload(row: dict) -> dict:
     """تحويل صف خلية خام إلى شكل مبسّط جاهز للتخزين في بلوك 'dashboard'."""
     return {
@@ -914,6 +943,7 @@ def _cell_payload(row: dict) -> dict:
     }
 
 
+@trace_calls
 def _build_dashboard_snapshot(db, dashboard_id: str, template: dict):
     """بناء (gauges, columns) بنفس تخطيط القالب الحالي — يشمل فقط
     الخلايا المُهيَّأة ولها نتيجة محفوظة فعلياً."""

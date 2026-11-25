@@ -67,6 +67,9 @@ _resolve_planned_zero_rows، وبما أنه لا يوجد مستخدم ليخت
     يُمرَّر لمرحلة كتابة الإجابة (قسم NOTES) كي لا تُبنى خلاصة
     "لا توجد بيانات" على عدم تطابق كتابة لا أكثر.
 """
+
+from core.logger_config import trace_calls
+
 import re
 import json
 import time
@@ -112,6 +115,7 @@ _SCHEMA_FIX_MIN_RATIO = 0.85
 _MAX_SCHEMA_FIX_STEPS = 3
 
 
+@trace_calls
 def get_engine(
     engine_name: str,
     api_key    : str = "",
@@ -172,6 +176,7 @@ class AIManager:
                                     البديلة في Smart Value Resolver.
     """
 
+    @trace_calls
     def __init__(
         self,
         db         : ProjectDB,
@@ -197,6 +202,7 @@ class AIManager:
     #  ميزانية الوقت الإجمالية
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _budget_exceeded(self, start_time: float, budget: Optional[int]) -> bool:
         """
         هل تجاوزنا (أو سنتجاوز بعد الانتظار القادم) الميزانية الزمنية
@@ -207,6 +213,7 @@ class AIManager:
         elapsed = time.monotonic() - start_time
         return (elapsed + self.retry_delay) > budget
 
+    @trace_calls
     def _knowledge_context(self, question: str, schema: Optional[dict], mode: str,
                            dashboard_id: Optional[str] = None) -> Optional[str]:
         """سياق معرفة المشروع للـ prompt (None بصمت عند غيابه أو أي فشل)."""
@@ -221,6 +228,7 @@ class AIManager:
     #  الدالة الرئيسية
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def ask(
         self,
         question   : str,
@@ -389,6 +397,7 @@ class AIManager:
     #  🆕 Smart Value Resolver — التكامل مع ask()
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _resolver_table_loader(self, dashboard_id: Optional[str] = None):
         """
         دالة تحميل الجداول التي يستهلكها ValueResolver: تقرأ الجدول بنفس
@@ -398,6 +407,7 @@ class AIManager:
         """
         aliases = {f["table_alias"].lower(): f["table_alias"] for f in self.db.get_files()}
 
+        @trace_calls
         def loader(name: str):
             real = aliases.get(str(name).lower())
             if real is None:
@@ -406,6 +416,7 @@ class AIManager:
 
         return loader
 
+    @trace_calls
     def _suggest_value_variants(self, wanted: str, table: str, column: str, samples: list) -> list:
         """
         اقتراح كتابات بديلة لقيمة (ترجمة/تحويل حروف) عبر استدعاء AI واحد
@@ -422,6 +433,7 @@ class AIManager:
             return []
         return parse_variants_response(r["text"])
 
+    @trace_calls
     def _resolve_zero_rows(self, result: dict, dashboard_id: Optional[str] = None) -> dict:
         """
         معالجة نتيجة ناجحة بصفر صفوف عبر ValueResolver (راجع توثيق الوحدة).
@@ -458,6 +470,7 @@ class AIManager:
         return result
 
     @staticmethod
+    @trace_calls
     def _format_value_hint(items: list) -> str:
         """
         🆕 صياغة تلميح نصي (للـ AI فقط) من عناصر ValueResolver غير المحسومة:
@@ -479,6 +492,7 @@ class AIManager:
                 )
         return "؛ ".join(lines)
 
+    @trace_calls
     def _resolve_planned_zero_rows(self, out: dict, sql: str, dashboard_id: Optional[str] = None) -> dict:
         """
         🆕 معالجة استعلام فرعي (من خطة QA/Story) رجع بصفر صفوف عبر
@@ -517,6 +531,7 @@ class AIManager:
             logger.warning("Planned query value resolver failed (ignored): %s", e)
         return out
 
+    @trace_calls
     def apply_value_choices(
         self, sql: str, items: list, choices: dict, dashboard_id: Optional[str] = None,
     ) -> dict:
@@ -550,6 +565,7 @@ class AIManager:
     # ──────────────────────────────────────────────────────────
     #  السرد القصصي (Story Telling)
     # ──────────────────────────────────────────────────────────
+    @trace_calls
     def tell_story(
         self,
         question: str,
@@ -786,6 +802,7 @@ class AIManager:
     # ──────────────────────────────────────────────────────────
     #  schema بعد تطبيق فلاتر لوحة المعلومات (إن وُجدت)
     # ──────────────────────────────────────────────────────────
+    @trace_calls
     def _schema(self, dashboard_id: Optional[str] = None) -> dict:
         """
         schema المشروع (الأعمدة والأنواع) مع عينة صفوف مأخوذة من بيانات
@@ -799,10 +816,12 @@ class AIManager:
     # ──────────────────────────────────────────────────────────
 
     @staticmethod
+    @trace_calls
     def _norm_col(name) -> str:
         """توحيد اسم عمود للمقارنة: حروف صغيرة + توحيد الإملاء العربي (ه/ة، أ/ا...)."""
         return str(name).strip().lower().translate(_AR_NORMALIZE)
 
+    @trace_calls
     def _try_schema_column_fix(self, sql: str, error_msg: str, schema: dict) -> Optional[str]:
         """
         تصحيح تلقائي (بدون AI) لاسم عمود غير موجود، بمطابقته مع أعمدة
@@ -849,6 +868,7 @@ class AIManager:
         logger.info("Schema column auto-fix: '%s' -> '%s'", wrong, best)
         return fixed
 
+    @trace_calls
     def _run_planned_query(
         self,
         sql          : str,
@@ -949,6 +969,7 @@ class AIManager:
         return {"ok": False, "sql": current, "error": run["error"], "ai_fixes": ai_fixes}
 
 
+    @trace_calls
     def _parse_story_queries(self, text: str, max_queries: int = STORY_MAX_QUERIES) -> dict:
         """
         تحليل رد AI (خطة الاستعلامات) كـ JSON، مع تقييد العدد بـ max_queries.
@@ -984,6 +1005,7 @@ class AIManager:
     # ──────────────────────────────────────────────────────────
     #  🆕 سؤال وجواب (Q&A / رؤى)
     # ──────────────────────────────────────────────────────────
+    @trace_calls
     def answer_question(
         self,
         question     : str,
@@ -1206,6 +1228,7 @@ class AIManager:
     # ──────────────────────────────────────────────────────────
     #  🆕 تحديث الملخص التراكمي لمحادثة سؤال وجواب (استفسار منفصل)
     # ──────────────────────────────────────────────────────────
+    @trace_calls
     def summarize_qa_memory(
         self,
         old_summary: Optional[str],
@@ -1271,6 +1294,7 @@ class AIManager:
 #  🆕 بناء AIManager جاهز من إعدادات مشروع مباشرة
 # ══════════════════════════════════════════════════════════════
 
+@trace_calls
 def build_ai_manager(db: ProjectDB):
     """
     بناء AIManager جاهز من إعدادات مشروع (project.db) مباشرة — نقطة

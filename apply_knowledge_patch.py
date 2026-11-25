@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+from core.logger_config import trace_calls
+
 """
 apply_knowledge_patch.py
 =========================
@@ -23,20 +26,24 @@ import tempfile
 from pathlib import Path
 
 
+@trace_calls
 def norm(s: str) -> str:
     return re.sub(r"\s+", " ", s.strip())
 
 
+@trace_calls
 def indent_of(line: str) -> str:
     return line[: len(line) - len(line.lstrip())]
 
 
+@trace_calls
 def _place(text: str, base: str) -> list:
     """أسطر النص الجديد مزاحة بإزاحة السطر المرجعي (الإزاحة النسبية داخل النص محفوظة)."""
     lines = text.strip("\n").split("\n")
     return [(base + l) if l.strip() else "" for l in lines]
 
 
+@trace_calls
 def apply_op(lines: list, op: dict):
     """يرجع (lines, status) حيث status: applied | skipped | error:<msg>."""
     kind, anchor = op["op"], op.get("anchor")
@@ -47,6 +54,7 @@ def apply_op(lines: list, op: dict):
 
     nonblank = [i for i, l in enumerate(lines) if l.strip()]
 
+    @trace_calls
     def neighbor(i, step):
         j = i + step
         while 0 <= j < len(lines) and not lines[j].strip():
@@ -265,6 +273,7 @@ def _knowledge_context(self, question: str, schema: Optional[dict], mode: str,
 }
 
 
+@trace_calls
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")

@@ -20,6 +20,9 @@ ai/openai_compatible_engine.py
 ui/settings.py لقائمة المحركات المعروضة).
 """
 
+
+from core.logger_config import trace_calls
+
 import logging
 from typing import Optional
 
@@ -45,6 +48,7 @@ class OpenAICompatibleEngine(BaseEngine):
         result = engine.send("SELECT * FROM sales")
     """
 
+    @trace_calls
     def __init__(
         self,
         base_url    : str,
@@ -58,13 +62,16 @@ class OpenAICompatibleEngine(BaseEngine):
         self.display_name = display_name or base_url
 
     @property
+    @trace_calls
     def models_url(self) -> str:
         return f"{self.base_url}/models"
 
     @property
+    @trace_calls
     def chat_url(self) -> str:
         return f"{self.base_url}/chat/completions"
 
+    @trace_calls
     def get_models(self) -> dict:
         if not self.api_key:
             return {"ok": False, "error": "API key غير موجود", "error_type": "auth"}
@@ -89,6 +96,7 @@ class OpenAICompatibleEngine(BaseEngine):
             logger.error("%s get_models error: %s", self.display_name, e)
             return {"ok": False, "error": str(e), "error_type": "other"}
 
+    @trace_calls
     def send(self, prompt: str, temperature: float = 0.1, timeout_override: Optional[int] = None) -> dict:
         """
         error_type: "auth" (401/403 — لا فائدة من إعادة المحاولة)،
@@ -154,6 +162,7 @@ class OpenAICompatibleEngine(BaseEngine):
             logger.error("%s send error: %s", self.display_name, e)
             return {"ok": False, "error": str(e), "error_type": "other"}
 
+    @trace_calls
     def status(self) -> dict:
         result = self.get_models()
         if result["ok"]:
@@ -182,6 +191,7 @@ OPENAI_COMPATIBLE_ENGINES = {
 }
 
 
+@trace_calls
 def get_registry_entry(engine_name: str) -> dict:
     """إرجاع تعريف محرك من السجل، أو {} لو غير موجود."""
     return OPENAI_COMPATIBLE_ENGINES.get(engine_name.lower().strip(), {})

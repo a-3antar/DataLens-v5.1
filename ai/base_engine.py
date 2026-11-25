@@ -5,6 +5,9 @@ Abstract base class لكل محركات الـ AI.
 كل محرك يرث من هذا الـ class ويطبق الدوال المطلوبة.
 """
 
+
+from core.logger_config import trace_calls
+
 import re
 import logging
 from abc      import ABC, abstractmethod
@@ -33,6 +36,7 @@ class BaseEngine(ABC):
         - status()      → التحقق من أن المحرك يعمل
     """
 
+    @trace_calls
     def __init__(self, api_key: str = "", model: str = "", timeout: int = 30):
         self.api_key = api_key.strip()
         self.model   = model.strip()
@@ -41,6 +45,7 @@ class BaseEngine(ABC):
     # ── دوال مجردة — يجب تطبيقها في كل محرك ─────────────────
 
     @abstractmethod
+    @trace_calls
     def get_models(self) -> dict:
         """
         إرجاع قائمة النماذج المتاحة.
@@ -49,6 +54,7 @@ class BaseEngine(ABC):
         """
 
     @abstractmethod
+    @trace_calls
     def send(self, prompt: str, temperature: float = 0.1, timeout_override: Optional[int] = None) -> dict:
         """
         إرسال prompt وإرجاع الرد.
@@ -63,6 +69,7 @@ class BaseEngine(ABC):
         """
 
     @abstractmethod
+    @trace_calls
     def status(self) -> dict:
         """
         التحقق من أن المحرك متاح ويعمل.
@@ -71,6 +78,7 @@ class BaseEngine(ABC):
 
     # ── دوال مشتركة — متاحة لكل المحركات ────────────────────
 
+    @trace_calls
     def extract_sql(self, text: str) -> dict:
         """
         استخراج SQL من رد الـ AI.
@@ -122,6 +130,7 @@ class BaseEngine(ABC):
         logger.warning("Could not extract SQL from response: %s...", text[:100])
         return {"ok": False, "error": "لم يتم العثور على SQL في الرد"}
 
+    @trace_calls
     def clean_response(self, text: str) -> str:
         """تنظيف الرد من markdown وأحرف زائدة."""
         if not text:

@@ -50,6 +50,9 @@ core.data_manager.DataManager._coerce_filter_value إلى نوع العمود
 داخل الجدول، وهذه ليست إحداها).
 """
 
+
+from core.logger_config import trace_calls
+
 import pandas as pd
 import streamlit as st
 
@@ -61,6 +64,7 @@ from core.file_manager import FileManager
 from core.data_manager import DataManager
 
 
+@trace_calls
 def show_data():
     apply_rtl()
     require_login()
@@ -126,6 +130,7 @@ def show_data():
         _render_column_stats(stats)
 
 
+@trace_calls
 def _render_type_tab(dm: DataManager, table: str, column: str) -> None:
     """عنصر إدخال واحد (النوع الجديد) + زر تنفيذ بارز واحد."""
     new_type = st.selectbox("النوع الجديد", ["int", "float", "str", "date", "bool"])
@@ -134,6 +139,7 @@ def _render_type_tab(dm: DataManager, table: str, column: str) -> None:
         _report(r)
 
 
+@trace_calls
 def _render_filter_tab(dm: DataManager, table: str, column: str) -> None:
     """
     العملية (== / != ...) إعداد ثانوي داخل expander صغير، والحقل
@@ -152,6 +158,7 @@ def _render_filter_tab(dm: DataManager, table: str, column: str) -> None:
         _report(r, extra=lambda r: st.caption(f"{r['before']} → {r['after']} صف"))
 
 
+@trace_calls
 def _render_text_tab(dm: DataManager, table: str, column: str) -> None:
     """أربعة أفعال متكافئة القيمة (Strip/Capitalize/UPPER/lower) — تبقى صفاً واحداً من الأزرار."""
     c1, c2, c3, c4 = st.columns(4)
@@ -165,6 +172,7 @@ def _render_text_tab(dm: DataManager, table: str, column: str) -> None:
         _report(dm.lowercase_text(table, column))
 
 
+@trace_calls
 def _render_nulls_tab(dm: DataManager, table: str, column: str) -> None:
     """
     الاستراتيجية إعداد ثانوي داخل expander؛ حقل "القيمة البديلة" (يظهر
@@ -203,6 +211,7 @@ def _render_nulls_tab(dm: DataManager, table: str, column: str) -> None:
             _report(r, extra=lambda r: st.caption(f"{r['before']} → {r['after']} صف"))
 
 
+@trace_calls
 def _render_column_stats(stats: dict):
     """
     عرض إحصاءات مناسبة لنوع العمود الفعلي بدل قالب رقمي واحد يُفرض
@@ -234,6 +243,7 @@ def _render_column_stats(stats: dict):
         c4.metric("الأكثر تكراراً", stats["most_common"] or "—")
 
 
+@trace_calls
 def _render_relations_tab(db, dm: DataManager, aliases: list[str]):
     """
     تبويب العلاقات: عرض العلاقات الحالية + إضافة علاقة جديدة عبر قوائم
@@ -294,6 +304,7 @@ def _render_relations_tab(db, dm: DataManager, aliases: list[str]):
             st.error("الرجاء اختيار عمود من كل جدول")
 
 
+@trace_calls
 def _report(r: dict, extra=None):
     if r["ok"]:
         notify("تم التطبيق بنجاح", kind="success")

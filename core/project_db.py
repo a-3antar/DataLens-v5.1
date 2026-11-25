@@ -38,6 +38,9 @@ backup_*.db في نفس مجلد المشروع؛ لو تجاوز العدد 20 
 يحدّث template_id مباشرة عبر sqlite3 وليس عبر هذه الدالة).
 """
 
+
+from core.logger_config import trace_calls
+
 import sqlite3
 import json
 import shutil
@@ -66,11 +69,13 @@ MAX_BACKUPS_PER_PROJECT = 20
 #  أدوات مساعدة داخلية
 # ══════════════════════════════════════════════════════════════
 
+@trace_calls
 def _now() -> str:
     """الوقت الحالي بصيغة ISO."""
     return datetime.utcnow().isoformat()
 
 
+@trace_calls
 def _connect(db_path: Path) -> sqlite3.Connection:
     """فتح اتصال بقاعدة البيانات مع تفعيل الـ foreign keys."""
     conn = sqlite3.connect(str(db_path))
@@ -94,6 +99,7 @@ class ProjectDB:
         df = db.get_clean_data("sales")
     """
 
+    @trace_calls
     def __init__(self, user_id: str, project_id: str):
         self.user_id    = user_id
         self.project_id = project_id
@@ -106,6 +112,7 @@ class ProjectDB:
     #  تهيئة الجداول
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _init_schema(self) -> None:
         """إنشاء الجداول الثابتة إن لم تكن موجودة."""
         sql_statements = [
@@ -249,6 +256,7 @@ class ProjectDB:
     #  الإعدادات
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def get_settings(self) -> dict:
         """
         إرجاع كل الإعدادات كـ dict. أي مفتاح يبدأ بـ "api_key_" يُفَكّ
@@ -270,6 +278,7 @@ class ProjectDB:
             logger.error("get_settings error: %s", e)
             return dict(DEFAULT_SETTINGS)
 
+    @trace_calls
     def save_settings(self, updates: dict) -> None:
         """
         تحديث إعدادات محددة (لا يحذف الباقي). أي مفتاح يبدأ بـ
@@ -297,6 +306,7 @@ class ProjectDB:
     #  الملفات
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def add_file(
         self,
         file_id       : str,
@@ -325,6 +335,7 @@ class ProjectDB:
             logger.error("add_file error: %s", e)
             raise
 
+    @trace_calls
     def get_files(self) -> list[dict]:
         """إرجاع كل الملفات المسجلة."""
         try:
@@ -340,6 +351,7 @@ class ProjectDB:
             logger.error("get_files error: %s", e)
             return []
 
+    @trace_calls
     def remove_file(self, file_id: str) -> dict:
         """
         حذف ملف مصدر وجدول البيانات النظيفة الخاص به.
@@ -386,6 +398,7 @@ class ProjectDB:
     #  البيانات النظيفة
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def save_clean_data(self, table_alias: str, df: pd.DataFrame) -> None:
         """
         حفظ DataFrame كجدول بيانات نظيفة داخل project.db.
@@ -412,6 +425,7 @@ class ProjectDB:
             logger.error("save_clean_data error: %s", e)
             raise
 
+    @trace_calls
     def get_clean_data(self, table_alias: str) -> Optional[pd.DataFrame]:
         """
         تحميل البيانات النظيفة كـ DataFrame، مع استعادة أعمدة التاريخ
@@ -433,6 +447,7 @@ class ProjectDB:
             logger.error("get_clean_data error ('%s'): %s", table_alias, e)
             return None
 
+    @trace_calls
     def get_schema(self) -> dict:
         """
         بناء schema كامل لكل الجداول.
@@ -484,6 +499,7 @@ class ProjectDB:
     #  العلاقات
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def add_relation(
         self,
         from_table: str, from_col: str,
@@ -507,6 +523,7 @@ class ProjectDB:
             logger.error("add_relation error: %s", e)
             raise
 
+    @trace_calls
     def get_relations(self) -> list[dict]:
         """إرجاع كل العلاقات."""
         try:
@@ -517,6 +534,7 @@ class ProjectDB:
             logger.error("get_relations error: %s", e)
             return []
 
+    @trace_calls
     def remove_relation(self, relation_id: int) -> None:
         """حذف علاقة بالـ id."""
         try:
@@ -532,6 +550,7 @@ class ProjectDB:
     #  المحادثات
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def save_chat_result(
         self,
         chat_id    : str,
@@ -562,6 +581,7 @@ class ProjectDB:
             logger.error("save_chat_result error: %s", e)
             raise
 
+    @trace_calls
     def get_chat_history(self, limit: int = 50) -> list[dict]:
         """إرجاع آخر N سجل من المحادثات."""
         try:
@@ -581,6 +601,7 @@ class ProjectDB:
             logger.error("get_chat_history error: %s", e)
             return []
 
+    @trace_calls
     def delete_chat_result(self, chat_id: str) -> None:
         """حذف سجل محادثة واحد من المشروع الحالي."""
         try:
@@ -592,6 +613,7 @@ class ProjectDB:
             logger.error("delete_chat_result error: %s", e)
             raise
 
+    @trace_calls
     def clear_chat_history(self) -> None:
         """حذف جميع سجلات المحادثة للمشروع الحالي."""
         try:
@@ -607,6 +629,7 @@ class ProjectDB:
     #  التقارير
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def create_report(self, report_id: str, title: str) -> None:
         """إنشاء تقرير جديد."""
         try:
@@ -622,6 +645,7 @@ class ProjectDB:
             logger.error("create_report error: %s", e)
             raise
 
+    @trace_calls
     def get_reports(self) -> list[dict]:
         """إرجاع كل التقارير."""
         try:
@@ -634,6 +658,7 @@ class ProjectDB:
             logger.error("get_reports error: %s", e)
             return []
 
+    @trace_calls
     def save_report_block(
         self,
         report_id : str,
@@ -662,6 +687,7 @@ class ProjectDB:
             logger.error("save_report_block error: %s", e)
             raise
 
+    @trace_calls
     def get_report_blocks(self, report_id: str) -> list[dict]:
         """إرجاع كل بلوكات تقرير مرتبة حسب الموضع."""
         try:
@@ -684,6 +710,7 @@ class ProjectDB:
             logger.error("get_report_blocks error: %s", e)
             return []
 
+    @trace_calls
     def delete_report(self, report_id: str) -> None:
         """حذف تقرير وكل بلوكاته."""
         try:
@@ -699,6 +726,7 @@ class ProjectDB:
     #  لوحات المعلومات (Dashboards)
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def create_dashboard(self, dashboard_id: str, title: str, template_id: str) -> None:
         """إنشاء لوحة معلومات جديدة بقالب معيّن."""
         try:
@@ -717,6 +745,7 @@ class ProjectDB:
             logger.error("create_dashboard error: %s", e)
             raise
 
+    @trace_calls
     def get_dashboards(self) -> list[dict]:
         """إرجاع كل لوحات المعلومات في المشروع."""
         try:
@@ -729,6 +758,7 @@ class ProjectDB:
             logger.error("get_dashboards error: %s", e)
             return []
 
+    @trace_calls
     def get_dashboard(self, dashboard_id: str) -> Optional[dict]:
         """إرجاع لوحة معلومات واحدة."""
         try:
@@ -741,6 +771,7 @@ class ProjectDB:
             logger.error("get_dashboard error: %s", e)
             return None
 
+    @trace_calls
     def touch_dashboard(self, dashboard_id: str) -> None:
         """تحديث updated_at (يُستدعى بعد كل ضغطة تحديث بيانات ناجحة)."""
         try:
@@ -753,6 +784,7 @@ class ProjectDB:
         except sqlite3.Error as e:
             logger.error("touch_dashboard error: %s", e)
 
+    @trace_calls
     def delete_dashboard(self, dashboard_id: str) -> None:
         """حذف لوحة معلومات وكل خلاياها وفلاترها."""
         try:
@@ -764,6 +796,7 @@ class ProjectDB:
             logger.error("delete_dashboard error: %s", e)
             raise
 
+    @trace_calls
     def duplicate_dashboard(self, dashboard_id: str, new_id: str, new_title: str) -> None:
         """تكرار لوحة معلومات كاملة (خلايا + فلاتر) بمعرّف جديد."""
         try:
@@ -792,6 +825,7 @@ class ProjectDB:
 
     # ── خلايا اللوحة ──
 
+    @trace_calls
     def save_dashboard_cell(
         self,
         dashboard_id: str,
@@ -846,6 +880,7 @@ class ProjectDB:
             logger.error("save_dashboard_cell error: %s", e)
             raise
 
+    @trace_calls
     def save_dashboard_cell_base_sql(self, dashboard_id: str, position: int, base_sql: str) -> None:
         """
         حفظ الـ SQL الأساسي (الناتج من أول استدعاء AI ناجح لهذا السؤال).
@@ -863,6 +898,7 @@ class ProjectDB:
             logger.error("save_dashboard_cell_base_sql error: %s", e)
             raise
 
+    @trace_calls
     def save_dashboard_cell_result(
         self,
         dashboard_id: str,
@@ -888,6 +924,7 @@ class ProjectDB:
             logger.error("save_dashboard_cell_result error: %s", e)
             raise
 
+    @trace_calls
     def get_dashboard_cells(self, dashboard_id: str) -> list[dict]:
         """إرجاع كل خلايا لوحة، مرتبة حسب الموضع."""
         try:
@@ -906,6 +943,7 @@ class ProjectDB:
             logger.error("get_dashboard_cells error: %s", e)
             return []
 
+    @trace_calls
     def clear_dashboard_cell(self, dashboard_id: str, position: int) -> None:
         """إفراغ إعداد خلية (تعيدها لحالة «إضافة عنصر» فارغة)."""
         try:
@@ -921,6 +959,7 @@ class ProjectDB:
 
     # ── فلاتر اللوحة (Slicers) ──
 
+    @trace_calls
     def save_dashboard_slicer(
         self,
         dashboard_id : str,
@@ -950,6 +989,7 @@ class ProjectDB:
             logger.error("save_dashboard_slicer error: %s", e)
             raise
 
+    @trace_calls
     def get_dashboard_slicers(self, dashboard_id: str) -> list[dict]:
         """إرجاع كل Slicers لوحة، مرتبة حسب الموضع."""
         try:
@@ -968,6 +1008,7 @@ class ProjectDB:
             logger.error("get_dashboard_slicers error: %s", e)
             return []
 
+    @trace_calls
     def reset_dashboard_slicers(self, dashboard_id: str) -> None:
         """إعادة كل Slicers لوحة إلى الوضع الافتراضي (بدون جدول/عمود/قيم)."""
         try:
@@ -987,6 +1028,7 @@ class ProjectDB:
     #  (لم تُربط بواجهة بعد — راجع الملاحظة أعلى الملف؛ تبقى كما هي)
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def backup(self) -> Path:
         """
         إنشاء نسخة احتياطية من project.db، ثم تطبيق سقف
@@ -1005,6 +1047,7 @@ class ProjectDB:
             logger.error("backup error: %s", e)
             raise
 
+    @trace_calls
     def _rotate_old_backups(self) -> None:
         """
         حذف أقدم النسخ الاحتياطية عند تجاوز MAX_BACKUPS_PER_PROJECT.
@@ -1030,6 +1073,7 @@ class ProjectDB:
     #  معلومات عامة
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def get_info(self) -> dict:
         """معلومات سريعة عن المشروع."""
         try:

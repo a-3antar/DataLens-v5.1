@@ -43,6 +43,9 @@ _render_test_result أدناه تعرض النص عبر st.markdown مباشرة
 core/dashboard_cells/cells.py::StoryCell.render_result وui/chat.py.
 """
 
+
+from core.logger_config import trace_calls
+
 import logging
 import datetime as _dt
 from abc import ABC, abstractmethod
@@ -67,6 +70,7 @@ _GAUGE_ROW_DEFAULT = "gauge"
 #  تعقيم القيم قبل التخزين كـ JSON (مشتركة بين كل الأنواع)
 # ══════════════════════════════════════════════════════════════
 
+@trace_calls
 def _json_safe(value):
     """
     تحويل قيمة واحدة إلى نوع قابل للتسلسل عبر json.dumps مباشرة —
@@ -93,6 +97,7 @@ def _json_safe(value):
     return value
 
 
+@trace_calls
 def _sanitize_rows(rows: list) -> list:
     """تطبيق _json_safe على كل قيمة في كل صف من صفوف النتيجة."""
     return [{k: _json_safe(v) for k, v in row.items()} for row in rows]
@@ -110,6 +115,7 @@ class DashboardCellBase(ABC):
     display_type: str = "table"
     label: str = "خلية"
 
+    @trace_calls
     def __init__(
         self,
         position: int,
@@ -137,6 +143,7 @@ class DashboardCellBase(ABC):
     # ──────────────────────────────────────────────────────────
 
     @classmethod
+    @trace_calls
     def from_row(cls, row: dict) -> "DashboardCellBase":
         """بناء كائن من صف كما يُرجعه db.get_dashboard_cells()."""
         return cls(
@@ -155,6 +162,7 @@ class DashboardCellBase(ABC):
     #  التنفيذ — افتراضي (SQL: base_sql أو AI)، StoryCell يُعيد تعريفه
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def execute(self, ai_manager, query_engine, dashboard_id: str, ai_rules: Optional[str]) -> dict:
         """
         تنفيذ منطق الخلية وإرجاع نتيجة خام — لا يكتب في project_db
@@ -174,6 +182,7 @@ class DashboardCellBase(ABC):
         r["used_ai"] = True
         return r
 
+    @trace_calls
     def _run_fast(self, query_engine, dashboard_id: str) -> dict:
         """تنفيذ base_sql مع الفلاتر عبر QueryEngine مباشرة (بدون AI)."""
         result = query_engine.run_with_filters(self.base_sql, dashboard_id)
@@ -192,6 +201,7 @@ class DashboardCellBase(ABC):
     # ──────────────────────────────────────────────────────────
 
     @abstractmethod
+    @trace_calls
     def to_stored_dict(self, raw_result: dict) -> dict:
         """
         تحويل نتيجة execute() الخام إلى dict قابل للتخزين مباشرة عبر
@@ -201,6 +211,7 @@ class DashboardCellBase(ABC):
         """
         raise NotImplementedError
 
+    @trace_calls
     def _base_stored_dict(self, raw_result: dict) -> dict:
         """الجزء المشترك من التخزين: أعمدة وصفوف مُعقَّمة للتسلسل."""
         df = raw_result.get("df")
@@ -215,6 +226,7 @@ class DashboardCellBase(ABC):
     # ──────────────────────────────────────────────────────────
 
     @abstractmethod
+    @trace_calls
     def render_result(self, settings: dict, dashboard_id: str) -> None:
         """
         عرض self.last_result (أو self.last_error/الحالة الفارغة) في
@@ -228,6 +240,7 @@ class DashboardCellBase(ABC):
         """
         raise NotImplementedError
 
+    @trace_calls
     def _render_error_or_empty(self) -> bool:
         """
         معالجة موحّدة لحالتي "آخر تحديث فشل" و"لم يُحدَّث بعد" — مشتركة
@@ -242,6 +255,7 @@ class DashboardCellBase(ABC):
             return True
         return False
 
+    @trace_calls
     def _render_updated_caption(self, settings: dict) -> None:
         """تذييل "آخر تحديث" — مشترك بين كل الأنواع."""
         if self.last_updated_at:
@@ -251,6 +265,7 @@ class DashboardCellBase(ABC):
     #  محرر الخلية — مشترك بالكامل، الحقول الخاصة عبر hook
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def render_type_specific_fields(self, dashboard_id: str) -> dict:
         """
         Hook قابل للتخصيص: افتراضياً لا حقول إضافية (Table/Gauge/Kpi/
@@ -260,6 +275,7 @@ class DashboardCellBase(ABC):
         """
         return {}
 
+    @trace_calls
     def render_editor(self, db, dm, settings: dict, dashboard_id: str, is_gauge_row: bool, edit_key: str) -> None:
         """
         نقطة الدخول لمحرر الخلية: تعرض اختيار/تغيير نوع الخلية أولاً،
@@ -314,6 +330,7 @@ class DashboardCellBase(ABC):
 
         active_cell._render_editor_body(db, dm, settings, dashboard_id, edit_key)
 
+    @trace_calls
     def _render_editor_body(self, db, dm, settings: dict, dashboard_id: str, edit_key: str) -> None:
         """
         الجزء المشترك من المحرر (عنوان، سؤال، حقول خاصة بالنوع، اختبار،
@@ -377,6 +394,7 @@ class DashboardCellBase(ABC):
                 st.session_state.pop(test_key, None)
                 st.rerun()
 
+    @trace_calls
     def _run_test(self, question: str, db, settings: dict, dashboard_id: str) -> dict:
         """تشغيل "اختبار" على السؤال الحالي بدون حفظ — نفس منطق ai.ask/tell_story."""
         ai, _ = build_ai_manager(db)
@@ -384,6 +402,7 @@ class DashboardCellBase(ABC):
             return ai.tell_story(question, ai_rules=settings.get("ai_rules"), dashboard_id=dashboard_id)
         return ai.ask(question, result_type=self.display_type, ai_rules=settings.get("ai_rules"), dashboard_id=dashboard_id)
 
+    @trace_calls
     def _render_test_result(self, r: dict, settings: dict) -> None:
         """
         عرض نتيجة زر "اختبار" — مشترك بين كل الأنواع. لخلايا Story
@@ -429,6 +448,7 @@ class DashboardCellBase(ABC):
     #  قائمة الإجراءات — موحّدة 100%، لا تُعاد كتابتها في أي subclass
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def send_to_report(self, rm, report_id: str, label: str, include_data: bool = False) -> dict:
         """
         تحويل self.last_result (المخزَّن بنفس شكل to_stored_dict) إلى
@@ -438,6 +458,7 @@ class DashboardCellBase(ABC):
         """
         raise NotImplementedError
 
+    @trace_calls
     def render_actions_menu(self, db, dm, settings: dict, dashboard_id: str, edit_key: str) -> None:
         """
         قائمة إجراءات الخلية: تحديث / اختبار / تعديل السؤال / إرسال
@@ -487,6 +508,7 @@ class DashboardCellBase(ABC):
                     st.session_state.pop(test_key, None)
                     st.rerun()
 
+    @trace_calls
     def _render_send_to_report_fields(self, db, dashboard_id: str) -> None:
         """
         🆕 حقول إرسال نتيجة هذه الخلية إلى تقرير — تُرسَم مباشرة داخل
@@ -531,6 +553,7 @@ class DashboardCellBase(ABC):
     #  الحفظ / الإفراغ — تتعامل مع ProjectDB كما هي الآن
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def save(self, db, dashboard_id: str) -> None:
         """
         استدعاء db.save_dashboard_cell() بنفس التوقيع الحالي —
@@ -541,6 +564,7 @@ class DashboardCellBase(ABC):
             self.title, self.question, self.chart_type,
         )
 
+    @trace_calls
     def clear(self, db, dashboard_id: str) -> None:
         """استدعاء db.clear_dashboard_cell() مباشرة."""
         db.clear_dashboard_cell(dashboard_id, self.position)

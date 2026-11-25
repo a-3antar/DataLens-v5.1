@@ -48,6 +48,9 @@ openpyxl في وضع read_only: أسماء الشيتات من workbook.xml مب
 الحذف عبر بادئة المفتاح "danger_").
 """
 
+
+from core.logger_config import trace_calls
+
 import io
 import logging
 from pathlib import Path
@@ -69,6 +72,7 @@ logger = logging.getLogger(__name__)
 _UPLOAD_CACHE_KEY = "_upload_inspect_cache"
 
 
+@trace_calls
 def _format_last_updated(f: dict, settings: dict) -> str | None:
     """
     آخر تحديث للملف = source_files.uploaded_at (راجع core/project_db.py)،
@@ -90,6 +94,7 @@ def _format_last_updated(f: dict, settings: dict) -> str | None:
     return f"آخر تحديث {time_part} {date_part} {period}"
 
 
+@trace_calls
 def show_files():
     apply_rtl()
     require_login()
@@ -122,6 +127,7 @@ def show_files():
 #  🆕 فحص سريع لملفات xlsx (openpyxl read_only)
 # ──────────────────────────────────────────────────────────────
 
+@trace_calls
 def _dedupe_headers(names: list[str]) -> list[str]:
     """
     معالجة تكرار أسماء الأعمدة بنفس أسلوب pandas ("x" ثم "x.1" ثم
@@ -140,6 +146,7 @@ def _dedupe_headers(names: list[str]) -> list[str]:
     return result
 
 
+@trace_calls
 def _fast_inspect(fm: FileManager, file_bytes: bytes, file_name: str) -> dict:
     """
     فحص الملف المرفوع: أسماء الشيتات + الامتداد، بنفس شكل fm.inspect:
@@ -162,6 +169,7 @@ def _fast_inspect(fm: FileManager, file_bytes: bytes, file_name: str) -> dict:
     return fm.inspect(file_bytes, file_name)
 
 
+@trace_calls
 def _fast_columns(fm: FileManager, file_bytes: bytes, extension: str, sheet) -> dict:
     """
     أسماء أعمدة شيت واحد بنفس شكل fm.get_columns_from_bytes:
@@ -197,6 +205,7 @@ def _fast_columns(fm: FileManager, file_bytes: bytes, extension: str, sheet) -> 
 #  رفع ملف جديد
 # ──────────────────────────────────────────────────────────────
 
+@trace_calls
 def _get_upload_cache(uploaded) -> dict:
     """
     تخزين مؤقت لفحص الملف المرفوع الحالي: توقيعه (الاسم + الحجم) يحدد
@@ -211,6 +220,7 @@ def _get_upload_cache(uploaded) -> dict:
     return cache
 
 
+@trace_calls
 def _start_knowledge_job(db, table_alias: str) -> None:
     """تشغيل تحديث الذاكرة المعرفية في الخلفية بعد رفع/تحديث جدول (لا يكسر الصفحة عند أي فشل)."""
     try:
@@ -220,6 +230,7 @@ def _start_knowledge_job(db, table_alias: str) -> None:
     except Exception as e:
         logger.warning("knowledge job start failed: %s", e)
 
+@trace_calls
 def _render_upload_form(fm: FileManager, dm: DataManager) -> None:
     """
     اختيار الملف والشيت خارج الـ form (ليُعاد حساب الأعمدة عند تغيير
@@ -295,6 +306,7 @@ def _render_upload_form(fm: FileManager, dm: DataManager) -> None:
 #  بطاقات الملفات المسجَّلة
 # ──────────────────────────────────────────────────────────────
 
+@trace_calls
 def _render_file_card(db, dm: DataManager, f: dict, settings: dict) -> None:
     """
     بطاقة موحّدة لكل ملف: اسم الجدول ومعلوماته المختصرة في سطر، وقائمة
@@ -339,6 +351,7 @@ def _render_file_card(db, dm: DataManager, f: dict, settings: dict) -> None:
                 _render_delete_widget(db, f)
 
 
+@trace_calls
 def _render_delete_widget(db, f: dict):
     """
     حذف الملف بتأكيد ثنائي الضغط (نفس نمط ui/projects.py) — يمنع
@@ -373,6 +386,7 @@ def _render_delete_widget(db, f: dict):
             st.rerun()
 
 
+@trace_calls
 def _render_refresh_widget(dm: DataManager, f: dict):
     """
     تحديث الجدول من الملف الأصلي: يطلب من المستخدم إعادة اختيار نفس

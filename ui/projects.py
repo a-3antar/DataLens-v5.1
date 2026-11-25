@@ -42,6 +42,9 @@ st.session_state["_jump_to_page"] (تُقرأ من main.py عبر _JUMP_TARGETS)
 - الاستيراد يقبل .db أو .db.gz (الناتج عن التصدير المضغوط).
 """
 
+
+from core.logger_config import trace_calls
+
 from ai import prompt_builder
 from datetime import datetime
 from pathlib import Path
@@ -60,6 +63,7 @@ from config import PROJECTS_DIR
 _CARDS_PER_ROW = 3
 
 
+@trace_calls
 def _project_last_modified(user_id: str, project_id: str) -> str | None:
     """
     🆕 بطاقة المشروع لا تملك عمود "آخر تحديث" في أي جدول (على عكس
@@ -85,6 +89,7 @@ def _project_last_modified(user_id: str, project_id: str) -> str | None:
     return f"آخر تحديث ({dt.day:02d}/{dt.month:02d}/{dt.year}) {hour12:02d}:{dt.minute:02d} {period}"
 
 
+@trace_calls
 def show_projects():
     apply_rtl()
     require_login()
@@ -121,6 +126,7 @@ def show_projects():
                 _render_project_card(pm, p)
 
 
+@trace_calls
 def _render_create_form(pm):
     """
     نموذج إنشاء مشروع جديد — st.form كامل بحيث Enter في حقل الاسم
@@ -158,6 +164,7 @@ def _render_create_form(pm):
             st.error(r["error"])
 
 
+@trace_calls
 def _render_import_form(pm):
     """
     نموذج استيراد مشروع من ملف .db أو .db.gz (الناتج عن "تصدير مضغوط")
@@ -189,6 +196,7 @@ def _render_import_form(pm):
             st.error(r["error"])
 
 
+@trace_calls
 def _render_project_card(pm, p: dict):
     """بطاقة مشروع واحدة: اسم + إحصائيات + فتح (رئيسي) + قائمة ⁝ للإجراءات الأخرى."""
     with st.container(border=True):
@@ -220,6 +228,7 @@ def _render_project_card(pm, p: dict):
                 _render_project_actions_menu(pm, p)
 
 
+@trace_calls
 def _render_project_actions_menu(pm, p: dict):
     """
     محتوى قائمة "⁝": إعادة تسمية / ضغط / تصدير (عادي ومضغوط) / حذف —

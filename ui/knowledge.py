@@ -14,6 +14,9 @@ ui/knowledge.py
   بقائمة اختيار.
 """
 
+
+from core.logger_config import trace_calls
+
 import hashlib
 
 import pandas as pd
@@ -46,10 +49,12 @@ _ROLE_LABELS = {
 }
 
 
+@trace_calls
 def _h(value) -> str:
     return hashlib.md5(str(value).encode("utf-8")).hexdigest()[:8]
 
 
+@trace_calls
 def show_knowledge():
     apply_rtl()
     require_login()
@@ -92,6 +97,7 @@ def show_knowledge():
 #  التحكم والحالة
 # ──────────────────────────────────────────────────────────────
 
+@trace_calls
 def _render_controls(db, send_values: bool) -> None:
     options = [LAYER_PROFILE, LAYER_SEMANTIC] + ([LAYER_INSIGHT] if send_values else [])
     with st.expander("🔄 تحديث الذاكرة المعرفية", expanded=False):
@@ -120,6 +126,7 @@ def _render_controls(db, send_values: bool) -> None:
                     st.rerun()
 
 
+@trace_calls
 def _render_status_entry(db, settings: dict) -> None:
     running = KnowledgeManager(db).get_status()["state"] == "running"
     if hasattr(st, "fragment"):
@@ -129,6 +136,7 @@ def _render_status_entry(db, settings: dict) -> None:
         st.button("🔃 تحديث الحالة", key="kn_status_refresh")
 
 
+@trace_calls
 def _render_status_panel(db, settings: dict) -> None:
     status = KnowledgeManager(db).get_status()
     running = status["state"] == "running"
@@ -157,6 +165,7 @@ def _render_status_panel(db, settings: dict) -> None:
 #  الملخص
 # ──────────────────────────────────────────────────────────────
 
+@trace_calls
 def _render_summary(km: KnowledgeManager, settings: dict) -> None:
     sem = km.get_semantic()
     proj = sem["project"]
@@ -179,10 +188,12 @@ def _render_summary(km: KnowledgeManager, settings: dict) -> None:
 #  الجداول والأعمدة
 # ──────────────────────────────────────────────────────────────
 
+@trace_calls
 def _fmt(v) -> str:
     return "—" if v is None else str(v)
 
 
+@trace_calls
 def _render_tables(db, km: KnowledgeManager, settings: dict) -> None:
     prof, sem = km.get_profile(), km.get_semantic()
     aliases = [f["table_alias"] for f in db.get_files()]
@@ -201,6 +212,7 @@ def _render_tables(db, km: KnowledgeManager, settings: dict) -> None:
             _render_column_detail(km, alias, cols, st_sem["columns"], settings)
 
 
+@trace_calls
 def _render_table_header(t: dict, sem_table) -> None:
     if sem_table:
         st.caption(_AI_BADGE + (" — ⚠️ قديم" if sem_table.get("stale") else ""))
@@ -220,6 +232,7 @@ def _render_table_header(t: dict, sem_table) -> None:
         st.caption("ارتباطات بارزة: " + "، ".join(f"{c['a']}~{c['b']} ({c['r']})" for c in t["correlations"][:4]))
 
 
+@trace_calls
 def _render_columns_overview(alias, t, cols, sem_cols, settings) -> None:
     rows = []
     for c in t.get("column_order", list(cols)):
@@ -239,6 +252,7 @@ def _render_columns_overview(alias, t, cols, sem_cols, settings) -> None:
         st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
+@trace_calls
 def _stat_lines(cp: dict) -> list:
     lines = [f"النوع: {cp.get('dtype')} · الدور (إحصائي): {_ROLE_LABELS.get(cp.get('role'), cp.get('role'))} · "
              f"فارغ: {cp.get('null_pct')}% · فريد: {cp.get('distinct')}"]
@@ -261,6 +275,7 @@ def _stat_lines(cp: dict) -> list:
     return lines
 
 
+@trace_calls
 def _render_column_detail(km, alias, cols, sem_cols, settings) -> None:
     names = list(cols)
     if not names:
@@ -321,6 +336,7 @@ def _render_column_detail(km, alias, cols, sem_cols, settings) -> None:
 #  Insights
 # ──────────────────────────────────────────────────────────────
 
+@trace_calls
 def _render_insights(km: KnowledgeManager, settings: dict, send_values: bool) -> None:
     if not send_values:
         st.info("الـ Insights معطّلة لأن إرسال القيم للذكاء الاصطناعي مُوقَف.")

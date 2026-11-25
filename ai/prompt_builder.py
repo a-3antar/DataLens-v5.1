@@ -53,6 +53,9 @@ Story Telling (خطة استعلامات ثم كتابة). الإجابة تُك
 - الذاكرة والملخص داخليان بالكامل: لا يُعرضان ولا يُعدَّلان من المستخدم.
 """
 
+
+from core.logger_config import trace_calls
+
 import logging
 from typing import Optional
 
@@ -111,6 +114,7 @@ class PromptBuilder:
         error_prompt = pb.build_error_retry(prompt, bad_sql, error_msg)
     """
 
+    @trace_calls
     def __init__(
         self,
         schema   : dict,
@@ -130,6 +134,7 @@ class PromptBuilder:
     #  بناء الـ Prompt الأساسي
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def build(
         self,
         question   : str,
@@ -186,6 +191,7 @@ class PromptBuilder:
     #  بناء Prompt إعادة المحاولة عند الخطأ
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def build_error_retry(
         self,
         original_prompt: str,
@@ -220,6 +226,7 @@ class PromptBuilder:
     #  بناء أجزاء الـ Prompt
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _build_schema(self) -> str:
         """بناء وصف الجداول والأعمدة."""
         if not self.schema:
@@ -235,6 +242,7 @@ class PromptBuilder:
 
         return "\n".join(lines).rstrip()
 
+    @trace_calls
     def _build_relations(self) -> str:
         """بناء وصف العلاقات بين الجداول."""
         lines = []
@@ -245,6 +253,7 @@ class PromptBuilder:
             )
         return "\n".join(lines)
 
+    @trace_calls
     def _build_samples(self) -> str:
         """بناء عينة البيانات لكل جدول."""
         if not self.schema:
@@ -277,6 +286,7 @@ class PromptBuilder:
         return "\n".join(parts).rstrip()
 
 
+    @trace_calls
     def _build_result_hint(self, result_type: str) -> str:
         """تلميح للـ AI عن نوع النتيجة المطلوبة (بدون أي سقف لعدد الصفوف)."""
         hints = {
@@ -308,6 +318,7 @@ class PromptBuilder:
         }
         return hints.get(result_type, f"نوع النتيجة: {result_type}")
 
+    @trace_calls
     def _knowledge_parts(self, knowledge_context: Optional[str]) -> list:
         """قسم [DATA CONTEXT] (قائمة فارغة لو لا سياق معرفة)."""
         ctx = (knowledge_context or "").strip()
@@ -315,6 +326,7 @@ class PromptBuilder:
             return []
         return [self._section("DATA CONTEXT", KNOWLEDGE_RULES + "\n\n" + ctx)]
 
+    @trace_calls
     def _section(self, title: str, content: str) -> str:
         """تنسيق قسم في الـ Prompt."""
         border = "─" * 40
@@ -332,6 +344,7 @@ class PromptBuilder:
     # Markdown العادي يمر عبر نفس قواعد تنسيق الجداول في RTL_CSS/
     # apply_theme_css (حدود، رأس بلون الثيم...) ويحافظ على محاذاة
     # الأعمدة تلقائياً بغض النظر عن طول النص العربي المجاور.
+    @trace_calls
     def _story_writing_rules(self) -> str:
         return (
             "أنت محلل بيانات محترف تكتب تقارير تحليلية بالعربية الفصحى الواضحة، "
@@ -387,6 +400,7 @@ class PromptBuilder:
     #  بناء Prompt السرد القصصي (Story Telling)
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def build_story(
         self,
         question: str,
@@ -441,6 +455,7 @@ class PromptBuilder:
     #  🆕 خطة استعلامات السرد (Story Telling متعدد الاستعلامات)
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def build_story_plan(self, question: str, knowledge_context: Optional[str] = None) -> str:
         """
         بناء Prompt يطلب من AI خطة استعلامات SQL (وليس استعلاماً واحداً)
@@ -466,6 +481,7 @@ class PromptBuilder:
         logger.debug("Story plan prompt built: %d chars", len(prompt))
         return prompt
 
+    @trace_calls
     def _story_plan_rules(self) -> str:
         return f"""أنت محلل بيانات محترف تخطط لتحليل نصي (Story Telling) شامل بناءً على
 سؤال المستخدم. مهمتك: تحديد استعلام SQL واحد أو أكثر تجلب كل البيانات
@@ -491,6 +507,7 @@ CREATE)، متوافقاً مع DuckDB، ويستخدم فقط الجداول و
     #  🆕 بناء Prompt السرد من عدة مجموعات بيانات (نتائج عدة استعلامات)
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def build_story_multi(self, question: str, datasets: list, max_rows: int = 30,
                           knowledge_context: Optional[str] = None) -> str:
         """
@@ -540,6 +557,7 @@ CREATE)، متوافقاً مع DuckDB، ويستخدم فقط الجداول و
     # ══════════════════════════════════════════════════════════
 
     @staticmethod
+    @trace_calls
     def _format_qa_history(history: Optional[list]) -> str:
         """
         صياغة آخر أسئلة/أجوبة الجلسة كسياق. كل عنصر:
@@ -559,6 +577,7 @@ CREATE)، متوافقاً مع DuckDB، ويستخدم فقط الجداول و
         return "\n".join(lines)
 
     @staticmethod
+    @trace_calls
     def _format_qa_summary(summary: Optional[str]) -> str:
         """نص الملخص التراكمي جاهزاً للإدراج في الـ prompt (فارغ لو لا يوجد)."""
         summary = (summary or "").strip()
@@ -570,6 +589,7 @@ CREATE)، متوافقاً مع DuckDB، ويستخدم فقط الجداول و
             "ليس مصدراً لأرقام جديدة (الأرقام تأتي من DATA فقط):\n" + summary
         )
 
+    @trace_calls
     def build_qa_plan(
         self,
         question: str,
@@ -608,6 +628,7 @@ CREATE)، متوافقاً مع DuckDB، ويستخدم فقط الجداول و
         logger.debug("QA plan prompt built: %d chars", len(prompt))
         return prompt
 
+    @trace_calls
     def _qa_plan_rules(self) -> str:
         return f"""أنت محلل بيانات محترف. سيسألك المستخدم سؤالاً حراً عن بياناته، ومهمتك الآن
 فقط تحديد استعلامات SQL التي تجلب كل ما يلزم للإجابة عليه بدقة وبأرقام كافية
@@ -659,6 +680,7 @@ CREATE)، متوافقاً مع DuckDB، ويستخدم فقط الجداول و
 (SELECT DISTINCT عمود FROM جدول) على العمود المعني بدون شرط على القيمة، أو استخدم
 عدة صيغ محتملة في الشرط نفسه (مثل: عمود ILIKE '%سانا%' OR عمود ILIKE '%sana%')."""
 
+    @trace_calls
     def _qa_answer_rules(self, answer_length: str) -> str:
         """
         🆕 قواعد كتابة الجواب — تصف الأسلوب المطلوب (محلل بيانات يتحدث
@@ -732,6 +754,7 @@ CREATE)، متوافقاً مع DuckDB، ويستخدم فقط الجداول و
         )
 
     @staticmethod
+    @trace_calls
     def _qa_style_example(answer_length: str) -> str:
         """
         🆕 مثال قصير على الأسلوب المطلوب (يوضح الشكل لا المحتوى). أرقام
@@ -755,6 +778,7 @@ CREATE)، متوافقاً مع DuckDB، ويستخدم فقط الجداول و
             "صياغتها، واعتمد على DATA الفعلية وحدها):\n" + body
         )
 
+    @trace_calls
     def build_qa_answer(
         self,
         question     : str,
@@ -825,6 +849,7 @@ CREATE)، متوافقاً مع DuckDB، ويستخدم فقط الجداول و
     #  🆕 تحديث الملخص التراكمي للمحادثة (استفسار منفصل — داخلي)
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _qa_summary_rules(self) -> str:
         return f"""أنت تدير ذاكرة محادثة بين مدير ومحلل بيانات. مهمتك: دمج الملخص السابق
 (إن وُجد) مع آخر سؤال وجواب في ملخص واحد محدَّث، يُستخدم لاحقاً فقط ليفهم
@@ -842,6 +867,7 @@ CREATE)، متوافقاً مع DuckDB، ويستخدم فقط الجداول و
 6. اكتب بصيغة نقاط قصيرة، كل نقطة في سطر مستقل تبدأ بالحرف '•' ثم مسافة.
 7. اكتب بنفس لغة المحادثة (العربية افتراضياً)."""
 
+    @trace_calls
     def build_qa_summary(self, old_summary: Optional[str], question: str, answer: str) -> str:
         """
         بناء Prompt تحديث الملخص التراكمي: الملخص السابق + آخر سؤال

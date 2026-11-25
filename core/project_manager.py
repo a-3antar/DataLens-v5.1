@@ -16,6 +16,9 @@ update_dashboard_template عبر sqlite3 مباشرة دون تعديل project_
 - import_project(): يقبل .db أو .db.gz (الناتج عن التصدير المضغوط).
 """
 
+
+from core.logger_config import trace_calls
+
 import gzip
 import uuid
 import shutil
@@ -43,6 +46,7 @@ class ProjectManager:
         pm.delete(project_id)
     """
 
+    @trace_calls
     def __init__(self, user_id: str):
         self.user_id  = user_id
         self.user_dir = PROJECTS_DIR / user_id
@@ -52,6 +56,7 @@ class ProjectManager:
     #  إنشاء مشروع
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def create(self, name: str) -> dict:
         """
         إنشاء مشروع جديد.
@@ -80,6 +85,7 @@ class ProjectManager:
     #  قائمة المشاريع
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def list_projects(self) -> list[dict]:
         """
         إرجاع كل مشاريع المستخدم مع معلومات موجزة.
@@ -108,6 +114,7 @@ class ProjectManager:
     #  فتح مشروع
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def open(self, project_id: str) -> Optional[ProjectDB]:
         """
         فتح مشروع موجود. يرجع ProjectDB أو None لو لم يوجد.
@@ -122,6 +129,7 @@ class ProjectManager:
     #  إعادة التسمية
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def rename(self, project_id: str, new_name: str) -> dict:
         """إعادة تسمية مشروع."""
         new_name = new_name.strip()
@@ -141,6 +149,7 @@ class ProjectManager:
     #  حذف مشروع
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def delete(self, project_id: str) -> dict:
         """حذف مشروع وكل ملفاته نهائياً."""
         project_dir = self.user_dir / project_id
@@ -156,6 +165,7 @@ class ProjectManager:
             logger.error("delete project error: %s", e)
             return {"ok": False, "error": str(e)}
 
+    @trace_calls
     def _close_db_connections(self, project_dir: Path) -> None:
         """إغلاق اتصالات SQLite المفتوحة في مجلد المشروع."""
         import gc
@@ -173,10 +183,12 @@ class ProjectManager:
     #  🆕 ضغط (تنظيف) ملف project.db
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _db_path(self, project_id: str) -> Path:
         """مسار ملف project.db الفعلي للمشروع."""
         return self.user_dir / project_id / "project.db"
 
+    @trace_calls
     def compact(self, project_id: str) -> dict:
         """
         تنفيذ VACUUM على project.db لإرجاع المساحة الفارغة التي يتركها
@@ -214,6 +226,7 @@ class ProjectManager:
     #  تصدير واستيراد
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def export(self, project_id: str, export_path: Path, compress: bool = False) -> dict:
         """
         تصدير project.db إلى مسار خارجي كنسخة مكتنزة (VACUUM INTO —
@@ -249,6 +262,7 @@ class ProjectManager:
             logger.error("export error: %s", e)
             return {"ok": False, "error": str(e)}
 
+    @trace_calls
     def import_project(self, db_file: Path) -> dict:
         """
         استيراد project.db من ملف خارجي (.db أو .db.gz الناتج عن

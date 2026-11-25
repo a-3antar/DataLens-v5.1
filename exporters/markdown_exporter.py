@@ -8,6 +8,9 @@ exporters/markdown_exporter.py
 يستخدم export() فقط لكتابة ملف مباشرة).
 """
 
+
+from core.logger_config import trace_calls
+
 import logging
 from pathlib import Path
 
@@ -25,9 +28,11 @@ class MarkdownExporter:
         exp.export(report_id, Path("report.md"))
     """
 
+    @trace_calls
     def __init__(self, report_manager: ReportManager):
         self.rm = report_manager
 
+    @trace_calls
     def export(self, report_id: str, output_path: Path) -> dict:
         """
         تصدير تقرير إلى .md.
@@ -61,6 +66,7 @@ class MarkdownExporter:
     #  بناء محتوى الـ Markdown
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _build_markdown(self, title: str, blocks: list) -> list[str]:
         lines = []
 
@@ -89,10 +95,12 @@ class MarkdownExporter:
 
         return lines
 
+    @trace_calls
     def _render_paragraph(self, content: dict) -> list[str]:
         text = content.get("text", "")
         return text.splitlines() if text else []
 
+    @trace_calls
     def _render_dashboard(self, content: dict) -> list[str]:
         lines = []
         title = content.get("title", "")
@@ -120,6 +128,7 @@ class MarkdownExporter:
 
         return lines
 
+    @trace_calls
     def _snapshot_cell_to_md(self, cell: dict) -> str:
         ctype = cell.get("type")
         data = cell.get("content", {}) or {}
@@ -143,6 +152,7 @@ class MarkdownExporter:
 
         return "<br>".join(parts) if parts else ""
 
+    @trace_calls
     def _render_table(self, content: dict) -> list[str]:
         data    = content.get("data", [])
         columns = content.get("columns", [])
@@ -161,6 +171,7 @@ class MarkdownExporter:
 
         return lines
 
+    @trace_calls
     def _render_kpi(self, content: dict) -> list[str]:
         label  = content.get("label", "مؤشر")
         actual = content.get("actual_value", 0)
@@ -178,6 +189,7 @@ class MarkdownExporter:
         ]
         return lines
 
+    @trace_calls
     def _render_gauge(self, content: dict) -> list[str]:
         label   = content.get("label", "مقياس")
         current = content.get("current_value", 0)
@@ -194,6 +206,7 @@ class MarkdownExporter:
         ]
         return lines
 
+    @trace_calls
     def _render_chart(self, content: dict) -> list[str]:
         title      = content.get("title", "رسم بياني")
         chart_type = content.get("chart_type", "")
@@ -213,6 +226,7 @@ class MarkdownExporter:
                 lines.append("| " + " | ".join(values) + " |")
         return lines
 
+    @trace_calls
     def _progress_bar(self, pct: float, width: int = 20) -> str:
         """شريط تقدم نصي."""
         filled = int(pct / 100 * width)

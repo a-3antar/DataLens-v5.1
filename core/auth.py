@@ -63,6 +63,9 @@ purge_expired_deletions() — تُستدعى دورياً (من main.py عند �
 المستخدم مسبقاً إلا عبر IntegrityError عند register).
 """
 
+
+from core.logger_config import trace_calls
+
 import sqlite3
 import shutil
 import uuid
@@ -95,26 +98,32 @@ _VALID_PURPOSES = {"verify_email", "change_email", "reset_password"}
 #  أدوات مساعدة داخلية
 # ══════════════════════════════════════════════════════════════
 
+@trace_calls
 def _now() -> datetime:
     return datetime.utcnow()
 
+@trace_calls
 def _now_str() -> str:
     return _now().isoformat()
 
+@trace_calls
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(str(USERS_DB))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
+@trace_calls
 def _hash_code(code: str) -> str:
     """بصمة SHA-256 لرمز التحقق — لا يُخزَّن الرمز نفسه كنص صريح أبداً."""
     return hashlib.sha256(code.encode()).hexdigest()
 
+@trace_calls
 def _generate_code() -> str:
     """رمز عشوائي من 6 أرقام (000000–999999) عبر secrets (آمن تشفيرياً)."""
     return f"{secrets.randbelow(1_000_000):06d}"
 
+@trace_calls
 def _init_users_db() -> None:
     """إنشاء جداول users.db عند أول استيراد، وتطبيق أي migrations لاحقة."""
     with _connect() as conn:
@@ -223,6 +232,7 @@ class AuthManager:
         auth.reset_password_with_code("admin", "123456", "new_password")
     """
 
+    @trace_calls
     def __init__(self):
         # تهيئة قاعدة البيانات عند كل إنشاء instance
         # آمن: CREATE TABLE IF NOT EXISTS لا يضر لو الجداول موجودة
@@ -232,6 +242,7 @@ class AuthManager:
     #  التسجيل
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def register(self, username: str, password: str, email: str = "") -> dict:
         """
         تسجيل مستخدم جديد. البريد الإلكتروني اختياري عند التسجيل —
@@ -286,6 +297,7 @@ class AuthManager:
     #  تسجيل الدخول
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def login(self, username: str, password: str) -> dict:
         """
         تسجيل الدخول.
@@ -334,6 +346,7 @@ class AuthManager:
     #  معلومات المستخدم
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def get_user_info(self, user_id: str) -> Optional[dict]:
         """
         معلومات ملف المستخدم الأساسية (اسم، بريد، حالة توثيق البريد) —
@@ -361,11 +374,13 @@ class AuthManager:
     #  تسجيل الخروج
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def logout(self, token: str) -> None:
         """حذف الجلسة الحالية."""
         self._delete_session(token)
         logger.info("Session deleted: %s...", token[:8] if token else "None")
 
+    @trace_calls
     def _delete_session(self, token: str) -> None:
         try:
             with _connect() as conn:
@@ -374,6 +389,7 @@ class AuthManager:
         except sqlite3.Error as e:
             logger.error("_delete_session error: %s", e)
 
+    @trace_calls
     def _delete_all_sessions_for_user(self, user_id: str) -> None:
         """حذف كل جلسات مستخدم معيّن (تُستخدم عند حذف الحساب)."""
         try:
@@ -387,6 +403,7 @@ class AuthManager:
     #  إدارة الجلسات
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def clean_expired_sessions(self) -> int:
         """حذف الجلسات المنتهية. يرجع عدد السجلات المحذوفة."""
         try:
@@ -408,6 +425,7 @@ class AuthManager:
     #  🆕 تعديل بيانات المستخدم (اسم المستخدم)
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def update_username(self, user_id: str, new_username: str) -> dict:
         """
         تعديل اسم المستخدم — يتطلب اسماً غير مستخدم من قبل حساب آخر.
@@ -439,6 +457,7 @@ class AuthManager:
     #  🆕 تغيير كلمة المرور
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def change_password(self, user_id: str, old_password: str, new_password: str) -> dict:
         """
         تغيير كلمة مرور المستخدم — يتطلب كلمة المرور الحالية الصحيحة.
@@ -478,6 +497,7 @@ class AuthManager:
     #  🆕 البريد الإلكتروني — رموز تحقق مشتركة
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _create_code(self, user_id: str, purpose: str, target_email: str = None) -> str:
         """
         إنشاء رمز تحقق جديد (6 أرقام) وتخزين بصمته فقط. أي رمز سابق
@@ -504,6 +524,7 @@ class AuthManager:
             conn.commit()
         return code
 
+    @trace_calls
     def _consume_code(self, user_id: str, purpose: str, code: str) -> dict:
         """
         التحقق من رمز وحذفه فور نجاح المطابقة (استخدام لمرة واحدة).
@@ -545,12 +566,14 @@ class AuthManager:
             logger.error("_consume_code error: %s", e)
             return {"ok": False, "error": "خطأ في قاعدة البيانات"}
 
+    @trace_calls
     def is_email_configured(self) -> bool:
         """هل خادم SMTP مضبوط على هذا السيرفر؟ — تستخدمها الواجهة لإظهار/إخفاء أزرار الإرسال."""
         return email_is_configured()
 
     # ── تأكيد البريد الأول ──
 
+    @trace_calls
     def send_verification_code(self, user_id: str) -> dict:
         """إرسال رمز تأكيد للبريد الحالي المسجَّل للمستخدم."""
         info = self.get_user_info(user_id)
@@ -568,6 +591,7 @@ class AuthManager:
         )
         return send_email(info["email"], "رمز تأكيد البريد الإلكتروني — DataLens", body)
 
+    @trace_calls
     def verify_email(self, user_id: str, code: str) -> dict:
         """استهلاك رمز تأكيد البريد الأول وتعليم البريد كموثّق."""
         r = self._consume_code(user_id, "verify_email", code)
@@ -585,6 +609,7 @@ class AuthManager:
 
     # ── تغيير البريد الإلكتروني ──
 
+    @trace_calls
     def request_email_change(self, user_id: str, new_email: str) -> dict:
         """
         طلب تغيير البريد الإلكتروني: يُرسَل رمز تأكيد إلى البريد
@@ -615,6 +640,7 @@ class AuthManager:
         )
         return send_email(new_email, "رمز تأكيد تغيير البريد الإلكتروني — DataLens", body)
 
+    @trace_calls
     def confirm_email_change(self, user_id: str, code: str) -> dict:
         """استهلاك رمز تغيير البريد وتطبيق البريد الجديد فعلياً."""
         r = self._consume_code(user_id, "change_email", code)
@@ -638,6 +664,7 @@ class AuthManager:
 
     # ── استعادة كلمة مرور منسية ──
 
+    @trace_calls
     def request_password_reset(self, username: str) -> dict:
         """
         إرسال رمز استعادة كلمة المرور إلى البريد المسجَّل لاسم
@@ -666,6 +693,7 @@ class AuthManager:
         )
         return send_email(row["email"], "رمز استعادة كلمة المرور — DataLens", body)
 
+    @trace_calls
     def reset_password_with_code(self, username: str, code: str, new_password: str) -> dict:
         """تعيين كلمة مرور جديدة عبر رمز الاستعادة — لا يتطلب تسجيل دخول."""
         if not new_password or len(new_password) < 6:
@@ -710,6 +738,7 @@ class AuthManager:
     #  🆕 حذف الحساب (Soft Delete + أرشفة 30 يوماً)
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def delete_account(self, user_id: str, password: str) -> dict:
         """
         حذف حساب المستخدم:
@@ -781,6 +810,7 @@ class AuthManager:
             logger.error("delete_account error: %s", e)
             return {"ok": False, "error": str(e)}
 
+    @trace_calls
     def purge_expired_deletions(self) -> int:
         """
         حذف نهائي لكل أرشيفات الحسابات المحذوفة التي تجاوزت مهلة
@@ -818,6 +848,7 @@ class AuthManager:
     #  مفاتيح API لكل مستخدم — مُشفَّرة في التخزين (core.crypto)
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def save_api_key(self, user_id: str, engine_name: str, api_key: str, model: str = "") -> None:
         """
         حفظ/تحديث مفتاح API لمحرك معيّن لهذا المستخدم.
@@ -844,6 +875,7 @@ class AuthManager:
             logger.error("save_api_key error: %s", e)
             raise
 
+    @trace_calls
     def get_api_key(self, user_id: str, engine_name: str) -> dict:
         """
         إرجاع {"api_key": "...", "model": "..."} لمحرك معيّن — api_key
@@ -864,6 +896,7 @@ class AuthManager:
             logger.error("get_api_key error: %s", e)
             return {"api_key": "", "model": ""}
 
+    @trace_calls
     def get_last_used_engine(self, user_id: str) -> Optional[dict]:
         """
         آخر محرك+مفتاح استخدمه المستخدم (بناءً على أحدث updated_at) —

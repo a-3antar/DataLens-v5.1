@@ -33,6 +33,9 @@ ui/login.py
 لا تغيير على منطق AuthManager أو استدعاءاته.
 """
 
+
+from core.logger_config import trace_calls
+
 import streamlit as st
 
 from core.auth import AuthManager
@@ -40,6 +43,7 @@ from config import APP_NAME, APP_ICON
 from ui.common import notify
 
 
+@trace_calls
 def show_login():
     st.markdown(
         f"<h1 style='text-align:center;'>{APP_ICON} {APP_NAME}</h1>",
@@ -69,6 +73,7 @@ def show_login():
     )
 
 
+@trace_calls
 def _render_login_tab(auth: AuthManager):
     """نموذج تسجيل الدخول — Enter في أي حقل يُسجّل الدخول مباشرة."""
     
@@ -97,6 +102,7 @@ def _render_login_tab(auth: AuthManager):
                 st.error(r["error"])
 
 
+@trace_calls
 def _render_register_tab(auth: AuthManager):
     """نموذج إنشاء حساب جديد — Enter في أي حقل يُنشئ الحساب مباشرة."""
     with st.container(border=True):
@@ -142,6 +148,7 @@ def _render_register_tab(auth: AuthManager):
                     st.error(r["error"])
 
 
+@trace_calls
 def _render_forgot_password(auth: AuthManager):
     """
     استعادة كلمة مرور منسية عبر رمز يُرسَل للبريد المسجَّل — لا تتطلب

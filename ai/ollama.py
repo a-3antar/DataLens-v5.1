@@ -4,6 +4,9 @@ ai/ollama.py
 محرك Ollama المحلي مع إعدادات مناسبة لمهام تحليل البيانات وكتابة SQL.
 """
 
+
+from core.logger_config import trace_calls
+
 import logging
 from typing import Optional
 
@@ -18,6 +21,7 @@ logger = logging.getLogger(__name__)
 class OllamaEngine(BaseEngine):
     """محرك Ollama المحلي."""
 
+    @trace_calls
     def __init__(
         self,
         base_url: str = OLLAMA_DEFAULT_URL,
@@ -36,13 +40,16 @@ class OllamaEngine(BaseEngine):
         self.keep_alive = keep_alive
 
     @property
+    @trace_calls
     def models_url(self) -> str:
         return f"{self.base_url}/api/tags"
 
     @property
+    @trace_calls
     def generate_url(self) -> str:
         return f"{self.base_url}/api/generate"
 
+    @trace_calls
     def get_models(self) -> dict:
         """إرجاع النماذج المثبتة في Ollama."""
         try:
@@ -65,12 +72,14 @@ class OllamaEngine(BaseEngine):
             logger.error("Ollama get_models error: %s", e)
             return {"ok": False, "error": str(e), "error_type": "other"}
 
+    @trace_calls
     def _num_predict_for_prompt(self, prompt: str) -> int:
         """حد أصغر لمخرجات SQL لتقليل زمن التوليد ومنع الاستطراد."""
         if "SQL QUERY:" in prompt:
             return 384
         return 768
 
+    @trace_calls
     def send(
         self,
         prompt: str,
@@ -159,6 +168,7 @@ class OllamaEngine(BaseEngine):
             logger.exception("Ollama send error")
             return {"ok": False, "error": str(e), "error_type": "other"}
 
+    @trace_calls
     def status(self) -> dict:
         """التحقق من أن Ollama يعمل."""
         result = self.get_models()

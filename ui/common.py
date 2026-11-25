@@ -104,6 +104,9 @@ CSS جديدة (`.stMarkdown thead tr:has(th:empty):not(:has(th:not(:empty)))`)
 الصفحات القائمة فوراً، فهي دوال اختيارية إضافية فقط.
 """
 
+
+from core.logger_config import trace_calls
+
 import colorsys
 import html as _html
 import shutil
@@ -262,10 +265,12 @@ _DANGER_COLOR_HOVER = "#B91C1C"
 _SUCCESS_COLOR = "#16A34A"
 
 
+@trace_calls
 def apply_rtl():
     st.markdown(RTL_CSS, unsafe_allow_html=True)
 
 
+@trace_calls
 def apply_theme_css(theme_key_or_settings="ocean_dark"):
     """
     تطبيق ألوان الثيم فعلياً على الواجهة (خلفية، أزرار، عناوين، بطاقات،
@@ -601,6 +606,7 @@ def apply_theme_css(theme_key_or_settings="ocean_dark"):
     st.markdown(css, unsafe_allow_html=True)
 
 
+@trace_calls
 def apply_page_style(theme_key: str = None):
     """
     اختصار موحّد لبداية أي صفحة: يُطبّق RTL دائماً، ثم يُطبّق ألوان
@@ -619,6 +625,7 @@ def apply_page_style(theme_key: str = None):
         apply_theme_css(theme_key)
 
 
+@trace_calls
 def _normalize_custom_colors(raw: dict) -> dict:
     """
     ضمان وجود كل مفاتيح الألوان الخمسة المطلوبة بقيمة نصية صالحة،
@@ -633,6 +640,7 @@ def _normalize_custom_colors(raw: dict) -> dict:
     }
 
 
+@trace_calls
 def _resolve_theme_colors(settings_or_theme) -> dict:
     """
     قبول إما dict إعدادات مشروع كامل (settings) أو اسم ثيم كنص مباشرة
@@ -659,6 +667,7 @@ def _resolve_theme_colors(settings_or_theme) -> dict:
     return THEME_COLORS.get(theme_key, THEME_COLORS["ocean_dark"])
 
 
+@trace_calls
 def get_theme_colors(settings_or_theme="ocean_dark") -> dict:
     """
     واجهة عامة (public) لقراءة ألوان الثيم الخام الخمسة
@@ -674,6 +683,7 @@ def get_theme_colors(settings_or_theme="ocean_dark") -> dict:
 #  توليد لوحة ألوان (colorway) للرسوم البيانية من ألوان الثيم
 # ══════════════════════════════════════════════════════════════
 
+@trace_calls
 def _hex_to_rgb01(h: str) -> tuple[float, float, float]:
     h = (h or "").lstrip("#")
     if len(h) != 6:
@@ -681,11 +691,13 @@ def _hex_to_rgb01(h: str) -> tuple[float, float, float]:
     return tuple(int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
 
 
+@trace_calls
 def _rgb01_to_hex(rgb: tuple[float, float, float]) -> str:
     r, g, b = (max(0.0, min(1.0, c)) for c in rgb)
     return "#{:02X}{:02X}{:02X}".format(int(r * 255), int(g * 255), int(b * 255))
 
 
+@trace_calls
 def _generate_chart_colorway(colors: dict, n: int = 6) -> list[str]:
     """
     بناء لوحة ألوان متناسقة للرسوم البيانية (Plotly) انطلاقاً من لون
@@ -714,6 +726,7 @@ def _generate_chart_colorway(colors: dict, n: int = 6) -> list[str]:
     return palette
 
 
+@trace_calls
 def _apply_chart_colors(fig, colors: dict) -> None:
     """
     🆕 فرض ألوان الثيم صراحةً على كل trace في الرسم، بعد إنشائه.
@@ -777,6 +790,7 @@ def _apply_chart_colors(fig, colors: dict) -> None:
         trace_idx += 1
 
 
+@trace_calls
 def get_chart_theme(settings_or_theme="ocean_dark") -> dict:
     """
     إرجاع إعدادات ثيم جاهزة للتطبيق مباشرة على أي Plotly figure عبر
@@ -803,6 +817,7 @@ def get_chart_theme(settings_or_theme="ocean_dark") -> dict:
     }
 
 
+@trace_calls
 def apply_plotly_theme(fig, settings_or_theme="ocean_dark"):
     """
     تطبيق ثيم شفاف متوافق مع لون نص الثيم الحالي مباشرة على كائن
@@ -867,6 +882,7 @@ def apply_plotly_theme(fig, settings_or_theme="ocean_dark"):
 # نص أبيض، وcard/bg بالتبادل لتقسيم الصفوف (zebra striping) — نفس
 # القيم المستخدمة في قواعد .stMarkdown table أعلاه في apply_theme_css.
 
+@trace_calls
 def render_themed_table(df, settings_or_theme="ocean_dark", max_rows: int = None, key: str = None) -> None:
     """
     عرض DataFrame كجدول HTML ملوَّن فعلياً بألوان الثيم الحالي (رأس
@@ -955,6 +971,7 @@ def render_themed_table(df, settings_or_theme="ocean_dark", max_rows: int = None
 # طبيعي. هاتان دالتان اختياريتان تُستخدمان تدريجياً في الصفحات — لا
 # تُغيّران أي سلوك حالي بمجرد وجودهما في هذا الملف.
 
+@trace_calls
 def action_bar(actions: list[dict], key: str = None) -> str | None:
     """
     عرض مجموعة أزرار في صف واحد بمسافات متسقة، بدل بناء st.columns
@@ -1018,6 +1035,7 @@ def action_bar(actions: list[dict], key: str = None) -> str | None:
     return clicked_label
 
 
+@trace_calls
 def sequential_form(fields: list[dict], submit_label: str = "حفظ", key: str = None,
                      submit_kind: str = "primary") -> dict | None:
     """
@@ -1087,6 +1105,7 @@ def sequential_form(fields: list[dict], submit_label: str = "حفظ", key: str =
     return values if submitted else None
 
 
+@trace_calls
 def require_login():
     """يوقف تنفيذ الصفحة لو المستخدم لم يسجل دخول."""
     if "token" not in st.session_state or not st.session_state.get("token"):
@@ -1095,6 +1114,7 @@ def require_login():
         st.stop()
 
 
+@trace_calls
 def require_project() -> ProjectDB:
     """يوقف تنفيذ الصفحة لو لا يوجد مشروع مفتوح، ويرجع ProjectDB."""
     if "project_id" not in st.session_state or not st.session_state.get("project_id"):
@@ -1105,11 +1125,13 @@ def require_project() -> ProjectDB:
     return st.session_state.db
 
 
+@trace_calls
 def get_project_manager() -> ProjectManager:
     if "pm" not in st.session_state or st.session_state.pm is None:
         st.session_state.pm = ProjectManager(st.session_state.user_id)
     return st.session_state.pm
 
+@trace_calls
 def sidebar_header():
     """
     رأس الشريط الجانبي: قائمة حساب منسدلة (اسم المستخدم) + المشروع
@@ -1155,6 +1177,7 @@ def sidebar_header():
             st.rerun()
 
 
+@trace_calls
 def _render_account_quick_menu(auth) -> None:
     """
     محتوى قائمة الحساب السريعة المنسدلة من اسم المستخدم في الشريط
@@ -1194,6 +1217,7 @@ _KIND_ICONS = {
 }
 
 
+@trace_calls
 def notify(message: str, kind: str = "info", icon: str = None) -> None:
     """
     عرض إشعار عابر (toast) موحّد لأي حدث في التطبيق.
@@ -1221,6 +1245,7 @@ def notify(message: str, kind: str = "info", icon: str = None) -> None:
 # للمنطقة الزمنية المفضّلة للمستخدم (محفوظة في project settings تحت
 # مفتاح "timezone"), حتى لا نُغيّر أي شيء في طريقة التخزين نفسها.
 
+@trace_calls
 def format_local_dt(iso_str, settings: dict, fmt: str = "%Y-%m-%d %H:%M") -> str:
     """
     تحويل وقت مخزَّن بصيغة ISO (UTC دائماً) إلى نص معروض بالمنطقة
@@ -1258,6 +1283,7 @@ _TEMP_PREFIX = APP_NAME + "_export_"
 
 
 @contextmanager
+@trace_calls
 def temp_export_dir():
     """
     Context manager يُنشئ مجلداً مؤقتاً بادئته مميزة (لسهولة التنظيف
@@ -1271,6 +1297,7 @@ def temp_export_dir():
         shutil.rmtree(out_dir, ignore_errors=True)
 
 
+@trace_calls
 def offer_download(path: Path, label: str, file_name: str, key: str = None, mime: str = None):
     """
     يقرأ محتوى الملف في الذاكرة ويعرض زر تحميل — يُستخدم فقط داخل
@@ -1280,6 +1307,7 @@ def offer_download(path: Path, label: str, file_name: str, key: str = None, mime
     st.download_button(label, data=data, file_name=file_name, key=key, mime=mime)
 
 
+@trace_calls
 def cleanup_stale_temp_dirs(max_age_hours: int = 2) -> int:
     """
     شبكة أمان احتياطية: تمسح أي مجلدات تصدير مؤقتة قديمة تخص التطبيق
@@ -1308,6 +1336,7 @@ def cleanup_stale_temp_dirs(max_age_hours: int = 2) -> int:
 #  Chat Design System
 # ══════════════════════════════════════════════════════════════
 
+@trace_calls
 def chat_ui_css(settings: dict) -> str:
     """طبقة التصميم المشتركة لواجهة المحادثة، معتمدة على الثيم المركزي للمشروع.
 

@@ -50,6 +50,9 @@ GaugeCell._to_number() تُحوّل كل قيمة بأمان (تدعم أرقا�
 واضحة للمستخدم بدل ترك الاستثناء يصعد حتى main.py ويُسقط الصفحة.
 """
 
+
+from core.logger_config import trace_calls
+
 import json
 import uuid
 
@@ -84,9 +87,11 @@ class EmptyCell:
     display_type = None
     label = "عنصر جديد"
 
+    @trace_calls
     def __init__(self, position: int):
         self.position = position
 
+    @trace_calls
     def render_editor(self, db, dm, settings: dict, dashboard_id: str, is_gauge_row: bool, edit_key: str) -> None:
         # الاستيراد هنا (وليس أعلى الملف) لتفادي أي احتمال دورة استيراد
         # مع core/dashboard_cells/__init__.py الذي يستورد هذا الملف نفسه.
@@ -117,9 +122,11 @@ class TableCell(DashboardCellBase):
     display_type = "table"
     label = "جدول"
 
+    @trace_calls
     def to_stored_dict(self, raw_result: dict) -> dict:
         return self._base_stored_dict(raw_result)
 
+    @trace_calls
     def send_to_report(self, rm, report_id, label, include_data=False):
         if not self.last_result:
             return {"ok": False, "error": "لا توجد نتيجة لإرسالها"}
@@ -128,6 +135,7 @@ class TableCell(DashboardCellBase):
             self.last_result.get("rows", []), self.last_result.get("columns", []),
         )
 
+    @trace_calls
     def render_result(self, settings: dict, dashboard_id: str) -> None:
         if self._render_error_or_empty():
             return
@@ -168,6 +176,7 @@ class TableCell(DashboardCellBase):
 #  🆕 دالة مشتركة: بناء رسم Plotly من عمود/أعمدة قيمة بشكل صحيح
 # ══════════════════════════════════════════════════════════════
 
+@trace_calls
 def _build_chart_figure(df: pd.DataFrame, x_col: str, y_cols: list, ctype: str):
     """
     بناء كائن Plotly Express المناسب حسب نوع الرسم، مع معالجة حالة
@@ -191,6 +200,7 @@ def _build_chart_figure(df: pd.DataFrame, x_col: str, y_cols: list, ctype: str):
     return px.bar(df, x=x_col, y=y_param, barmode="group", text_auto=True)
 
 
+@trace_calls
 def _apply_chart_layout_tweaks(fig, ctype: str) -> None:
     """
     🆕 تعديلات تخطيط مشتركة بعد بناء أي رسم بياني:
@@ -227,11 +237,13 @@ class ChartCell(DashboardCellBase):
     display_type = "chart"
     label = "رسم بياني"
 
+    @trace_calls
     def to_stored_dict(self, raw_result: dict) -> dict:
         stored = self._base_stored_dict(raw_result)
         stored["chart_type"] = self.chart_type or "bar"
         return stored
 
+    @trace_calls
     def send_to_report(self, rm, report_id, label, include_data=False):
         if not self.last_result:
             return {"ok": False, "error": "لا توجد نتيجة لإرسالها"}
@@ -247,6 +259,7 @@ class ChartCell(DashboardCellBase):
             title=label or self.title or "",
         )
         
+    @trace_calls
     def render_type_specific_fields(self, dashboard_id: str) -> dict:
         ctype_options = list(CHART_TYPES.keys())
         cur_ctype = self.chart_type or "bar"
@@ -258,6 +271,7 @@ class ChartCell(DashboardCellBase):
         )
         return {"chart_type": chart_type}
 
+    @trace_calls
     def render_result(self, settings: dict, dashboard_id: str) -> None:
         if self._render_error_or_empty():
             return
@@ -303,9 +317,11 @@ class GaugeCell(DashboardCellBase):
     display_type = "gauge"
     label = "مقياس (Gauge)"
 
+    @trace_calls
     def to_stored_dict(self, raw_result: dict) -> dict:
         return self._base_stored_dict(raw_result)
 
+    @trace_calls
     def send_to_report(self, rm, report_id, label, include_data=False):
         if not self.last_result:
             return {"ok": False, "error": "لا توجد نتيجة لإرسالها"}
@@ -320,6 +336,7 @@ class GaugeCell(DashboardCellBase):
         )
 
     @staticmethod
+    @trace_calls
     def _to_number(value):
         """
         تحويل آمن لأي قيمة قادمة من نتيجة AI إلى float، يقبل الأرقام
@@ -338,6 +355,7 @@ class GaugeCell(DashboardCellBase):
         except (TypeError, ValueError):
             return None
 
+    @trace_calls
     def render_result(self, settings: dict, dashboard_id: str) -> None:
         if self._render_error_or_empty():
             return
@@ -386,9 +404,11 @@ class KpiCell(DashboardCellBase):
     display_type = "kpi"
     label = "بطاقة مؤشر (KPI)"
 
+    @trace_calls
     def to_stored_dict(self, raw_result: dict) -> dict:
         return self._base_stored_dict(raw_result)
 
+    @trace_calls
     def send_to_report(self, rm, report_id, label, include_data=False):
         if not self.last_result:
             return {"ok": False, "error": "لا توجد نتيجة لإرسالها"}
@@ -401,6 +421,7 @@ class KpiCell(DashboardCellBase):
             label=label or self.title or "",
         )
 
+    @trace_calls
     def render_result(self, settings: dict, dashboard_id: str) -> None:
         if self._render_error_or_empty():
             return
@@ -432,6 +453,7 @@ class StoryCell(DashboardCellBase):
     display_type = "story"
     label = "تحليل نصي (Story Telling)"
 
+    @trace_calls
     def execute(self, ai_manager, query_engine, dashboard_id: str, ai_rules) -> dict:
         """
         🆕 لو كان base_sql محفوظاً (يحمل JSON لخطة استعلامات سابقة)،
@@ -453,6 +475,7 @@ class StoryCell(DashboardCellBase):
         r["used_ai"] = True
         return r
 
+    @trace_calls
     def to_stored_dict(self, raw_result: dict) -> dict:
         queries = []
         for q in raw_result.get("queries", []):
@@ -474,6 +497,7 @@ class StoryCell(DashboardCellBase):
             "queries": queries,
         }
 
+    @trace_calls
     def send_to_report(self, rm, report_id, label, include_data=False):
         if not self.last_result:
             return {"ok": False, "error": "لا توجد نتيجة لإرسالها"}
@@ -487,6 +511,7 @@ class StoryCell(DashboardCellBase):
                     rm.add_table(report_id, str(uuid.uuid4()), q["rows"], q.get("columns", []))
         return result
 
+    @trace_calls
     def render_result(self, settings: dict, dashboard_id: str) -> None:
         if self._render_error_or_empty():
             return

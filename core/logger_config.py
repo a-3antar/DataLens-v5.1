@@ -1,123 +1,209 @@
 """
 core/logger_config.py
-=======================
-إعداد logging مركزي للتطبيق بالكامل: يكتب كل الرسائل (INFO فأعلى) إلى
-ملف log على القرص، مع تدوير تلقائي (Rotating) لمنع تضخّم الملف بلا حد.
-
-هذا الملف مسؤول فقط عن الكتابة على القرص — لا يعرض أي شيء في واجهة
-Streamlit (بناءً على قرار صريح: التطبيق لا يُظهر أي تنبيهات على الشاشة
-غير ما هو موجود أصلاً في منطق كل صفحة).
-
-🆕 اسم المستخدم في كل سطر log:
---------------------------------
-كل سطر مكتوب في LOG_FILE يتضمّن الآن اسم المستخدم الحالي (أو "-" لو
-غير معروف بعد، مثلاً قبل تسجيل الدخول أو أثناء تنفيذ منطق لا علاقة
-له بمستخدم معيّن) — بدون أي تعديل على أي استدعاء logger.info/error/...
-الموجود حالياً في أي ملف بالمشروع (core/*, ai/*, exporters/*, ui/*).
-
-الآلية: contextvars.ContextVar بدل الاعتماد على st.session_state
-مباشرة داخل الـ logging.Filter، للسبب التالي: core/dashboard_manager.py
-ينفّذ بعض خلايا اللوحة (بالتوازي عبر ThreadPoolExecutor) — وهذه الـ
-threads العاملة لا تملك وصولاً آمناً/موثوقاً لـ st.session_state
-(المرتبط بـ ScriptRunContext الخاص بالـ thread الرئيسي فقط). أما
-contextvars.ContextVar فتُنسخ تلقائياً كنسخة مستقلة لكل thread يُنشأ
-عبر ThreadPoolExecutor/threading.Thread وقت الإنشاء، فتحمل معها آخر
-قيمة كانت مضبوطة في الـ thread الرئيسي وقتها — بدون أي حاجة لتمريرها
-يدوياً كمعامل عبر كل دالة.
-
-الاستخدام:
-    من main.py فقط، مرة واحدة عند إقلاع التطبيق:
-        from core.logger_config import setup_logging
-        setup_logging()
-
-    ولضبط اسم المستخدم الحالي (من ui/common.py عادة، بمجرد معرفته):
-        from core.logger_config import set_log_username
-        set_log_username(st.session_state.get("username"))
-
-    بعدها أي `logging.getLogger(__name__)` في أي ملف بالمشروع يكتب
-    تلقائياً لنفس الملف، مع اسم المستخدم مُضمَّناً تلقائياً في كل سطر،
-    تماماً كما يعمل logger الحالي في كل الملفات بدون أي تعديل عليها.
-
-🧹 تنظيف: حُذفت get_log_file_path() — غير مستخدمة في أي مكان (لا توجد
-حالياً واجهة لعرض/تنزيل ملف اللوج).
+=====================
+إعداد التسجيل المركزي لـ DataLens:
+- كتابة السجلات إلى ملف دوّار.
+- دعم مستويات INFO وDEBUG عبر DATALENS_LOG_LEVEL.
+- جمع WARNING وERROR لعرض تنبيه آمن داخل Streamlit.
+- ربط اسم المستخدم بسياق التنفيذ.
+- تتبّع دخول/خروج الدوال ومدة تنفيذها دون تسجيل المعاملات أو البيانات.
 """
 
+import inspect
 import logging
 import logging.handlers
-from pathlib import Path
+import re
+from collections import deque
 from contextvars import ContextVar
-
-from config import DATA_DIR
+from functools import wraps
+from pathlib import Path
+from threading import Lock
+from time import perf_counter
 from warnings import filterwarnings
 
-# ─── إعدادات ملف الـ log ───────────────────────────────────
-LOG_DIR        = DATA_DIR / "logs"
-LOG_FILE       = LOG_DIR / "app.log"
-LOG_MAX_BYTES  = 5 * 1024 * 1024   # 5 ميجابايت لكل ملف قبل التدوير
-LOG_BACKUP_COUNT = 5               # عدد النسخ الاحتياطية المحتفَظ بها
-LOG_FORMAT     = "%(asctime)s | %(levelname)-8s | %(username)-15s | %(name)15s | %(message)s"
+from config import DATA_DIR
+
+
+LOG_DIR = DATA_DIR / "logs"
+LOG_FILE = LOG_DIR / "app.log"
+LOG_MAX_BYTES = 5 * 1024 * 1024
+LOG_BACKUP_COUNT = 5
+LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(username)-15s | %(name)15s | %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
+_DEFAULT_USERNAME = "-"
+_current_username: ContextVar[str] = ContextVar(
+    "current_username", default=_DEFAULT_USERNAME
+)
+
+_UI_MESSAGES = deque(maxlen=100)
+_UI_MESSAGES_LOCK = Lock()
 _is_configured = False
 
-# القيمة الافتراضية "-" لأي سطر log يُكتب قبل معرفة أي مستخدم (بدء
-# تشغيل السيرفر، أو عمليات تنظيف عامة لا تخص مستخدماً بعينه).
-_DEFAULT_USERNAME = "-"
-_current_username: ContextVar[str] = ContextVar("current_username", default=_DEFAULT_USERNAME)
+_SECRET_PATTERNS = (
+    (re.compile(r"(?i)(api[_ -]?key|token|password|secret|authorization)(\s*[:=]\s*)([^\s,;]+)"), r"\1\2[REDACTED]"),
+    (re.compile(r"(?i)Bearer\s+[^\s,;]+"), "Bearer [REDACTED]"),
+)
 
-
-# ══════════════════════════════════════════════════════════════
-#  ضبط/قراءة اسم المستخدم الحالي — تُستدعى من ui/common.py
-# ══════════════════════════════════════════════════════════════
 
 def set_log_username(username: str = None) -> None:
-    """
-    ضبط اسم المستخدم الحالي لهذا الـ context (الـ thread الرئيسي لهذا
-    السكربت في Streamlit). يُستدعى بمجرد معرفة st.session_state.username
-    (عادة من ui/common.py::require_login/sidebar_header) — كل استدعاء
-    logger لاحق في نفس الـ context (وأي thread يُنشأ منه لاحقاً، مثل
-    threads تحديث لوحات المعلومات) يحمل هذا الاسم تلقائياً.
-
-    تمرير None أو نص فارغ يُعيده إلى القيمة الافتراضية "-" (مفيد بعد
-    تسجيل الخروج مثلاً).
-    """
+    """ضبط اسم المستخدم لسياق التنفيذ الحالي دون الوصول إلى session_state من threads."""
     _current_username.set(username.strip() if username else _DEFAULT_USERNAME)
 
 
 def clear_log_username() -> None:
-    """إعادة تعيين اسم المستخدم للـ context الحالي إلى الافتراضي — تُستدعى عند تسجيل الخروج."""
+    """إعادة اسم المستخدم إلى القيمة الافتراضية."""
     _current_username.set(_DEFAULT_USERNAME)
 
 
 class _UsernameFilter(logging.Filter):
-    """
-    logging.Filter يُضيف حقل username إلى كل LogRecord قبل تنسيقه —
-    مصدر القيمة هو الـ ContextVar أعلاه، فتعمل بشكل صحيح سواء استُدعي
-    الـ logger من الـ thread الرئيسي أو من thread عامل ورث نفس السياق.
-    """
-
     def filter(self, record: logging.LogRecord) -> bool:
         record.username = _current_username.get()
         return True
 
 
+def _safe_ui_message(record: logging.LogRecord) -> str:
+    """تنقيح الأنماط الشائعة للأسرار قبل إظهار نص التحذير/الخطأ في الواجهة."""
+    try:
+        message = record.getMessage()
+    except Exception:
+        message = "تعذر قراءة تفاصيل رسالة السجل"
+
+    for pattern, replacement in _SECRET_PATTERNS:
+        message = pattern.sub(replacement, message)
+
+    message = " ".join(str(message).split())
+    return message[:500]
+
+
+class _UIQueueHandler(logging.Handler):
+    """قناة صغيرة وآمنة نسبياً لتمرير WARNING/ERROR إلى دورة Streamlit الحالية."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.levelno < logging.WARNING:
+            return
+        try:
+            item = {
+                "level": record.levelname,
+                "logger": record.name,
+                "message": _safe_ui_message(record),
+            }
+            with _UI_MESSAGES_LOCK:
+                _UI_MESSAGES.append(item)
+        except Exception:
+            self.handleError(record)
+
+
+def drain_ui_log_messages() -> list:
+    """إرجاع التنبيهات المتراكمة ثم تفريغها؛ تُستدعى من main.py على thread الواجهة."""
+    with _UI_MESSAGES_LOCK:
+        messages = list(_UI_MESSAGES)
+        _UI_MESSAGES.clear()
+    return messages
+
+
+def trace_calls(func):
+    """
+    Decorator لتسجيل بداية/نهاية الدوال ومدتها عند DEBUG.
+    لا يسجل args أو kwargs أو قيم الإرجاع منعاً لتسريب بيانات المستخدم.
+    يسجل الاستثناءات غير المعالجة مع Stack Trace ثم يعيد رفعها كما هي.
+    """
+    if getattr(func, "__datalens_trace_calls__", False):
+        return func
+
+    log = logging.getLogger(func.__module__)
+    function_name = func.__qualname__
+
+    def _started():
+        started = perf_counter()
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug("CALL start | function=%s", function_name)
+        return started
+
+    def _finished(started):
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "CALL complete | function=%s | duration_ms=%.2f",
+                function_name,
+                (perf_counter() - started) * 1000,
+            )
+
+    if inspect.isasyncgenfunction(func):
+        @wraps(func)
+        async def async_generator_wrapper(*args, **kwargs):
+            started = _started()
+            try:
+                async for item in func(*args, **kwargs):
+                    yield item
+            except Exception:
+                log.exception("CALL failed | function=%s", function_name)
+                raise
+            else:
+                _finished(started)
+        wrapper = async_generator_wrapper
+
+    elif inspect.iscoroutinefunction(func):
+        @wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            started = _started()
+            try:
+                result = await func(*args, **kwargs)
+            except Exception:
+                log.exception("CALL failed | function=%s", function_name)
+                raise
+            _finished(started)
+            return result
+        wrapper = async_wrapper
+
+    elif inspect.isgeneratorfunction(func):
+        @wraps(func)
+        def generator_wrapper(*args, **kwargs):
+            started = _started()
+            try:
+                yield from func(*args, **kwargs)
+            except Exception:
+                log.exception("CALL failed | function=%s", function_name)
+                raise
+            else:
+                _finished(started)
+        wrapper = generator_wrapper
+
+    else:
+        @wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            started = _started()
+            try:
+                result = func(*args, **kwargs)
+            except Exception:
+                log.exception("CALL failed | function=%s", function_name)
+                raise
+            _finished(started)
+            return result
+        wrapper = sync_wrapper
+
+    wrapper.__datalens_trace_calls__ = True
+    return wrapper
+
+
 def setup_logging(level: int = logging.INFO) -> None:
     """
-    تهيئة الـ root logger مرة واحدة فقط لكل عملية تشغيل (idempotent —
-    استدعاؤها أكثر من مرة، مثلاً بسبب rerun متكرر من Streamlit، لا
-    يُضيف handlers مكررة ولا يكتب سطوراً مكررة في الملف).
-
-    كل الرسائل (INFO فأعلى) من أي logger في المشروع (core/*, ai/*,
-    exporters/*, ui/*) تُكتب في LOG_FILE تلقائياً بمجرد استدعاء هذه
-    الدالة مرة واحدة عند إقلاع main.py، مع اسم المستخدم الحالي مُضمَّناً
-    في كل سطر (راجع set_log_username أعلاه).
+    تهيئة التسجيل مرة واحدة. يمكن استدعاؤها مجدداً لتغيير مستوى التسجيل
+    دون إضافة handlers مكررة أثناء Streamlit reruns.
     """
     global _is_configured
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+
     if _is_configured:
+        for handler in root_logger.handlers:
+            if getattr(handler, "_datalens_handler", False):
+                handler.setLevel(
+                    logging.WARNING if isinstance(handler, _UIQueueHandler) else level
+                )
         return
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-
     formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
 
     file_handler = logging.handlers.RotatingFileHandler(
@@ -126,25 +212,29 @@ def setup_logging(level: int = logging.INFO) -> None:
         backupCount=LOG_BACKUP_COUNT,
         encoding="utf-8",
     )
-    file_handler.setFormatter(formatter)
     file_handler.setLevel(level)
+    file_handler.setFormatter(formatter)
     file_handler.addFilter(_UsernameFilter())
-
-    root_logger = logging.getLogger()
-    root_logger.setLevel(level)
+    file_handler._datalens_handler = True
     root_logger.addHandler(file_handler)
+
+    ui_handler = _UIQueueHandler()
+    ui_handler.setLevel(logging.WARNING)
+    ui_handler._datalens_handler = True
+    root_logger.addHandler(ui_handler)
 
     filterwarnings("ignore", message="Unknown extension is not supported")
     logging.captureWarnings(True)
     logging.getLogger("py.warnings").setLevel(level)
 
-    # تقليل ضجيج المكتبات الخارجية الثرثارة (لا تفيد في تشخيص أخطاء
-    # التطبيق نفسه، وتُضخّم حجم الملف بسرعة بلا داعٍ)
     for noisy_logger in ("httpx", "httpcore", "urllib3", "PIL"):
         logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
     _is_configured = True
     logging.getLogger(__name__).info(
-        "Logging initialized — writing to %s (max %d bytes × %d backups)",
-        LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT,
+        "Logging initialized | file=%s | level=%s | max_bytes=%d | backups=%d",
+        LOG_FILE,
+        logging.getLevelName(level),
+        LOG_MAX_BYTES,
+        LOG_BACKUP_COUNT,
     )

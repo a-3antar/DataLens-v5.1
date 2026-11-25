@@ -58,6 +58,9 @@ partial (تطابق جزئي على مستوى الكلمات). كل مرشح ه
 كل المخرجات قابلة للتسلسل JSON (تُحفظ في session_state بلا مشاكل).
 """
 
+
+from core.logger_config import trace_calls
+
 import re
 import json
 import logging
@@ -108,6 +111,7 @@ _AR_MAP = str.maketrans({
 _PUNCT_RE = re.compile(r"[^\w\s]|_", re.UNICODE)
 
 
+@trace_calls
 def normalize_text(value, keep_spaces: bool = False) -> str:
     """
     توحيد نص للمقارنة: casefold، إزالة التشكيل والحركات واللكنات
@@ -138,14 +142,17 @@ _SAMPLE_FOR_TYPE_CHECK = 500
 _TYPE_RATIO = 0.8
 
 
+@trace_calls
 def _looks_numeric(text: str) -> bool:
     return bool(_NUMERIC_RE.match(text.strip())) and any(ch.isdigit() for ch in text)
 
 
+@trace_calls
 def _looks_date(text: str) -> bool:
     return bool(_DATE_RE.match(text.strip()))
 
 
+@trace_calls
 def _looks_code(text: str) -> bool:
     """كود/معرّف: بلا مسافات، قصير، ويحتوي رقماً وليس رقماً صرفاً."""
     t = text.strip()
@@ -153,6 +160,7 @@ def _looks_code(text: str) -> bool:
         and any(c.isdigit() for c in t) and not t.isdigit()
 
 
+@trace_calls
 def is_categorical_column(series: pd.Series) -> bool:
     """
     هل العمود تصنيفي (نصوص/فئات) فيصلح للتصحيح؟ يُرفض: الأنواع الرقمية
@@ -192,9 +200,11 @@ class _Tok:
     quoted: bool = False
 
     @property
+    @trace_calls
     def lower(self) -> str:
         return self.value.lower()
 
+    @trace_calls
     def is_kw(self, *words: str) -> bool:
         return self.kind == "ident" and not self.quoted and self.lower in words
 
@@ -204,6 +214,7 @@ _NUM_RE = re.compile(r"\d+(?:\.\d+)?")
 _TWO_CHAR_OPS = {"<=", ">=", "<>", "!=", "||", "::", "->", "=>"}
 
 
+@trace_calls
 def _scan_quoted(sql: str, i: int, quote: str) -> Optional[int]:
     """نهاية نص مقتبس يبدأ عند i (مع دعم تكرار علامة الاقتباس للهروب)."""
     n, j = len(sql), i + 1
@@ -217,6 +228,7 @@ def _scan_quoted(sql: str, i: int, quote: str) -> Optional[int]:
     return None
 
 
+@trace_calls
 def _tokenize(sql: str) -> Optional[list]:
     """تقسيم SQL إلى tokens مع مواضعها. يرجع None لو تعذّر (نص غير مغلق)."""
     tokens, i, n = [], 0, len(sql)
@@ -271,6 +283,7 @@ _ALIAS_STOP_WORDS = {
 }
 
 
+@trace_calls
 def _collect_tables(tokens: list) -> tuple:
     """
     استخراج الجداول المذكورة بعد FROM/JOIN مع الـ aliases:
@@ -319,6 +332,7 @@ _FILTER_CLAUSES = {"where", "having", "on"}
 _NON_COLUMN_WORDS = {"and", "or", "not", "null", "true", "false", "case", "end", "is"}
 
 
+@trace_calls
 def _extract_predicates(tokens: list) -> list:
     """
     استخراج شروط النصوص الإيجابية داخل WHERE/HAVING/ON فقط:
@@ -400,6 +414,7 @@ def _extract_predicates(tokens: list) -> list:
 #  مطابقة القيم وتقييمها
 # ══════════════════════════════════════════════════════════════
 
+@trace_calls
 def _like_regex(pattern: str, ignore_case: bool):
     """تحويل نمط LIKE (% و _) إلى regex مرتكز على كامل النص."""
     out = []
@@ -408,6 +423,7 @@ def _like_regex(pattern: str, ignore_case: bool):
     return re.compile("".join(out), re.DOTALL | (re.IGNORECASE if ignore_case else 0))
 
 
+@trace_calls
 def _split_like_pattern(pattern: str) -> Optional[tuple]:
     """
     فصل نمط LIKE إلى (بادئة % ، النص الفعلي ، لاحقة %). يرجع None لو
@@ -419,6 +435,7 @@ def _split_like_pattern(pattern: str) -> Optional[tuple]:
     return m.group(1), m.group(2), m.group(3)
 
 
+@trace_calls
 def _score_value(value: str, wanted: str, variants: list):
     """
     تقييم قيمة موجودة في العمود مقابل النص المطلوب (وكتاباته البديلة).
@@ -434,6 +451,7 @@ def _score_value(value: str, wanted: str, variants: list):
     w_norm = normalize_text(wanted)
     best = None
 
+    @trace_calls
     def offer(score, level, reason):
         nonlocal best
         if best is None or score > best[0]:
@@ -476,6 +494,7 @@ def _score_value(value: str, wanted: str, variants: list):
     return best
 
 
+@trace_calls
 def _decide_auto(cands: list) -> Optional[dict]:
     """
     متى يصح التصحيح التلقائي؟ (1) مرشح وحيد بثقة عالية، أو (2) تطابق
@@ -497,6 +516,7 @@ def _decide_auto(cands: list) -> Optional[dict]:
 #  اقتراح كتابات بديلة عبر AI (prompt + تحليل الرد)
 # ══════════════════════════════════════════════════════════════
 
+@trace_calls
 def build_variants_prompt(wanted: str, table: str, column: str, samples: list) -> str:
     """
     prompt قصير يطلب كتابات بديلة محتملة للقيمة المطلوبة (ترجمة أو
@@ -518,6 +538,7 @@ def build_variants_prompt(wanted: str, table: str, column: str, samples: list) -
     )
 
 
+@trace_calls
 def parse_variants_response(text: str) -> list:
     """استخراج قائمة الكتابات البديلة من رد AI. أي رد غير صالح → قائمة فارغة."""
     try:
@@ -550,6 +571,7 @@ class ValueResolver:
     variant_provider(wanted, table, column, samples) → list[str] (اختياري).
     """
 
+    @trace_calls
     def __init__(self, table_loader: Callable, variant_provider: Optional[Callable] = None):
         self._loader = table_loader
         self._variant_provider = variant_provider
@@ -558,6 +580,7 @@ class ValueResolver:
 
     # ── تحميل الجداول والقيم (مخزَّنة لمدة هذا الاستدعاء فقط) ──
 
+    @trace_calls
     def _frame(self, name: str):
         if name not in self._frames:
             try:
@@ -568,12 +591,14 @@ class ValueResolver:
         return self._frames[name]
 
     @staticmethod
+    @trace_calls
     def _match_column(df: pd.DataFrame, column: str) -> Optional[str]:
         if column in df.columns:
             return column
         hits = [c for c in df.columns if str(c).lower() == column.lower()]
         return hits[0] if len(hits) == 1 else None
 
+    @trace_calls
     def _locate(self, pred: dict, qualifiers: dict, order: list):
         """(table, column_name, series) للشرط، أو None لو لم يتحدد بشكل قاطع."""
         if pred["qualifier"]:
@@ -591,6 +616,7 @@ class ValueResolver:
                 hits.append((tname, col, df[col]))
         return hits[0] if len(hits) == 1 else None
 
+    @trace_calls
     def _distinct(self, table: str, col: str, series: pd.Series) -> list:
         key = (table, col)
         if key not in self._uniques:
@@ -599,6 +625,7 @@ class ValueResolver:
 
     # ── هل للشرط وحده أي تطابق؟ ──
 
+    @trace_calls
     def _predicate_matches(self, distinct: list, op: str, literal_values: list) -> bool:
         if op == "=":
             return literal_values[0] in set(distinct)
@@ -609,6 +636,7 @@ class ValueResolver:
 
     # ── البحث عن المرشحين لقيمة واحدة ──
 
+    @trace_calls
     def _shortlist(self, distinct: list, probes: list) -> tuple:
         """
         تقليص القيم الفريدة للأعمدة الكبيرة فقط (> RESOLVER_MAX_DISTINCT_SCANNED):
@@ -629,6 +657,7 @@ class ValueResolver:
         )
         return list(ser[mask].head(RESOLVER_MAX_DISTINCT_SCANNED)), True
 
+    @trace_calls
     def _find_candidates(self, distinct: list, wanted: str, variants: list) -> tuple:
         pool, truncated = self._shortlist(distinct, [wanted] + variants)
         best = {}
@@ -644,6 +673,7 @@ class ValueResolver:
 
     # ── النقطة الرئيسية ──
 
+    @trace_calls
     def resolve(self, sql: str) -> dict:
         """
         تحليل SQL (نتيجته صفر صفوف) واقتراح تصحيح لقيم شروط النصوص
@@ -707,6 +737,7 @@ class ValueResolver:
             logger.warning("value_resolver: auto apply failed: %s", applied["error"])
         return {"status": "needs_choice", "items": items, "fixes": []}
 
+    @trace_calls
     def _build_item(self, idx: int, pred: dict, tok: _Tok, table: str, col: str, distinct: list):
         """عنصر تصحيح لـ literal واحد، أو None لو غير مؤهل (رقم/تاريخ/نمط معقد/قصير)."""
         prefix = suffix = ""
@@ -730,6 +761,7 @@ class ValueResolver:
             "truncated": truncated, "ai_used": False, "auto": False, "chosen": None,
         }
 
+    @trace_calls
     def _enrich_with_variants(self, items: list) -> None:
         """
         للعناصر التي لا يكفي مرشحوها المحليون (أفضل درجة أقل من
@@ -766,6 +798,7 @@ class ValueResolver:
     # ── تطبيق الاختيارات على SQL الأصلي ──
 
     @staticmethod
+    @trace_calls
     def apply_choices(sql: str, items: list, choices: dict) -> dict:
         """
         بناء SQL جديد باستبدال مواضع الـ literals المقصودة فقط.

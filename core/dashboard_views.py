@@ -36,6 +36,9 @@ core/dashboard_manager.py::_update_dashboard_columns.
 كنصوص حرفية مع مضاعفة علامة الاقتباس المفردة ('' ) للحماية من الحقن.
 """
 
+
+from core.logger_config import trace_calls
+
 import logging
 import sqlite3
 from typing import Optional
@@ -50,11 +53,13 @@ VIEW_PREFIX = "dview_"
 _SEP = "__"
 
 
+@trace_calls
 def _q(name: str) -> str:
     """اقتباس معرّف SQLite (اسم جدول/عمود/view)."""
     return '"' + str(name).replace('"', '""') + '"'
 
 
+@trace_calls
 def _lit(value) -> str:
     """نص حرفي SQLite آمن (مضاعفة علامة الاقتباس المفردة)."""
     return "'" + str(value).replace("'", "''") + "'"
@@ -70,6 +75,7 @@ class DashboardViews:
         dv.drop(dashboard_id)                 # عند حذف اللوحة
     """
 
+    @trace_calls
     def __init__(self, db):
         self.db = db
 
@@ -78,15 +84,18 @@ class DashboardViews:
     # ──────────────────────────────────────────────────────────
 
     @staticmethod
+    @trace_calls
     def view_name(dashboard_id: str, table_alias: str) -> str:
         return f"{VIEW_PREFIX}{dashboard_id}{_SEP}{table_alias}"
 
+    @trace_calls
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db.db_path))
         conn.row_factory = sqlite3.Row
         return conn
 
     @staticmethod
+    @trace_calls
     def _list_views(conn: sqlite3.Connection, dashboard_id: Optional[str] = None) -> list[str]:
         rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'view'").fetchall()
         names = [r["name"] for r in rows if r["name"].startswith(VIEW_PREFIX)]
@@ -95,6 +104,7 @@ class DashboardViews:
             names = [n for n in names if n.startswith(prefix)]
         return names
 
+    @trace_calls
     def _active_filters_by_table(self, dashboard_id: str) -> dict:
         """
         فلاتر اللوحة النشطة فقط (لها جدول + عمود + قيم)، مجمَّعة حسب
@@ -119,6 +129,7 @@ class DashboardViews:
         return by_table
 
     @staticmethod
+    @trace_calls
     def _build_where(filters: list, columns: set) -> tuple[str, list]:
         """
         بناء شرط WHERE (AND بين الفلاتر) بصياغة SQLite.
@@ -154,6 +165,7 @@ class DashboardViews:
     #  إنشاء / تعديل / حذف
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def sync(self, dashboard_id: str) -> dict:
         """
         إعادة بناء كل views هذه اللوحة من فلاترها الحالية (حذف القديمة
@@ -209,6 +221,7 @@ class DashboardViews:
             logger.error("DashboardViews.sync error: %s", e)
             return {"ok": False, "error": str(e)}
 
+    @trace_calls
     def drop(self, dashboard_id: str) -> int:
         """حذف كل views لوحة (عند حذف اللوحة). يرجع عدد الـ views المحذوفة."""
         try:
@@ -227,6 +240,7 @@ class DashboardViews:
             logger.error("DashboardViews.drop error: %s", e)
             return 0
 
+    @trace_calls
     def drop_for_table(self, table_alias: str) -> int:
         """
         حذف أي view (لأي لوحة) مبني على جدول معيّن — يُستدعى عند حذف
@@ -252,6 +266,7 @@ class DashboardViews:
     #  القراءة (تُستخدم من QueryEngine والـ schema)
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def has_view(self, dashboard_id: str, table_alias: str) -> bool:
         try:
             conn = self._connect()
@@ -266,6 +281,7 @@ class DashboardViews:
         except sqlite3.Error:
             return False
 
+    @trace_calls
     def _read_view_once(self, dashboard_id: str, table_alias: str):
         """يرجع (موجود؟, DataFrame|None). يرمي استثناء لو فشلت القراءة."""
         vname = self.view_name(dashboard_id, table_alias)
@@ -280,6 +296,7 @@ class DashboardViews:
         finally:
             conn.close()
 
+    @trace_calls
     def read_table(self, table_alias: str, dashboard_id: Optional[str] = None) -> Optional[pd.DataFrame]:
         """
         بيانات جدول كما يجب أن "يراها" المستهلك:
@@ -326,6 +343,7 @@ class DashboardViews:
                 df[col] = pd.to_datetime(df[col], errors="coerce")
         return df
 
+    @trace_calls
     def get_schema(self, dashboard_id: Optional[str] = None) -> dict:
         """
         نفس db.get_schema() (الأعمدة والأنواع)، لكن عينة الصفوف لكل جدول

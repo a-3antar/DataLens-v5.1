@@ -26,6 +26,9 @@ exporters/excel_exporter.py
 لا تغيير في الواجهة العامة (export()) — ui/reports.py لا يحتاج أي تعديل.
 """
 
+
+from core.logger_config import trace_calls
+
 import re
 import logging
 from pathlib import Path
@@ -78,6 +81,7 @@ _HEADER_STYLE_BY_LEVEL = {
 #  🆕 تحليل Markdown خفيف → أجزاء نصية (bold runs) / جداول / عناوين
 # ══════════════════════════════════════════════════════════════
 
+@trace_calls
 def _split_bold_runs(line: str) -> list[tuple[str, bool]]:
     """
     تقسيم سطر يحتوي '**نص عريض**' إلى قائمة (نص, هل_عريض) بالترتيب.
@@ -93,6 +97,7 @@ def _split_bold_runs(line: str) -> list[tuple[str, bool]]:
     return runs or [("", False)]
 
 
+@trace_calls
 def _markdown_table_rows(lines: list[str]) -> tuple[list[str], list[list[str]], bool]:
     """
     تحويل أسطر جدول Markdown (| ... |) إلى (header, data_rows, has_real_header).
@@ -118,6 +123,7 @@ def _markdown_table_rows(lines: list[str]) -> tuple[list[str], list[list[str]], 
     return header, data_rows, has_real_header
 
 
+@trace_calls
 def _parse_markdown_blocks(text: str) -> list[dict]:
     """
     تحليل نص Markdown خفيف (نفس الصيغة المُنتَجة عبر
@@ -170,6 +176,7 @@ def _parse_markdown_blocks(text: str) -> list[dict]:
     return blocks
 
 
+@trace_calls
 def _runs_to_richtext(runs: list[tuple[str, bool]], base_size: int = 11):
     """
     تحويل قائمة (نص, هل_عريض) إلى CellRichText جاهزة للكتابة مباشرة
@@ -198,9 +205,11 @@ class ExcelExporter:
         exp.export(report_id, Path("report.xlsx"))
     """
 
+    @trace_calls
     def __init__(self, report_manager: ReportManager):
         self.rm = report_manager
 
+    @trace_calls
     def export(self, report_id: str, output_path: Path) -> dict:
         """
         تصدير تقرير إلى .xlsx.
@@ -278,6 +287,7 @@ class ExcelExporter:
     #  أدوات مشتركة: تنسيق أرقام + روابط داخلية + كتابة Markdown
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _number_format_for(self, value) -> str:
         """
         إرجاع صيغة تنسيق Excel مناسبة لنوع القيمة: فواصل آلاف للأعداد
@@ -291,10 +301,12 @@ class ExcelExporter:
             return "#,##0.00"
         return "General"
 
+    @trace_calls
     def _apply_number_format(self, cell, value) -> None:
         if isinstance(value, Number) and not isinstance(value, bool):
             cell.number_format = self._number_format_for(value)
 
+    @trace_calls
     def _add_internal_hyperlink(self, cell, sheet_name: str, text: str = None) -> None:
         """
         رابط داخلي فعلي من خلية إلى بداية شيت آخر — يظهر بلون وتسطير
@@ -304,6 +316,7 @@ class ExcelExporter:
         cell.hyperlink = f"#'{sheet_name}'!A1"
         cell.font = Font(color=COLOR_LINK, underline="single", size=10)
 
+    @trace_calls
     def _write_markdown_blocks(self, ws, start_row: int, start_col: int,
                                 blocks: list[dict], header_fill, header_font,
                                 border, max_span: int = 8) -> int:
@@ -360,6 +373,7 @@ class ExcelExporter:
 
         return row
 
+    @trace_calls
     def _write_excel_table(self, ws, start_row: int, start_col: int,
                             header: list[str], data_rows: list[list[str]],
                             has_header: bool, header_fill, header_font, border) -> int:
@@ -390,6 +404,7 @@ class ExcelExporter:
     #  بناء الـ Sheets
     # ──────────────────────────────────────────────────────────
 
+    @trace_calls
     def _build_summary_sheet(self, wb, title: str, blocks: list,
                               block_sheet_names: dict) -> None:
         """
@@ -520,6 +535,7 @@ class ExcelExporter:
         ws.freeze_panes = "A3"
         self._auto_width(ws)
 
+    @trace_calls
     def _build_dashboard_sheet(self, wb, content: dict) -> None:
         """
         Sheet للقطة لوحة كاملة — كل عمود من أعمدة اللوحة يُكتب في نطاق
@@ -580,6 +596,7 @@ class ExcelExporter:
 
         self._auto_width(ws)
 
+    @trace_calls
     def _write_snapshot_cell(self, ws, cell: dict, start_row: int, start_col: int,
                               header_fill, header_font, border) -> int:
         """كتابة خلية واحدة بدءاً من (start_row, start_col)، وإرجاع آخر صف مكتوب."""
@@ -638,6 +655,7 @@ class ExcelExporter:
 
         return r
 
+    @trace_calls
     def _build_table_sheet(self, wb, sheet_name: str, content: dict) -> None:
         """Sheet بيانات جدول."""
         data    = content.get("data", [])
@@ -677,6 +695,7 @@ class ExcelExporter:
         ws.freeze_panes = "A2"   # تجميد الـ header
         self._auto_width(ws)
 
+    @trace_calls
     def _build_chart_sheet(self, wb, sheet_name: str, content: dict) -> None:
         """Sheet يحتوي بيانات الرسم + رسم بياني حي (Excel Chart) يمكن تعديله."""
         data   = content.get("data", [])
@@ -754,6 +773,7 @@ class ExcelExporter:
         anchor_col = get_column_letter(len(columns) + 2)
         ws.add_chart(chart, f"{anchor_col}2")
 
+    @trace_calls
     def _build_gauge_sheet(self, wb, sheet_name: str, content: dict) -> None:
         """Sheet يحتوي صورة Gauge (Excel لا يملك نوع رسم gauge أصلي)."""
         current = content.get("current_value", 0)
@@ -782,6 +802,7 @@ class ExcelExporter:
         ws.cell(24, 2, "الحد الأقصى")
         self._apply_number_format(ws.cell(24, 3, mx), mx)
 
+    @trace_calls
     def _build_kpi_sheet(self, wb, kpi_blocks: list) -> None:
         """Sheet مخصص لـ KPIs."""
         ws = wb.create_sheet("المؤشرات")
@@ -817,6 +838,7 @@ class ExcelExporter:
         ws.freeze_panes = "A2"
         self._auto_width(ws)
 
+    @trace_calls
     def _auto_width(self, ws) -> None:
         """
         ضبط عرض الأعمدة تلقائياً.
