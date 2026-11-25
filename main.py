@@ -12,7 +12,7 @@ import streamlit as st
 from config import APP_NAME, APP_VERSION, APP_ICON
 from core.logger_config import setup_logging, drain_ui_log_messages
 
-_requested_level = os.getenv("DATALENS_LOG_LEVEL", "INFO").strip().upper()
+_requested_level = os.getenv("DATALENS_LOG_LEVEL", "DEBUG").strip().upper()
 LOG_LEVEL = getattr(logging, _requested_level, logging.INFO)
 if not isinstance(LOG_LEVEL, int):
     LOG_LEVEL = logging.INFO
