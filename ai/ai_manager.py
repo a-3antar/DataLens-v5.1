@@ -85,7 +85,7 @@ from core.dashboard_views import DashboardViews
 from core.value_resolver import ValueResolver, build_variants_prompt, parse_variants_response
 from core.knowledge_manager import KnowledgeManager
 from config import (
-    OLLAMA_DEFAULT_URL, STORY_SAMPLE_ROWS_IN_PROMPT, AI_RETRY_DELAY_SECONDS,
+    OLLAMA_DEFAULT_URL, OLLAMA_TIMEOUT_SECONDS, STORY_SAMPLE_ROWS_IN_PROMPT, AI_RETRY_DELAY_SECONDS,
     STORY_TIMEOUT_SECONDS, STORY_MAX_QUERIES, QA_MAX_QUERIES, QA_HISTORY_TURNS,
     QA_SUMMARY_MAX_CHARS,
 )
@@ -277,6 +277,9 @@ class AIManager:
             question, result_type,
             knowledge_context=self._knowledge_context(question, schema, "sql", dashboard_id),
         )
+        # نحتفظ بالـ prompt الأساسي؛ كل محاولة تصحيح تبدأ منه ولا تراكم
+        # رسائل الأخطاء السابقة داخل سياق يتضخم مع كل محاولة.
+        base_prompt = prompt
 
         last_error = ""
         last_error_type = None
@@ -328,6 +331,12 @@ class AIManager:
                 last_error = extract_result["error"]
                 last_error_type = None
                 logger.warning("SQL extraction failed (attempt %d): %s", attempt, last_error)
+                if attempt < self.max_tries:
+                    prompt = builder.build_error_retry(
+                        original_prompt=base_prompt,
+                        failed_sql=send_result.get("text", "")[:4000],
+                        error_message=last_error,
+                    )
                 continue
 
             last_sql = extract_result["sql"]
@@ -360,7 +369,7 @@ class AIManager:
 
             if attempt < self.max_tries:
                 prompt = builder.build_error_retry(
-                    original_prompt = prompt,
+                    original_prompt = base_prompt,
                     failed_sql      = last_sql,
                     error_message   = last_error,
                 )
@@ -1274,11 +1283,21 @@ def build_ai_manager(db: ProjectDB):
     """
     settings = db.get_settings()
     engine_name = settings.get("ai_engine", "gemini")
+    # مهلة Ollama مستقلة عن مهلة المحركات السحابية، حتى لا يرث إعداداً
+    # قصيراً (30 ثانية) لا يناسب التحميل والتوليد المحلي.
+    effective_timeout = (
+        settings.get("ollama_timeout", OLLAMA_TIMEOUT_SECONDS)
+        if engine_name == "ollama" else settings.get("timeout", 30)
+    )
+    effective_story_timeout = settings.get("story_timeout", 45)
+    if engine_name == "ollama":
+        effective_story_timeout = max(effective_story_timeout, effective_timeout)
+
     engine = get_engine(
         engine_name=engine_name,
         api_key=settings.get(f"api_key_{engine_name}", ""),
         model=settings.get("model", ""),
-        timeout=settings.get("timeout", 30),
+        timeout=effective_timeout,
         ollama_url=settings.get("ollama_url", "http://localhost:11434"),
     )
     ai = AIManager(
@@ -1288,6 +1307,6 @@ def build_ai_manager(db: ProjectDB):
         retry_delay=settings.get("retry_delay", 10),
         max_total_wait_seconds=settings.get("max_total_wait_seconds", 0),
         story_max_total_wait_seconds=settings.get("story_max_total_wait_seconds", 0),
-        story_timeout=settings.get("story_timeout", 45),
+        story_timeout=effective_story_timeout,
     )
     return ai, settings

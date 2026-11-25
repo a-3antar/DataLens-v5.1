@@ -97,6 +97,17 @@ class QueryEngine:
         يرفض أي كلمة من SQL_FORBIDDEN.
         يرجع: {"ok": True} أو {"ok": False, "error": "..."}
         """
+        # ارفض أي رد لا يبدأ باستعلام قراءة. إزالة التعليقات الافتتاحية
+        # تمنع تمرير نص تفسيري/أوامر مخفية قبل SELECT أو WITH.
+        without_comments = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
+        without_comments = re.sub(r"--[^\r\n]*", " ", without_comments)
+        if not re.match(r"^\s*(SELECT|WITH)\b", without_comments, re.IGNORECASE):
+            return {"ok": False, "error": "يُسمح باستعلامات SELECT أو WITH فقط؛ لم يبدأ الرد باستعلام قراءة صالح"}
+
+        # نسمح بفاصلة منقوطة نهائية واحدة فقط؛ تعدد الأوامر مرفوض.
+        if ";" in sql.rstrip().rstrip(";"):
+            return {"ok": False, "error": "يُسمح باستعلام SQL واحد فقط"}
+
         sql_upper = sql.upper()
         for word in SQL_FORBIDDEN:
             # نستخدم word boundary لتجنب false positives

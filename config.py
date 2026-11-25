@@ -64,6 +64,9 @@ AI_RETRY_DELAY_SECONDS = 5
 
 STORY_TIMEOUT_SECONDS = 45
 
+# مهلة افتراضية أطول للنماذج المحلية؛ تحميل النموذج والتوليد الأول أبطأ عادةً.
+OLLAMA_TIMEOUT_SECONDS = 300
+
 # ─── المشروع — قيم افتراضية ────────────────────────────────
 DEFAULT_SETTINGS = {
     "ai_engine"  : "gemini",
@@ -72,6 +75,7 @@ DEFAULT_SETTINGS = {
     "auto_run"   : True,
     "max_tries"  : 3,
     "timeout"    : 30,
+    "ollama_timeout": OLLAMA_TIMEOUT_SECONDS,
     "retry_delay": 10,
     "theme"      : "arctic_light",
     "language"   : "ar",
