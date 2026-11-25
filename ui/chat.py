@@ -109,10 +109,10 @@ from config import CHART_TYPES, QA_ANSWER_LENGTHS, QA_DEFAULT_ANSWER_LENGTH
 
 _RESULT_TYPE_LABELS = {
     "qa": "💡 سؤال وجواب (رؤى)",
-    "table": "جدول", 
-    "chart": "رسم بياني", 
+    "table": "جدول",
+    "chart": "رسم بياني",
     "gauge": "مقياس (Gauge)",
-    "kpi": "بطاقة مؤشر (KPI)", 
+    "kpi": "بطاقة مؤشر (KPI)",
     "story": "تحليل نصي (Story Telling)",
 }
 
@@ -125,6 +125,9 @@ _SUMMARY_KEY = "_qa_summary"
 # 🆕 عمل تلخيص معلَّق {"question", "answer"} ينتظر رسم الإجابة أولاً
 _PENDING_SUMMARY_KEY = "_qa_summary_pending"
 _SCROLL_TO_ITEM_KEY = "_chat_scroll_to_item"
+_ACTIVE_PROJECT_KEY = "_chat_active_project_id"
+_SCROLL_TO_BOTTOM_KEY = "_chat_scroll_to_bottom"
+_CHAT_PAGE_ENTERED_KEY = "_chat_page_entered"
 
 # 🆕 أقصى عدد صفوف يُعرض به جدول بيانات Q&A كجدول HTML مُنسَّق
 # (render_themed_table) — أعلى من ذلك يُستخدم st.dataframe التفاعلي
@@ -135,6 +138,69 @@ _QA_THEMED_TABLE_MAX_ROWS = 200
 # 🆕 أنواع النتائج التي يُفعَّل لها Smart Value Resolver (نتائج SQL مفردة)
 _RESOLVER_RESULT_TYPES = ("table", "chart", "gauge", "kpi")
 
+
+def _resolve_project_id(db) -> str:
+    """استخراج معرّف المشروع الحالي بأمان لبدء محادثة جديدة عند تغييره."""
+    for attr in ("project_id", "current_project_id", "id"):
+        val = getattr(db, attr, None)
+        if val:
+            return str(val)
+    proj = getattr(db, "project", None)
+    if isinstance(proj, dict) and proj.get("id"):
+        return str(proj["id"])
+    return str(id(db))
+
+
+def _reset_session_thread_state() -> None:
+    """تفريغ حالة المحادثة والذاكرة المؤقتة عند تغيير المشروع أو مسح السجل."""
+    st.session_state[_THREAD_KEY] = []
+    st.session_state.pop(_SUMMARY_KEY, None)
+    st.session_state.pop(_PENDING_SUMMARY_KEY, None)
+    st.session_state.pop(_SCROLL_TO_ITEM_KEY, None)
+    st.session_state["_chat_options_section"] = ""
+
+
+def _trigger_scroll_to_bottom() -> None:
+    """تمرير الحاوية النشطة في Streamlit إلى آخر المحادثة (أحدث رسالة ومنطقة الإدخال)."""
+    anchor_id = "chat-bottom-anchor"
+    st.markdown(f'<div id="{anchor_id}" style="height:1px;"></div>', unsafe_allow_html=True)
+    st.components.v1.html(
+        f"""<script>
+        (function() {{
+            const anchorId = {anchor_id!r};
+            const scrollToBottom = () => {{
+                try {{
+                    const doc = window.parent.document;
+                    const anchor = doc.getElementById(anchorId);
+                    if (anchor) {{
+                        anchor.scrollIntoView({{ behavior: "auto", block: "end" }});
+                        let parent = anchor.parentElement;
+                        while (parent && parent !== doc.body) {{
+                            if (parent.scrollHeight > parent.clientHeight + 40) {{
+                                parent.scrollTop = parent.scrollHeight;
+                            }}
+                            parent = parent.parentElement;
+                        }}
+                    }}
+                    const main = doc.querySelector('[data-testid="stMain"]');
+                    if (main) main.scrollTop = main.scrollHeight;
+                    const block = doc.querySelector('[data-testid="stMainBlockContainer"]');
+                    if (block && block.scrollHeight > block.clientHeight) {{
+                        block.scrollTop = block.scrollHeight;
+                    }}
+                    window.parent.scrollTo({{ top: doc.body.scrollHeight, behavior: "auto" }});
+                }} catch (e) {{}}
+            }};
+            scrollToBottom();
+            requestAnimationFrame(scrollToBottom);
+            setTimeout(scrollToBottom, 80);
+            setTimeout(scrollToBottom, 220);
+            setTimeout(scrollToBottom, 500);
+        }})();
+        </script>""",
+        height=0,
+        scrolling=False,
+    )
 
 
 def _chat_page_css(settings: dict) -> str:
@@ -170,6 +236,7 @@ def _chat_page_css(settings: dict) -> str:
     </style>
     """
 
+
 def show_chat():
     apply_rtl()
     require_login()
@@ -179,8 +246,17 @@ def show_chat():
     sidebar_header()
     st.markdown(_chat_page_css(settings), unsafe_allow_html=True)
 
-    if _THREAD_KEY not in st.session_state:
+    current_project_id = _resolve_project_id(db)
+    if st.session_state.get(_ACTIVE_PROJECT_KEY) != current_project_id:
+        st.session_state[_ACTIVE_PROJECT_KEY] = current_project_id
+        _reset_session_thread_state()
+    elif _THREAD_KEY not in st.session_state:
         st.session_state[_THREAD_KEY] = []
+
+    if not st.session_state.get(_CHAT_PAGE_ENTERED_KEY):
+        st.session_state[_CHAT_PAGE_ENTERED_KEY] = True
+        if _SCROLL_TO_ITEM_KEY not in st.session_state:
+            st.session_state[_SCROLL_TO_BOTTOM_KEY] = True
 
     st.markdown(
         """
@@ -220,8 +296,11 @@ def show_chat():
 
     # شريط الكتابة والخيارات في أسفل المحادثة.
     # st.chat_input يدعم Enter للإرسال وShift+Enter لسطر جديد.
-    # وShift+Enter لإضافة سطر جديد.
     _render_input_area(db, ai, settings)
+
+    if thread and st.session_state.pop(_SCROLL_TO_BOTTOM_KEY, False):
+        if _SCROLL_TO_ITEM_KEY not in st.session_state:
+            _trigger_scroll_to_bottom()
 
     # 🆕 بعد أن رُسمت الإجابة ومربع الكتابة بالكامل: تحديث ملخص المحادثة
     # (استفسار AI منفصل، صامت — لا يُعرض للمستخدم).
@@ -290,7 +369,7 @@ def _render_input_area(db, ai, settings: dict) -> None:
     if _PREFILL_KEY in st.session_state:
         st.session_state[_QUESTION_BOX_KEY] = st.session_state.pop(_PREFILL_KEY)
 
-    st.session_state.setdefault("_chat_result_type", "table")
+    st.session_state.setdefault("_chat_result_type", "qa")
     st.session_state.setdefault("_chat_chart_type", "bar")
     st.session_state.setdefault("_chat_answer_length", QA_DEFAULT_ANSWER_LENGTH)
 
@@ -434,11 +513,8 @@ def _render_clear_history_button(db) -> None:
         st.warning("سيُحذف سجل المحادثة نهائياً.")
         if st.button("تأكيد مسح المحادثة", key="danger_confirm_clear_chat", width="stretch"):
             db.clear_chat_history()
-            st.session_state[_THREAD_KEY] = []
-            st.session_state.pop(_SUMMARY_KEY, None)
-            st.session_state.pop(_PENDING_SUMMARY_KEY, None)
+            _reset_session_thread_state()
             st.session_state.pop(confirm_key, None)
-            st.session_state["_chat_options_section"] = ""
             notify("تم مسح المحادثة", kind="success")
             st.rerun()
         if st.button("إلغاء", key="cancel_clear_chat", width="stretch"):
@@ -500,7 +576,7 @@ def _handle_submit(db, ai, settings: dict, question: str) -> None:
     # أولاً حتى يُبنى السؤال الجديد على ملخص محدَّث.
     _flush_pending_summary(ai)
 
-    result_type = st.session_state.get("_chat_result_type", "table")
+    result_type = st.session_state.get("_chat_result_type", "qa")
     chart_type = st.session_state.get("_chat_chart_type", "bar")
     answer_length = st.session_state.get("_chat_answer_length", QA_DEFAULT_ANSWER_LENGTH)
 
@@ -510,7 +586,7 @@ def _handle_submit(db, ai, settings: dict, question: str) -> None:
         spinner_msg = "جاري البحث في البيانات واستخراج الرؤى..."
     else:
         spinner_msg = "جاري التفكير..."
-    
+
     # 🆕 إظهار الرسالة في مربع طائر (Toast)
     st.toast(f"⏳ {spinner_msg}", icon="💡")
 
@@ -563,6 +639,7 @@ def _handle_submit(db, ai, settings: dict, question: str) -> None:
     # بعد rerun، قبل إنشاء الـ widget) — pop المباشر للمفتاح لا يمسحها.
     st.session_state[_CLEAR_QUESTION_KEY] = True
     st.rerun()
+
 
 # ══════════════════════════════════════════════════════════════
 #  بطاقة سؤال/إجابة واحدة
@@ -765,11 +842,6 @@ def _render_answer_body(settings, result: dict, result_type: str, chart_type: st
     chart_theme = get_chart_theme(settings)
 
     if result_type == "table":
-        # 🆕 احتياط: result.get("df") قد يعود list[dict] وليس DataFrame
-        # جاهزاً في بعض حالات ai.ask() — render_themed_table تتوقع
-        # DataFrame حصراً (تستدعي .empty/.columns/.iterrows)، وبدون هذا
-        # التحويل كان أي شكل غير DataFrame يُسقط الجدول المُنسَّق ويظهر
-        # بدلاً منه كنص/خطأ خام بدل جدول HTML مُلوَّن بالثيم.
         table_df = df if isinstance(df, pd.DataFrame) else pd.DataFrame(df or [])
         render_themed_table(table_df, settings)
 
@@ -818,12 +890,10 @@ def _render_answer_body(settings, result: dict, result_type: str, chart_type: st
         story_text = result.get("story", "")
         st.markdown(story_text)
 
-
     elif result_type == "qa":
         # 🆕 الإجابة (Markdown: الإجابة / الرؤى / الرأي / ملاحظات) ثم
         # البيانات المستخدمة كاملة داخل expander.
         st.markdown(result.get("answer", ""))
-
 
 
 # ══════════════════════════════════════════════════════════════
