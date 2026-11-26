@@ -23,6 +23,8 @@ from core.logger_config import trace_calls
 
 import io
 import logging
+import warnings
+from contextlib import contextmanager
 from pathlib import Path
 
 import pandas as pd
@@ -30,6 +32,23 @@ import pandas as pd
 from config import ALLOWED_EXTENSIONS
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _ignore_invalid_excel_print_area_warning():
+    """
+    تجاهل تحذير openpyxl المعروف فقط عندما تكون Print Area في الملف
+    مرتبطة باسم نطاق غير صالح مثل Table1[#All].
+    لا يؤثر ذلك على بقية تحذيرات Excel أو أخطائه.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"^Print area cannot be set to Defined name: .+\\.$",
+            category=UserWarning,
+            module=r"openpyxl\\.reader\\.workbook",
+        )
+        yield
 
 
 class FileManager:
@@ -64,7 +83,8 @@ class FileManager:
         sheets = []
         if ext in (".xlsx", ".xls"):
             try:
-                sheets = pd.ExcelFile(io.BytesIO(file_bytes)).sheet_names
+                with _ignore_invalid_excel_print_area_warning():
+                    sheets = pd.ExcelFile(io.BytesIO(file_bytes)).sheet_names
             except Exception as e:
                 return {"ok": False, "error": f"تعذر قراءة الملف: {e}"}
 
@@ -88,7 +108,8 @@ class FileManager:
             if ext == ".csv":
                 df = self._read_csv_bytes(file_bytes)
             else:
-                df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet or 0)
+                with _ignore_invalid_excel_print_area_warning():
+                    df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet or 0)
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
