@@ -4,14 +4,44 @@ core/logger_config.py
 إعداد التسجيل المركزي لـ DataLens:
 - كتابة السجلات إلى ملف دوّار.
 - دعم مستويات INFO وDEBUG عبر DATALENS_LOG_LEVEL.
-- جمع WARNING وERROR لعرض تنبيه آمن داخل Streamlit.
+- قناة اختيارية لعرض تنبيهات مختارة داخل Streamlit (opt-in فقط).
 - ربط اسم المستخدم بسياق التنفيذ.
-- تتبّع دخول/خروج الدوال ومدة تنفيذها دون تسجيل المعاملات أو البيانات.
+- تتبّع الدوال (trace_calls) بأسلوب هادئ: يسجل الدوال البطيئة والأخطاء
+  فقط افتراضياً، ويمكن تفعيل التتبع الكامل عند الحاجة.
+
+سياسة عرض السجلات في الواجهة:
+--------------------------------
+اللوج الكامل (WARNING/ERROR وغيرها) يذهب دائماً إلى الملف فقط. كثير
+من التحذيرات داخلية وعابرة (مثل فشل اتصال مؤقت بمحرك AI يُعاد
+تلقائياً، أو تصحيح تلقائي لاسم عمود) ولا تهم المستخدم، فعرضها كلها
+كان يُغرق الواجهة برسائل خطأ رغم نجاح العملية في النهاية. لذلك لا
+يدخل طابور الواجهة إلا سجل يحمل صراحةً extra={"ui_notify": True}:
+
+    logger.warning("تعذر حفظ الإعداد", extra={"ui_notify": True})
+
+أخطاء الصفحات غير المعالجة تُعرض أصلاً من main.py برسالة عامة، فلا
+حاجة لتمريرها من هنا.
+
+التحكم في حجم رسائل DEBUG (متغيرات بيئة):
+-------------------------------------------
+DATALENS_TRACE_CALLS = "0" (الافتراضي) | "1"
+    "0": لا يُسجَّل بدء/انتهاء كل دالة. يُسجَّل فقط ما تجاوز زمنه
+         DATALENS_TRACE_SLOW_MS، وأي استثناء.
+    "1": تتبع كامل (start/complete لكل دالة) — لتشخيص مشكلة محددة فقط.
+DATALENS_TRACE_SLOW_MS = 500 (الافتراضي)
+    حد الزمن بالميلي ثانية لاعتبار الدالة "بطيئة" في الوضع الهادئ.
+
+تكرار الاستثناءات:
+--------------------
+الاستثناء الواحد يمر عادةً عبر عدة دوال مزينة بـ trace_calls متداخلة،
+وكانت كل واحدة تطبع نفس الـ Stack Trace. الآن يُطبع مرة واحدة عند أول
+دالة تلتقطه، ويُوسَم الاستثناء كمسجَّل فلا تكرره بقية السلسلة.
 """
 
 import inspect
 import logging
 import logging.handlers
+import os
 import re
 from collections import deque
 from contextvars import ContextVar
@@ -31,14 +61,25 @@ LOG_BACKUP_COUNT = 5
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(username)-15s | %(name)15s | %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
+# ── إعدادات تتبع الدوال (تُقرأ مرة واحدة عند الاستيراد) ──────────
+TRACE_ALL_CALLS = os.getenv("DATALENS_TRACE_CALLS", "0").strip() == "1"
+try:
+    TRACE_SLOW_MS = float(os.getenv("DATALENS_TRACE_SLOW_MS", "500"))
+except ValueError:
+    TRACE_SLOW_MS = 500.0
+
 _DEFAULT_USERNAME = "-"
 _current_username: ContextVar[str] = ContextVar(
     "current_username", default=_DEFAULT_USERNAME
 )
 
+# طابور رسائل الواجهة: لا يُملأ إلا بسجلات opt-in (راجع _UIQueueHandler)
 _UI_MESSAGES = deque(maxlen=100)
 _UI_MESSAGES_LOCK = Lock()
 _is_configured = False
+
+# وسم يوضع على الاستثناء بعد تسجيله لمنع تكرار الـ Stack Trace
+_LOGGED_FLAG = "_datalens_logged"
 
 _SECRET_PATTERNS = (
     (re.compile(r"(?i)(api[_ -]?key|token|password|secret|authorization)(\s*[:=]\s*)([^\s,;]+)"), r"\1\2[REDACTED]"),
@@ -77,10 +118,19 @@ def _safe_ui_message(record: logging.LogRecord) -> str:
 
 
 class _UIQueueHandler(logging.Handler):
-    """قناة صغيرة وآمنة نسبياً لتمرير WARNING/ERROR إلى دورة Streamlit الحالية."""
+    """
+    قناة تمرير تنبيهات مختارة إلى دورة Streamlit الحالية.
+
+    لا تلتقط إلا سجلات WARNING فأعلى التي تحمل صراحةً
+    extra={"ui_notify": True}؛ كل ما عداها يبقى في ملف اللوج فقط.
+    كما تتجاهل التكرار المتتالي لنفس الرسالة حتى لا تتراكم بطاقات
+    متطابقة في الواجهة.
+    """
 
     def emit(self, record: logging.LogRecord) -> None:
         if record.levelno < logging.WARNING:
+            return
+        if not getattr(record, "ui_notify", False):
             return
         try:
             item = {
@@ -89,6 +139,8 @@ class _UIQueueHandler(logging.Handler):
                 "message": _safe_ui_message(record),
             }
             with _UI_MESSAGES_LOCK:
+                if _UI_MESSAGES and _UI_MESSAGES[-1] == item:
+                    return
                 _UI_MESSAGES.append(item)
         except Exception:
             self.handleError(record)
@@ -102,11 +154,35 @@ def drain_ui_log_messages() -> list:
     return messages
 
 
+# ══════════════════════════════════════════════════════════════
+#  trace_calls — تتبع الدوال
+# ══════════════════════════════════════════════════════════════
+
+def _log_failure(log: logging.Logger, function_name: str, exc: BaseException) -> None:
+    """
+    تسجيل فشل دالة: الـ Stack Trace كاملاً مرة واحدة فقط (عند أول دالة
+    في السلسلة تلتقط الاستثناء)، وبقية الدوال المتداخلة التي يمر بها
+    نفس الاستثناء لا تكرره (سطر DEBUG مختصر فقط في وضع التتبع الكامل).
+    """
+    if getattr(exc, _LOGGED_FLAG, False):
+        if TRACE_ALL_CALLS:
+            log.debug("CALL failed (propagated) | function=%s", function_name)
+        return
+    log.error("CALL failed | function=%s", function_name, exc_info=exc)
+    try:
+        setattr(exc, _LOGGED_FLAG, True)
+    except Exception:
+        pass  # بعض الاستثناءات المدمجة لا تقبل إضافة خصائص — نتجاوز الوسم
+
+
 def trace_calls(func):
     """
-    Decorator لتسجيل بداية/نهاية الدوال ومدتها عند DEBUG.
+    Decorator لتتبع الدوال بأسلوب هادئ (راجع توثيق الوحدة أعلاه):
+    - افتراضياً: يسجل عند DEBUG فقط الدوال التي تجاوزت TRACE_SLOW_MS،
+      بالإضافة إلى الاستثناءات (Stack Trace مرة واحدة لكل استثناء).
+    - مع DATALENS_TRACE_CALLS=1: start/complete لكل دالة.
     لا يسجل args أو kwargs أو قيم الإرجاع منعاً لتسريب بيانات المستخدم.
-    يسجل الاستثناءات غير المعالجة مع Stack Trace ثم يعيد رفعها كما هي.
+    يعيد رفع الاستثناءات كما هي، وكلها تُكتب في ملف اللوج فقط.
     """
     if getattr(func, "__datalens_trace_calls__", False):
         return func
@@ -115,17 +191,23 @@ def trace_calls(func):
     function_name = func.__qualname__
 
     def _started():
-        started = perf_counter()
-        if log.isEnabledFor(logging.DEBUG):
+        if TRACE_ALL_CALLS and log.isEnabledFor(logging.DEBUG):
             log.debug("CALL start | function=%s", function_name)
-        return started
+        return perf_counter()
 
     def _finished(started):
-        if log.isEnabledFor(logging.DEBUG):
+        if not log.isEnabledFor(logging.DEBUG):
+            return
+        elapsed_ms = (perf_counter() - started) * 1000
+        if TRACE_ALL_CALLS:
             log.debug(
                 "CALL complete | function=%s | duration_ms=%.2f",
-                function_name,
-                (perf_counter() - started) * 1000,
+                function_name, elapsed_ms,
+            )
+        elif elapsed_ms >= TRACE_SLOW_MS:
+            log.debug(
+                "CALL slow | function=%s | duration_ms=%.2f",
+                function_name, elapsed_ms,
             )
 
     if inspect.isasyncgenfunction(func):
@@ -135,8 +217,8 @@ def trace_calls(func):
             try:
                 async for item in func(*args, **kwargs):
                     yield item
-            except Exception:
-                log.exception("CALL failed | function=%s", function_name)
+            except Exception as exc:
+                _log_failure(log, function_name, exc)
                 raise
             else:
                 _finished(started)
@@ -148,8 +230,8 @@ def trace_calls(func):
             started = _started()
             try:
                 result = await func(*args, **kwargs)
-            except Exception:
-                log.exception("CALL failed | function=%s", function_name)
+            except Exception as exc:
+                _log_failure(log, function_name, exc)
                 raise
             _finished(started)
             return result
@@ -161,8 +243,8 @@ def trace_calls(func):
             started = _started()
             try:
                 yield from func(*args, **kwargs)
-            except Exception:
-                log.exception("CALL failed | function=%s", function_name)
+            except Exception as exc:
+                _log_failure(log, function_name, exc)
                 raise
             else:
                 _finished(started)
@@ -174,8 +256,8 @@ def trace_calls(func):
             started = _started()
             try:
                 result = func(*args, **kwargs)
-            except Exception:
-                log.exception("CALL failed | function=%s", function_name)
+            except Exception as exc:
+                _log_failure(log, function_name, exc)
                 raise
             _finished(started)
             return result
@@ -227,14 +309,19 @@ def setup_logging(level: int = logging.INFO) -> None:
     logging.captureWarnings(True)
     logging.getLogger("py.warnings").setLevel(level)
 
-    for noisy_logger in ("httpx", "httpcore", "urllib3", "PIL"):
+    # مكتبات خارجية كثيرة الثرثرة عند DEBUG — نُبقيها عند WARNING
+    for noisy_logger in ("httpx", "httpcore", "urllib3", "PIL", "watchdog",
+                         "matplotlib", "fsevents", "asyncio"):
         logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
     _is_configured = True
     logging.getLogger(__name__).info(
-        "Logging initialized | file=%s | level=%s | max_bytes=%d | backups=%d",
+        "Logging initialized | file=%s | level=%s | trace_all=%s | slow_ms=%.0f | "
+        "max_bytes=%d | backups=%d",
         LOG_FILE,
         logging.getLevelName(level),
+        TRACE_ALL_CALLS,
+        TRACE_SLOW_MS,
         LOG_MAX_BYTES,
         LOG_BACKUP_COUNT,
     )
