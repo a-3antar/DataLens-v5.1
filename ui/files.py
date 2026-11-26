@@ -61,7 +61,7 @@ from ui.common import (
     apply_rtl, apply_theme_css, require_login, require_project, sidebar_header,
     notify, format_local_dt,
 )
-from core.file_manager import FileManager
+from core.file_manager import FileManager, _ignore_invalid_excel_print_area_warning
 from core.data_manager import DataManager
 from core.dashboard_views import DashboardViews
 from core.knowledge_manager import KnowledgeManager, trigger_after_load
@@ -158,7 +158,8 @@ def _fast_inspect(fm: FileManager, file_bytes: bytes, file_name: str) -> dict:
     if ext == ".xlsx":
         try:
             from openpyxl import load_workbook
-            wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+            with _ignore_invalid_excel_print_area_warning():
+                wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
             try:
                 sheets = list(wb.sheetnames)
             finally:
@@ -183,7 +184,8 @@ def _fast_columns(fm: FileManager, file_bytes: bytes, extension: str, sheet) -> 
     if extension == ".xlsx":
         try:
             from openpyxl import load_workbook
-            wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+            with _ignore_invalid_excel_print_area_warning():
+                wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
             try:
                 ws = wb[sheet] if sheet else wb.worksheets[0]
                 header = next(
