@@ -44,9 +44,9 @@ def _ignore_invalid_excel_print_area_warning():
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
-            message=r"^Print area cannot be set to Defined name: .+\\.$",
+            message=r"^Print area cannot be set to Defined name: .+\.$",
             category=UserWarning,
-            module=r"openpyxl\\.reader\\.workbook",
+            module=r"openpyxl\.reader\.workbook",
         )
         yield
 
