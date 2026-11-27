@@ -3,6 +3,13 @@ ai/gemini.py
 ============
 محرك Google Gemini AI.
 يرث من BaseEngine ويطبق get_models / send / status.
+
+🆕 send() يدعم max_output_tokens وjson_mode (راجع ai/base_engine.py):
+- json_mode يضبط generationConfig.responseMimeType = "application/json"
+  فيلتزم Gemini برد JSON صالح دون أسوار markdown أو نص قبل/بعد الكائن.
+- نماذج Gemini 2.5 تستهلك جزءاً من maxOutputTokens في "التفكير" الداخلي
+  قبل كتابة الرد، لذا السقف الافتراضي 2048 كان يقطع خطط الاستعلامات؛
+  المستدعي يرفعه لطلبات الخطة عبر max_output_tokens.
 """
 
 
@@ -21,6 +28,9 @@ GEMINI_API_BASE   = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_LIST_URL   = f"{GEMINI_API_BASE}/models"
 GEMINI_GEN_URL    = f"{GEMINI_API_BASE}/models/{{model}}:generateContent"
 
+# سقف الرد الافتراضي حين لا يمرّر المستدعي max_output_tokens
+DEFAULT_MAX_OUTPUT_TOKENS = 2048
+
 
 class GeminiEngine(BaseEngine):
     """
@@ -30,7 +40,10 @@ class GeminiEngine(BaseEngine):
         engine = GeminiEngine(api_key="AIza...", model="gemini-2.0-flash")
         models = engine.get_models()
         result = engine.send("SELECT * FROM sales")
+        plan   = engine.send(prompt, 0.0, max_output_tokens=4096, json_mode=True)
     """
+
+    supports_json_mode = True
 
     @trace_calls
     def __init__(self, api_key: str, model: str = "gemini-2.0-flash", timeout: int = 30):
@@ -79,7 +92,14 @@ class GeminiEngine(BaseEngine):
     # ──────────────────────────────────────────────────────────
 
     @trace_calls
-    def send(self, prompt: str, temperature: float = 0.1, timeout_override: Optional[int] = None) -> dict:
+    def send(
+        self,
+        prompt: str,
+        temperature: float = 0.1,
+        timeout_override: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
+        json_mode: bool = False,
+    ) -> dict:
         """
         إرسال prompt إلى Gemini وإرجاع الرد.
         يرجع: {"ok": True, "text": "..."} أو
@@ -91,6 +111,7 @@ class GeminiEngine(BaseEngine):
 
         timeout_override: مهلة اتصال بديلة لهذا الاستدعاء فقط (بدون
         تعديل self.timeout الدائم) — راجع BaseEngine.send للتفاصيل.
+        max_output_tokens / json_mode: راجع توثيق الوحدة.
         """
 
         logger.debug("Starting Gemini send method...")
@@ -103,13 +124,17 @@ class GeminiEngine(BaseEngine):
 
         effective_timeout = timeout_override or self.timeout
 
+        generation_config = {
+            "temperature"    : max(0.0, min(2.0, temperature)),
+            "maxOutputTokens": int(max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS),
+        }
+        if json_mode:
+            generation_config["responseMimeType"] = "application/json"
+
         url     = GEMINI_GEN_URL.format(model=self.model)
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature"    : max(0.0, min(2.0, temperature)),
-                "maxOutputTokens": 2048,
-            },
+            "generationConfig": generation_config,
         }
         logger.debug(f"Gemini send method: {url}\n{payload}")
         try:
@@ -134,6 +159,11 @@ class GeminiEngine(BaseEngine):
             text = parts[0].get("text", "").strip()
             if not text:
                 return {"ok": False, "error": "الرد فارغ", "error_type": "other"}
+
+            finish = candidates[0].get("finishReason")
+            if finish == "MAX_TOKENS":
+                # الرد وصل لسقف التوكنات: يُسجَّل ليسهل تشخيص JSON المقطوع
+                logger.warning("Gemini response hit MAX_TOKENS (limit=%s)", generation_config["maxOutputTokens"])
 
             logger.info("Gemini response received: %d chars", len(text))
             return {"ok": True, "text": text}

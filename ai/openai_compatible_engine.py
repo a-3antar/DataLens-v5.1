@@ -15,6 +15,16 @@ ai/openai_compatible_engine.py
 أصبحا كوداً ميتاً بالكامل — كل شيء يمر الآن عبر هذا الكلاس + السجل
 أدناه.)
 
+🆕 وضع JSON وسقف الرد (راجع ai/base_engine.py):
+------------------------------------------------
+- json_mode يضيف response_format={"type": "json_object"} للطلب، لكن فقط
+  حين يعلن السجل دعم المزوّد له (مفتاح "json_mode" في
+  OPENAI_COMPATIBLE_ENGINES → supports_json_mode في الكلاس). OpenRouter
+  مثلاً يعتمد على النموذج المختار فلا يُفعَّل افتراضياً.
+- حتى مع الدعم المعلن، لو رفض المزوّد الطلب بـ HTTP 400 (نموذج لا
+  يدعم الوضع) يُعاد الإرسال مرة واحدة بدونه بدل فشل العملية.
+- max_output_tokens يغيّر max_tokens لهذا الاستدعاء فقط (الافتراضي 2048).
+
 🧹 تنظيف: حُذفت all_openai_compatible_names() — لم تكن مستخدمة في أي
 مكان بالمشروع (config.AI_ENGINES هو المصدر الفعلي المستخدَم في
 ui/settings.py لقائمة المحركات المعروضة).
@@ -32,6 +42,9 @@ from ai.base_engine import BaseEngine
 
 logger = logging.getLogger(__name__)
 
+# سقف الرد الافتراضي حين لا يمرّر المستدعي max_output_tokens
+DEFAULT_MAX_OUTPUT_TOKENS = 2048
+
 
 class OpenAICompatibleEngine(BaseEngine):
     """
@@ -43,6 +56,7 @@ class OpenAICompatibleEngine(BaseEngine):
             api_key="gsk_...",
             model="openai/gpt-oss-120b",
             display_name="Groq",
+            supports_json_mode=True,
         )
         models = engine.get_models()
         result = engine.send("SELECT * FROM sales")
@@ -56,10 +70,12 @@ class OpenAICompatibleEngine(BaseEngine):
         model       : str = "",
         timeout     : int = 30,
         display_name: str = "",
+        supports_json_mode: bool = False,
     ):
         super().__init__(api_key, model, timeout)
         self.base_url     = base_url.rstrip("/")
         self.display_name = display_name or base_url
+        self.supports_json_mode = supports_json_mode
 
     @property
     @trace_calls
@@ -97,13 +113,21 @@ class OpenAICompatibleEngine(BaseEngine):
             return {"ok": False, "error": str(e), "error_type": "other"}
 
     @trace_calls
-    def send(self, prompt: str, temperature: float = 0.1, timeout_override: Optional[int] = None) -> dict:
+    def send(
+        self,
+        prompt: str,
+        temperature: float = 0.1,
+        timeout_override: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
+        json_mode: bool = False,
+    ) -> dict:
         """
         error_type: "auth" (401/403 — لا فائدة من إعادة المحاولة)،
         "rate_limit" (429)، "transient" (5xx/timeout/اتصال)، "other".
 
         timeout_override: مهلة اتصال بديلة لهذا الاستدعاء فقط — راجع
-        BaseEngine.send للتفاصيل.
+        BaseEngine.send للتفاصيل. max_output_tokens/json_mode: راجع
+        توثيق الوحدة.
         """
         if not self.api_key:
             return {"ok": False, "error": "API key غير موجود", "error_type": "auth"}
@@ -114,27 +138,36 @@ class OpenAICompatibleEngine(BaseEngine):
 
         effective_timeout = timeout_override or self.timeout
 
+        payload = {
+            "model"      : self.model,
+            "messages"   : [{"role": "user", "content": prompt}],
+            "temperature": max(0.0, min(2.0, temperature)),
+            "max_tokens" : int(max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS),
+        }
+        use_json = bool(json_mode and self.supports_json_mode)
+        if use_json:
+            payload["response_format"] = {"type": "json_object"}
+
         try:
-            resp = httpx.post(
-                self.chat_url,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type" : "application/json",
-                },
-                json={
-                    "model"      : self.model,
-                    "messages"   : [{"role": "user", "content": prompt}],
-                    "temperature": max(0.0, min(2.0, temperature)),
-                    "max_tokens" : 2048,
-                },
-                timeout=effective_timeout,
-            )
-            resp.raise_for_status()
+            try:
+                resp = self._post(payload, effective_timeout)
+            except httpx.HTTPStatusError as e:
+                # نموذج لا يدعم response_format يرفضه بـ 400 — نُعيد الطلب بدونه مرة واحدة
+                if use_json and e.response.status_code == 400:
+                    logger.warning("%s rejected json_mode (400) — retrying without it", self.display_name)
+                    payload.pop("response_format", None)
+                    resp = self._post(payload, effective_timeout)
+                else:
+                    raise
+
             data    = resp.json()
             choices = data.get("choices", [])
             if not choices:
                 return {"ok": False, "error": "الرد لا يحتوي على choices", "error_type": "other"}
-            text = choices[0].get("message", {}).get("content", "").strip()
+            if choices[0].get("finish_reason") == "length":
+                # الرد وصل لسقف التوكنات: يُسجَّل ليسهل تشخيص JSON المقطوع
+                logger.warning("%s response hit max_tokens (limit=%s)", self.display_name, payload["max_tokens"])
+            text = (choices[0].get("message", {}).get("content") or "").strip()
             if not text:
                 return {"ok": False, "error": "الرد فارغ", "error_type": "other"}
             logger.info("%s response: %d chars", self.display_name, len(text))
@@ -163,6 +196,21 @@ class OpenAICompatibleEngine(BaseEngine):
             return {"ok": False, "error": str(e), "error_type": "other"}
 
     @trace_calls
+    def _post(self, payload: dict, timeout: int) -> httpx.Response:
+        """إرسال طلب chat/completions واحد (يرفع HTTPStatusError عند أي حالة خطأ)."""
+        resp = httpx.post(
+            self.chat_url,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type" : "application/json",
+            },
+            json=payload,
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        return resp
+
+    @trace_calls
     def status(self) -> dict:
         result = self.get_models()
         if result["ok"]:
@@ -171,22 +219,27 @@ class OpenAICompatibleEngine(BaseEngine):
 
 
 
+# "json_mode": هل يدعم المزوّد response_format={"type": "json_object"} على
+# نماذجه عموماً؟ OpenRouter False لأن الدعم يختلف من نموذج لآخر.
 OPENAI_COMPATIBLE_ENGINES = {
     "groq": {
         "display_name" : "Groq",
         "base_url"     : "https://api.groq.com/openai/v1",
         "default_model": "openai/gpt-oss-120b",
+        "json_mode"    : True,
     },
     "openrouter": {
         "display_name" : "OpenRouter",
         "base_url"     : "https://openrouter.ai/api/v1",
         "default_model": "mistralai/mistral-7b-instruct",
+        "json_mode"    : False,
     },
 
     "openai": {
         "display_name" : "OpenAI",
         "base_url"     : "https://api.openai.com/v1",
         "default_model": "gpt-4o-mini",
+        "json_mode"    : True,
     },
 }
 

@@ -8,6 +8,12 @@ ai/ollama.py
 - num_predict يحدد الحد الأقصى لطول المخرجات.
 - لا يمكن معرفة عدد Tokens للـ prompt بدقة قبل الإرسال دون tokenizer مطابق
   للنموذج؛ لذلك نسجل prompt_eval_count الذي يعيده Ollama بعد التنفيذ.
+
+🆕 send() يدعم max_output_tokens وjson_mode (راجع ai/base_engine.py):
+- max_output_tokens يتجاوز اختيار num_predict التلقائي (الذي يعتمد على
+  تخمين نوع المهمة من نص الـ prompt) لهذا الاستدعاء فقط.
+- json_mode يرسل format="json" فيقيّد Ollama التوليد بـ JSON صالح — وهو
+  أنفع ما يكون للنماذج الصغيرة التي تخلط النص بالـ JSON في خطة الاستعلامات.
 """
 
 from core.logger_config import trace_calls
@@ -25,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 class OllamaEngine(BaseEngine):
     """محرك Ollama المحلي."""
+
+    supports_json_mode = True
 
     @trace_calls
     def __init__(
@@ -86,7 +94,7 @@ class OllamaEngine(BaseEngine):
 
     @trace_calls
     def _num_predict_for_prompt(self, prompt: str) -> int:
-        """اختيار حد المخرجات حسب نوع المهمة."""
+        """اختيار حد المخرجات حسب نوع المهمة (يُتجاوز بـ max_output_tokens)."""
         if "SQL QUERY:" in prompt or "JSON PLAN:" in prompt:
             return self.num_predict_sql
         return self.num_predict_default
@@ -97,6 +105,8 @@ class OllamaEngine(BaseEngine):
         prompt: str,
         temperature: float = 0.1,
         timeout_override: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
+        json_mode: bool = False,
     ) -> dict:
         """إرسال prompt إلى Ollama مع مهلة قراءة وإعدادات توليد مستقلة."""
         if not self.model:
@@ -112,7 +122,7 @@ class OllamaEngine(BaseEngine):
             pool=min(15, effective_timeout),
         )
 
-        num_predict = self._num_predict_for_prompt(prompt)
+        num_predict = int(max_output_tokens) if max_output_tokens else self._num_predict_for_prompt(prompt)
         payload = {
             "model": self.model,
             "prompt": prompt,
@@ -124,10 +134,12 @@ class OllamaEngine(BaseEngine):
                 "num_predict": num_predict,
             },
         }
+        if json_mode:
+            payload["format"] = "json"
 
         logger.info(
-            "Ollama request: model=%s num_ctx=%d num_predict=%d prompt_chars=%d",
-            self.model, self.num_ctx, num_predict, len(prompt),
+            "Ollama request: model=%s num_ctx=%d num_predict=%d prompt_chars=%d json=%s",
+            self.model, self.num_ctx, num_predict, len(prompt), json_mode,
         )
 
         try:

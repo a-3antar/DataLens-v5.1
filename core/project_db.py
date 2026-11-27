@@ -33,6 +33,23 @@ backup_*.db في نفس مجلد المشروع؛ لو تجاوز العدد 20 
 حالياً (بانتظار "Backup system UI" ضمن خطة الطريق) — أُبقيتا كما هما
 بدون حذف عمداً، فهما ليستا كوداً ميتاً بل ميزة جاهزة تنتظر واجهتها.
 
+🆕 كاش الإعدادات (get_settings) + قراءة الإعدادات مرة واحدة:
+------------------------------------------------------------
+get_settings() كانت تُستدعى من get_clean_data() ومن get_schema() لكل جدول،
+ومن عشرات المستهلكين الآخرين، وكل استدعاء يفتح اتصال SQLite ويفكّ تشفير
+مفاتيح API من جديد. الآن:
+  - تُخزَّن نتيجة get_settings في كاش على مستوى الوحدة، مفتاحه مسار
+    project.db وبصمته (file_signature: وقت التعديل والحجم لملف القاعدة وملف
+    WAL — وهي نفسها بصمة كاش الجداول في core/query_engine.py). أي كتابة
+    في المشروع — من أي instance أو thread أو عملية — تغيّر البصمة فيُعاد
+    القراءة تلقائياً؛ وsave_settings تُبطل الكاش فوراً أيضاً.
+  - المُعاد دائماً نسخة عميقة، فتعديل المستدعي للقاموس (مثل custom_theme_colors)
+    لا يلوّث الكاش.
+  - get_clean_data/get_schema تقبلان settings اختيارياً، وget_schema تقرأ
+    الإعدادات مرة واحدة خارج حلقة الجداول.
+لا تغيير في مخطط الجداول ولا في أي بيانات محفوظة: ملفات المشاريع الموجودة
+تعمل كما هي بلا ترحيل. التعطيل الكامل: config.SETTINGS_CACHE_ENABLED = False.
+
 🧹 تنظيف: حُذفت rename_dashboard() — غير مستخدمة في أي مكان (إعادة
 تسمية اللوحة تتم فقط عند الإنشاء حالياً؛ core/dashboard_manager.py
 يحدّث template_id مباشرة عبر sqlite3 وليس عبر هذه الدالة).
@@ -41,17 +58,20 @@ backup_*.db في نفس مجلد المشروع؛ لو تجاوز العدد 20 
 
 from core.logger_config import trace_calls
 
+import os
+import copy
 import sqlite3
 import json
 import shutil
 import logging
+import threading
 from pathlib  import Path
 from datetime import datetime
 from typing   import Optional
 
 import pandas as pd
 
-from config import PROJECTS_DIR, DEFAULT_SETTINGS
+from config import PROJECTS_DIR, DEFAULT_SETTINGS, SETTINGS_CACHE_ENABLED
 from core.crypto import encrypt_value, decrypt_value
 
 logger = logging.getLogger(__name__)
@@ -83,6 +103,35 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")   # أداء أفضل
     return conn
+
+
+# ══════════════════════════════════════════════════════════════
+#  كاش الإعدادات (راجع توثيق الوحدة)
+# ══════════════════════════════════════════════════════════════
+
+# المفتاح: مسار project.db  ←  القيمة: (بصمة الملفات, dict الإعدادات)
+_SETTINGS_CACHE: dict = {}
+_SETTINGS_CACHE_LOCK = threading.Lock()
+
+
+@trace_calls
+def file_signature(db_path: Path) -> tuple:
+    """
+    بصمة تغيّر القاعدة (المصدر الوحيد لها في المشروع — core/query_engine.py
+    يستوردها لكاش الجداول بدل نسخة مكررة، فيتفق الكاشان دائماً على معنى
+    "تغيّرت القاعدة"): (وقت التعديل، الحجم) لملف project.db وملف WAL
+    المرافق (المشروع يعمل بوضع WAL فالكتابات تظهر أولاً في ملف -wal).
+    تؤخذ قبل القراءة دائماً: لو حدثت كتابة أثناء القراءة تُخزَّن النتيجة
+    تحت بصمة أقدم فتُرفض في الاستدعاء التالي — لا بيانات قديمة تُقدَّم كحديثة.
+    """
+    sig = []
+    for path in (str(db_path), str(db_path) + "-wal"):
+        try:
+            st = os.stat(path)
+            sig.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            sig.append(None)
+    return tuple(sig)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -262,21 +311,38 @@ class ProjectDB:
         إرجاع كل الإعدادات كـ dict. أي مفتاح يبدأ بـ "api_key_" يُفَكّ
         تشفيره تلقائياً قبل الإرجاع (القيمة المخزَّنة فعلياً في
         settings مُشفَّرة — راجع save_settings أدناه).
+
+        النتيجة تمر عبر كاش مرتبط ببصمة الملف (راجع توثيق الوحدة) وتُعاد
+        نسخة عميقة دائماً، فلا يؤثر تعديل المستدعي في الكاش.
         """
+        key = str(self.db_path)
+        sig = file_signature(self.db_path) if SETTINGS_CACHE_ENABLED else None
+
+        if SETTINGS_CACHE_ENABLED:
+            with _SETTINGS_CACHE_LOCK:
+                cached = _SETTINGS_CACHE.get(key)
+            if cached is not None and cached[0] == sig:
+                return copy.deepcopy(cached[1])
+
         try:
             with _connect(self.db_path) as conn:
                 rows = conn.execute("SELECT key, value FROM settings").fetchall()
             result = {}
             for row in rows:
-                key = row["key"]
+                name = row["key"]
                 value = json.loads(row["value"])
-                if key.startswith(_API_KEY_SETTING_PREFIX) and isinstance(value, str):
+                if name.startswith(_API_KEY_SETTING_PREFIX) and isinstance(value, str):
                     value = decrypt_value(value)
-                result[key] = value
-            return result
+                result[name] = value
         except sqlite3.Error as e:
             logger.error("get_settings error: %s", e)
-            return dict(DEFAULT_SETTINGS)
+            return copy.deepcopy(DEFAULT_SETTINGS)   # نسخة: DEFAULT_SETTINGS ثابت عام لا يجوز تلويثه
+
+        if SETTINGS_CACHE_ENABLED:
+            with _SETTINGS_CACHE_LOCK:
+                _SETTINGS_CACHE[key] = (sig, result)
+            return copy.deepcopy(result)
+        return result
 
     @trace_calls
     def save_settings(self, updates: dict) -> None:
@@ -297,6 +363,9 @@ class ProjectDB:
                         (key, json.dumps(stored_value))
                     )
                 conn.commit()
+            # إبطال فوري (البصمة ستتغير أيضاً، لكن لا ننتظر دقة وقت الملف)
+            with _SETTINGS_CACHE_LOCK:
+                _SETTINGS_CACHE.pop(str(self.db_path), None)
             logger.info("Settings updated: %s", list(updates.keys()))
         except sqlite3.Error as e:
             logger.error("save_settings error: %s", e)
@@ -426,17 +495,22 @@ class ProjectDB:
             raise
 
     @trace_calls
-    def get_clean_data(self, table_alias: str) -> Optional[pd.DataFrame]:
+    def get_clean_data(self, table_alias: str, settings: Optional[dict] = None) -> Optional[pd.DataFrame]:
         """
         تحميل البيانات النظيفة كـ DataFrame، مع استعادة أعمدة التاريخ
         إلى نوعها الأصلي (datetime64) بدل تركها نصاً كما يُخزّنها SQLite.
+
+        settings (اختياري): لقطة إعدادات جاهزة من المستدعي (تفادي قراءتها
+        مجدداً عند تحميل عدة جداول متتالية).
         """
         table_name = f"data_{table_alias}"
         try:
             with _connect(self.db_path) as conn:
                 df = pd.read_sql(f'SELECT * FROM "{table_name}"', conn)
 
-            date_cols = self.get_settings().get(f"_date_cols_{table_alias}", [])
+            if settings is None:
+                settings = self.get_settings()
+            date_cols = settings.get(f"_date_cols_{table_alias}", [])
             for col in date_cols:
                 if col in df.columns:
                     df[col] = pd.to_datetime(df[col], errors="coerce")
@@ -448,7 +522,7 @@ class ProjectDB:
             return None
 
     @trace_calls
-    def get_schema(self) -> dict:
+    def get_schema(self, settings: Optional[dict] = None) -> dict:
         """
         بناء schema كامل لكل الجداول.
         يُستخدم في Prompt Builder.
@@ -463,6 +537,9 @@ class ProjectDB:
         from config import SAMPLE_ROWS
         schema = {}
         try:
+            # الإعدادات مرة واحدة لكل الجداول (كانت تُقرأ داخل الحلقة لكل جدول)
+            if settings is None:
+                settings = self.get_settings()
             files = self.get_files()
             with _connect(self.db_path) as conn:
                 for f in files:
@@ -479,7 +556,7 @@ class ProjectDB:
                     # datetime64 بعد إعادة التحميل عبر get_clean_data.
                     # هذا التصحيح يُعلم الذكاء الاصطناعي أنه يمكنه استخدام
                     # دوال التاريخ (مثل DATE_TRUNC) مباشرة بدون CAST يدوي.
-                    date_cols = self.get_settings().get(f"_date_cols_{alias}", [])
+                    date_cols = settings.get(f"_date_cols_{alias}", [])
                     for col in date_cols:
                         if col in cols:
                             cols[col] = "DATE"
