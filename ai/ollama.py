@@ -1,9 +1,14 @@
 """
 ai/ollama.py
 ============
-محرك Ollama المحلي مع إعدادات مناسبة لمهام تحليل البيانات وكتابة SQL.
-"""
+محرك Ollama المحلي مع إعدادات قابلة للضبط لمهام تحليل البيانات وكتابة SQL.
 
+ملاحظات:
+- num_ctx يحدد نافذة السياق التي يخصصها Ollama للنموذج.
+- num_predict يحدد الحد الأقصى لطول المخرجات.
+- لا يمكن معرفة عدد Tokens للـ prompt بدقة قبل الإرسال دون tokenizer مطابق
+  للنموذج؛ لذلك نسجل prompt_eval_count الذي يعيده Ollama بعد التنفيذ.
+"""
 
 from core.logger_config import trace_calls
 
@@ -29,15 +34,22 @@ class OllamaEngine(BaseEngine):
         timeout: int = OLLAMA_TIMEOUT_SECONDS,
         api_key: str = "",
         num_ctx: Optional[int] = None,
+        num_predict_sql: int = 384,
+        num_predict_default: int = 768,
         keep_alive: str = "5m",
     ):
         super().__init__(api_key="", model=model, timeout=timeout)
-        self.base_url = base_url.rstrip("/")
+        self.base_url = (base_url or OLLAMA_DEFAULT_URL).rstrip("/")
+
+        # الإعداد الافتراضي متوافق مع السلوك السابق، ويمكن تجاوزه من إعدادات المشروع.
         if num_ctx is None:
-            model_lower = (model or '').lower()
-            num_ctx = 6144 if '3b' in model_lower else 4096
+            model_lower = (model or "").lower()
+            num_ctx = 6144 if "3b" in model_lower else 4096
+
         self.num_ctx = max(2048, int(num_ctx))
-        self.keep_alive = keep_alive
+        self.num_predict_sql = max(64, int(num_predict_sql))
+        self.num_predict_default = max(128, int(num_predict_default))
+        self.keep_alive = keep_alive or "5m"
 
     @property
     @trace_calls
@@ -74,10 +86,10 @@ class OllamaEngine(BaseEngine):
 
     @trace_calls
     def _num_predict_for_prompt(self, prompt: str) -> int:
-        """حد أصغر لمخرجات SQL لتقليل زمن التوليد ومنع الاستطراد."""
-        if "SQL QUERY:" in prompt:
-            return 384
-        return 768
+        """اختيار حد المخرجات حسب نوع المهمة."""
+        if "SQL QUERY:" in prompt or "JSON PLAN:" in prompt:
+            return self.num_predict_sql
+        return self.num_predict_default
 
     @trace_calls
     def send(
@@ -86,7 +98,7 @@ class OllamaEngine(BaseEngine):
         temperature: float = 0.1,
         timeout_override: Optional[int] = None,
     ) -> dict:
-        """إرسال prompt إلى Ollama مع مهلة قراءة مستقلة وإعدادات توليد محددة."""
+        """إرسال prompt إلى Ollama مع مهلة قراءة وإعدادات توليد مستقلة."""
         if not self.model:
             return {"ok": False, "error": "لم يتم تحديد النموذج", "error_type": "other"}
         if not prompt or not prompt.strip():
@@ -99,6 +111,8 @@ class OllamaEngine(BaseEngine):
             write=min(30, effective_timeout),
             pool=min(15, effective_timeout),
         )
+
+        num_predict = self._num_predict_for_prompt(prompt)
         payload = {
             "model": self.model,
             "prompt": prompt,
@@ -107,9 +121,14 @@ class OllamaEngine(BaseEngine):
             "options": {
                 "temperature": max(0.0, min(1.0, float(temperature))),
                 "num_ctx": self.num_ctx,
-                "num_predict": self._num_predict_for_prompt(prompt),
+                "num_predict": num_predict,
             },
         }
+
+        logger.info(
+            "Ollama request: model=%s num_ctx=%d num_predict=%d prompt_chars=%d",
+            self.model, self.num_ctx, num_predict, len(prompt),
+        )
 
         try:
             resp = httpx.post(self.generate_url, json=payload, timeout=timeout)
@@ -124,10 +143,22 @@ class OllamaEngine(BaseEngine):
                 }
 
             duration = data.get("total_duration")
-            duration_s = round(duration / 1_000_000_000, 2) if isinstance(duration, (int, float)) else None
+            duration_s = (
+                round(duration / 1_000_000_000, 2)
+                if isinstance(duration, (int, float)) else None
+            )
+            prompt_eval_count = data.get("prompt_eval_count")
+            eval_count = data.get("eval_count")
+
             logger.info(
-                "Ollama response: model=%s prompt_chars=%d response_chars=%d duration=%s",
-                self.model, len(prompt), len(text), duration_s,
+                "Ollama response: model=%s prompt_tokens=%s output_tokens=%s "
+                "prompt_chars=%d response_chars=%d duration=%s",
+                self.model,
+                prompt_eval_count if prompt_eval_count is not None else "unknown",
+                eval_count if eval_count is not None else "unknown",
+                len(prompt),
+                len(text),
+                duration_s,
             )
             return {"ok": True, "text": text}
 
@@ -170,12 +201,15 @@ class OllamaEngine(BaseEngine):
 
     @trace_calls
     def status(self) -> dict:
-        """التحقق من أن Ollama يعمل."""
+        """التحقق من أن Ollama يعمل وإرجاع إعدادات السياق الفعالة."""
         result = self.get_models()
         if result["ok"]:
             return {
                 "ok": True,
                 "base_url": self.base_url,
                 "models_count": len(result["models"]),
+                "num_ctx": self.num_ctx,
+                "num_predict_sql": self.num_predict_sql,
+                "num_predict_default": self.num_predict_default,
             }
         return result

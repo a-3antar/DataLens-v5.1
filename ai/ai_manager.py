@@ -1062,7 +1062,8 @@ class AIManager:
             history_turns = list(history)[-QA_HISTORY_TURNS:]
 
         relations = self.db.get_relations()
-        builder = PromptBuilder(schema=schema, relations=relations, ai_rules=ai_rules)
+        builder = PromptBuilder(schema=schema, relations=relations, ai_rules=ai_rules,
+                        lite=isinstance(self.engine, OllamaEngine))
 
         # ── المرحلة ١: خطة الاستعلامات ──
         prompt = builder.build_qa_plan(
@@ -1253,7 +1254,7 @@ class AIManager:
         if not question or not answer:
             return {"ok": False, "error": "لا يوجد سؤال/جواب لتلخيصه"}
 
-        builder = PromptBuilder(schema={}, relations=[])
+        builder = PromptBuilder(schema={}, relations=[], lite=isinstance(self.engine, OllamaEngine))
         prompt = builder.build_qa_summary(old_summary, question, answer)
 
         attempts = min(self.max_tries, _QA_SUMMARY_MAX_ATTEMPTS)
