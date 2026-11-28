@@ -34,6 +34,13 @@ core/dashboard_manager.py::_update_dashboard_columns.
 
 ملاحظة: SQLite لا يقبل معاملات (?) داخل CREATE VIEW، فتُكتب القيم
 كنصوص حرفية مع مضاعفة علامة الاقتباس المفردة ('' ) للحماية من الحقن.
+
+🆕 read_table(table_alias, dashboard_id=None, settings=None):
+------------------------------------------------------------
+معامل settings اختياري (لقطة إعدادات جاهزة من المستدعي — يمرّرها
+QueryEngine._load_tables لتفادي قراءة الإعدادات لكل جدول). يُمرَّر
+لـ db.get_clean_data ويُستخدم لأعمدة التاريخ. المستدعون القدامى
+read_table(alias) / read_table(alias, dashboard_id) يعملون كما كانوا.
 """
 
 
@@ -297,7 +304,12 @@ class DashboardViews:
             conn.close()
 
     @trace_calls
-    def read_table(self, table_alias: str, dashboard_id: Optional[str] = None) -> Optional[pd.DataFrame]:
+    def read_table(
+        self,
+        table_alias: str,
+        dashboard_id: Optional[str] = None,
+        settings: Optional[dict] = None,
+    ) -> Optional[pd.DataFrame]:
         """
         بيانات جدول كما يجب أن "يراها" المستهلك:
         - بدون dashboard_id أو بدون view لهذه اللوحة: الجدول الأصلي
@@ -305,18 +317,22 @@ class DashboardViews:
         - مع view: البيانات المفلترة، مع استعادة أعمدة التاريخ لنوع
           datetime64 (نفس منطق get_clean_data).
 
+        settings (اختياري): لقطة إعدادات جاهزة من المستدعي — تُمرَّر
+        لـ get_clean_data وتُستخدم لأعمدة التاريخ بدل قراءة الإعدادات
+        من جديد.
+
         لو فشلت قراءة الـ view (مثلاً أُعيد إنشاء الجدول بأعمدة مختلفة)
         تُعاد مزامنة views اللوحة مرة واحدة ثم تُعاد المحاولة.
         """
         if not dashboard_id:
-            return self.db.get_clean_data(table_alias)
+            return self.db.get_clean_data(table_alias, settings=settings)
 
         df = None
         for attempt in (1, 2):
             try:
                 exists, df = self._read_view_once(dashboard_id, table_alias)
                 if not exists:
-                    return self.db.get_clean_data(table_alias)
+                    return self.db.get_clean_data(table_alias, settings=settings)
                 break
             except Exception as e:
                 if attempt == 1:
@@ -332,12 +348,14 @@ class DashboardViews:
             # نتيجة الفلتر فارغة: pandas يقرأ أعمدة بلا نوع (object)، فتفشل
             # لاحقاً دوال مثل SUM في DuckDB. نُعيد صفرَ صفوف من الجدول
             # الأصلي نفسه — نفس الأعمدة بأنواعها الصحيحة.
-            base = self.db.get_clean_data(table_alias)
+            base = self.db.get_clean_data(table_alias, settings=settings)
             if base is not None:
                 return base.iloc[0:0]
             return df
 
-        date_cols = self.db.get_settings().get(f"_date_cols_{table_alias}", [])
+        if settings is None:
+            settings = self.db.get_settings()
+        date_cols = settings.get(f"_date_cols_{table_alias}", [])
         for col in date_cols:
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col], errors="coerce")

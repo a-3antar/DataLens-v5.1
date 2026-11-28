@@ -66,6 +66,18 @@ _resolve_planned_zero_rows، وبما أنه لا يوجد مستخدم ليخت
   - غير مؤكد → لا استبدال، بل "value_hint" نصي بأقرب القيم الموجودة
     يُمرَّر لمرحلة كتابة الإجابة (قسم NOTES) كي لا تُبنى خلاصة
     "لا توجد بيانات" على عدم تطابق كتابة لا أكثر.
+
+🆕 إصلاح "تعذر تحليل خطة الاستعلامات كـ JSON":
+------------------------------------------------
+سبب الخطأ الشائع: النموذج يكتب أسماء الأعمدة العربية بين علامتي اقتباس
+مزدوجتين داخل قيمة "sql" في JSON دون تهريبها (\"), أو يُقطع الرد بسقف
+التوكنات. المعالجة على مستويين:
+  ١) طلبات الخطة (tell_story / answer_question) تُرسَل بـ json_mode=True
+     وسقف max_output_tokens=AI_PLAN_MAX_OUTPUT_TOKENS (config.py) —
+     المحركات التي لا تدعم الوضع تتجاهله بصمت (راجع ai/base_engine.py).
+  ٢) _parse_story_queries متسامحة: json.loads ثم repair_truncated_json
+     (للرد المقطوع) ثم استخراج أزواج title/sql بـ regex (للاقتباسات غير
+     المهرَّبة). لا تغيير في شكل المخرجات.
 """
 
 from core.logger_config import trace_calls
@@ -90,7 +102,7 @@ from core.knowledge_manager import KnowledgeManager
 from config import (
     OLLAMA_DEFAULT_URL, OLLAMA_TIMEOUT_SECONDS, STORY_SAMPLE_ROWS_IN_PROMPT, AI_RETRY_DELAY_SECONDS,
     STORY_TIMEOUT_SECONDS, STORY_MAX_QUERIES, QA_MAX_QUERIES, QA_HISTORY_TURNS,
-    QA_SUMMARY_MAX_CHARS,
+    QA_SUMMARY_MAX_CHARS, AI_PLAN_MAX_OUTPUT_TOKENS, AI_JSON_MODE_ENABLED,
 )
 
 logger = logging.getLogger(__name__)
@@ -113,6 +125,12 @@ _MISSING_COL_NAMED_RE = re.compile(r'does not have a column named "([^"]+)"', re
 _AR_NORMALIZE = str.maketrans({"ة": "ه", "أ": "ا", "إ": "ا", "آ": "ا", "ى": "ي", "ؤ": "و", "ئ": "ي"})
 _SCHEMA_FIX_MIN_RATIO = 0.85
 _MAX_SCHEMA_FIX_STEPS = 3
+
+# 🆕 استخراج احتياطي لأزواج title/sql من رد خطة JSON غير صالح
+# (اقتباسات مزدوجة غير مهرَّبة داخل SQL) — راجع _parse_story_queries.
+_PLAN_ITEM_RE = re.compile(
+    r'"title"\s*:\s*"(.*?)"\s*,\s*"sql"\s*:\s*"(.*?)"\s*\}', re.DOTALL
+)
 
 
 @trace_calls
@@ -145,6 +163,7 @@ def get_engine(
             model       =model or entry.get("default_model", ""),
             timeout     =timeout,
             display_name=entry.get("display_name", name),
+            supports_json_mode=bool(entry.get("json_mode", False)),
         )
 
     logger.error("Unknown engine: %s", engine_name)
@@ -223,6 +242,18 @@ class AIManager:
         except Exception as e:
             logger.debug("knowledge context skipped: %s", e)
             return None
+
+    @trace_calls
+    def _send_plan(self, prompt: str) -> dict:
+        """
+        🆕 إرسال طلب "خطة استعلامات" (JSON): سقف رد أكبر + وضع JSON الأصلي
+        للمحرك لو يدعمه. المحرك الذي لا يدعم json_mode يتجاهله بصمت.
+        """
+        return self.engine.send(
+            prompt, self.temperature,
+            max_output_tokens=AI_PLAN_MAX_OUTPUT_TOKENS,
+            json_mode=AI_JSON_MODE_ENABLED,
+        )
 
     # ──────────────────────────────────────────────────────────
     #  الدالة الرئيسية
@@ -642,7 +673,7 @@ class AIManager:
 
             for attempt in range(1, self.max_tries + 1):
                 tries = attempt
-                send_result = self.engine.send(prompt, self.temperature)
+                send_result = self._send_plan(prompt)
 
                 if not send_result["ok"]:
                     last_error = send_result["error"]
@@ -663,7 +694,10 @@ class AIManager:
                 if not parsed["ok"]:
                     last_error = parsed["error"]
                     last_error_type = None
-                    logger.warning("Story plan parse failed (attempt %d): %s", attempt, last_error)
+                    logger.warning(
+                        "Story plan parse failed (attempt %d): %s | raw=%s",
+                        attempt, last_error, send_result["text"][:300],
+                    )
                     if attempt < self.max_tries:
                         prompt = builder.build_error_retry(
                             original_prompt=prompt,
@@ -975,18 +1009,44 @@ class AIManager:
         تحليل رد AI (خطة الاستعلامات) كـ JSON، مع تقييد العدد بـ max_queries.
         الافتراضي STORY_MAX_QUERIES (سلوك Story Telling القديم بالضبط)؛
         answer_question تمرّر QA_MAX_QUERIES.
+
+        🆕 تحليل متسامح بثلاث مراحل (راجع توثيق الوحدة):
+          ١) json.loads على أول '{' حتى آخر '}'.
+          ٢) engine.repair_truncated_json للرد المقطوع.
+          ٣) regex لأزواج title/sql عندما تكون الاقتباسات المزدوجة داخل
+             SQL غير مهرَّبة (JSON غير صالح).
         """
         text = self.engine.clean_response(text)
-        try:
-            start = text.index("{")
-            end = text.rindex("}") + 1
-            data = json.loads(text[start:end])
-        except Exception as e:
-            return {"ok": False, "error": f"تعذر تحليل خطة الاستعلامات كـ JSON: {e}"}
+        queries = None
 
-        queries = data.get("queries")
+        # ١) JSON سليم
+        try:
+            data = json.loads(text[text.index("{"):text.rindex("}") + 1])
+            queries = data.get("queries") if isinstance(data, dict) else None
+        except Exception:
+            # ٢) JSON مقطوع
+            try:
+                repaired = self.engine.repair_truncated_json(text)
+                if repaired:
+                    queries = json.loads(repaired).get("queries")
+            except Exception:
+                queries = None
+
+        # ٣) اقتباسات غير مهرَّبة داخل SQL
         if not isinstance(queries, list) or not queries:
-            return {"ok": False, "error": "لم يتم إرجاع أي استعلامات في الخطة"}
+            found = _PLAN_ITEM_RE.findall(text)
+            if found:
+                logger.warning("Plan JSON invalid — recovered %d query(ies) via regex", len(found))
+                queries = [
+                    {
+                        "title": t.strip(),
+                        "sql": s.replace('\\"', '"').replace("\\n", "\n").strip(),
+                    }
+                    for t, s in found
+                ]
+
+        if not isinstance(queries, list) or not queries:
+            return {"ok": False, "error": "تعذر تحليل خطة الاستعلامات (JSON غير صالح)"}
 
         cleaned = []
         for q in queries[:max_queries]:
@@ -1077,7 +1137,7 @@ class AIManager:
 
         for attempt in range(1, self.max_tries + 1):
             tries = attempt
-            send_result = self.engine.send(prompt, self.temperature)
+            send_result = self._send_plan(prompt)
 
             if not send_result["ok"]:
                 last_error = send_result["error"]
@@ -1098,7 +1158,10 @@ class AIManager:
             if not parsed["ok"]:
                 last_error = parsed["error"]
                 last_error_type = None
-                logger.warning("QA plan parse failed (attempt %d): %s", attempt, last_error)
+                logger.warning(
+                    "QA plan parse failed (attempt %d): %s | raw=%s",
+                    attempt, last_error, send_result["text"][:300],
+                )
                 if attempt < self.max_tries:
                     prompt = builder.build_error_retry(
                         original_prompt=prompt,
