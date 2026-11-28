@@ -128,7 +128,8 @@ def file_signature(db_path: Path) -> tuple:
     for path in (str(db_path), str(db_path) + "-wal"):
         try:
             st = os.stat(path)
-            sig.append((st.st_mtime_ns, st.st_size))
+            # ملف WAL الفارغ (يُنشأ عند أول اتصال قراءة) يعادل غيابه: لا يعني تغيّر البيانات
+            sig.append(None if (path.endswith("-wal") and st.st_size == 0) else (st.st_mtime_ns, st.st_size))
         except OSError:
             sig.append(None)
     return tuple(sig)

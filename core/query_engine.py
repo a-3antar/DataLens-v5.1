@@ -305,8 +305,8 @@ class QueryEngine:
                 f"{alias}({len(df)} rows{', view' if has_view else ''}{', cache' if hit else ''})"
             )
 
-        # سطر واحد لكل استعلام بدل سطر لكل جدول (كان يغرق اللوج في خطط QA/Story)
-        if summary:
+        # يُسجَّل فقط حين قُرئ جدول من SQLite فعلاً؛ الاستعلامات المتتالية التي تأتي كلها من الكاش (خطط QA/Story وتحديث اللوحات) لا تكرر نفس السطر
+        if summary and not all(", cache" in s for s in summary):
             logger.debug("Tables ready in DuckDB: %s", ", ".join(summary))
         return loaded
 

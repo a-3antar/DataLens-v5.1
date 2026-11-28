@@ -113,8 +113,6 @@ class GeminiEngine(BaseEngine):
         تعديل self.timeout الدائم) — راجع BaseEngine.send للتفاصيل.
         max_output_tokens / json_mode: راجع توثيق الوحدة.
         """
-
-        logger.debug("Starting Gemini send method...")
         if not self.api_key:
             return {"ok": False, "error": "API key غير موجود", "error_type": "auth"}
         if not self.model:
@@ -136,7 +134,11 @@ class GeminiEngine(BaseEngine):
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": generation_config,
         }
-        logger.debug(f"Gemini send method: {url}\n{payload}")
+        # لا يُسجَّل نص الـ prompt نفسه: آلاف الأحرف وبيانات المستخدم داخل ملف اللوج
+        logger.debug(
+            "Gemini request | model=%s | prompt_chars=%d | max_tokens=%s | json_mode=%s",
+            self.model, len(prompt), generation_config["maxOutputTokens"], json_mode,
+        )
         try:
             resp = httpx.post(
                 url,

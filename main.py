@@ -2,6 +2,13 @@
 main.py
 =======
 نقطة الدخول لتطبيق DataLens V5.0 (Streamlit).
+
+Streamlit يعيد تشغيل هذا الملف كاملاً مع كل تفاعل (rerun) وفي سياق
+تنفيذ جديد، لذلك:
+  - اسم المستخدم في اللوج يُضبط هنا في أول كل دورة من session_state
+    (قبل أي سطر لوج)، وليس فقط من sidebar_header() داخل الصفحات.
+  - رسائل التهيئة الدورية (Application startup، RTL...) يمنع تكرارها
+    في ملف اللوج فلتر مخصص في core/logger_config.py.
 """
 
 import logging
@@ -10,7 +17,7 @@ import os
 import streamlit as st
 
 from config import APP_NAME, APP_VERSION, APP_ICON
-from core.logger_config import setup_logging, drain_ui_log_messages
+from core.logger_config import setup_logging, drain_ui_log_messages, set_log_username
 
 _requested_level = os.getenv("DATALENS_LOG_LEVEL", "DEBUG").strip().upper()
 LOG_LEVEL = getattr(logging, _requested_level, logging.INFO)
@@ -19,6 +26,11 @@ if not isinstance(LOG_LEVEL, int):
 
 setup_logging(LOG_LEVEL)
 logger = logging.getLogger(__name__)
+
+# كل rerun يبدأ بسياق لوج فارغ (اسم المستخدم "-")؛ نربطه من الجلسة هنا
+# حتى يحمل اسم المستخدم أول أسطر الدورة أيضاً. بدون جلسة مسجَّلة
+# تبقى القيمة الافتراضية.
+set_log_username(st.session_state.get("username"))
 
 from ui.common import apply_rtl, cleanup_stale_temp_dirs
 from ui.login import show_login

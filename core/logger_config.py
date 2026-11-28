@@ -8,6 +8,7 @@ core/logger_config.py
 - ربط اسم المستخدم بسياق التنفيذ.
 - تتبّع الدوال (trace_calls) بأسلوب هادئ: يسجل الدوال البطيئة والأخطاء
   فقط افتراضياً، ويمكن تفعيل التتبع الكامل عند الحاجة.
+- منع تكرار رسائل التهيئة الدورية في ملف اللوج (_OnceFilter).
 
 سياسة عرض السجلات في الواجهة:
 --------------------------------
@@ -26,10 +27,32 @@ core/logger_config.py
 -------------------------------------------
 DATALENS_TRACE_CALLS = "0" (الافتراضي) | "1"
     "0": لا يُسجَّل بدء/انتهاء كل دالة. يُسجَّل فقط ما تجاوز زمنه
-         DATALENS_TRACE_SLOW_MS، وأي استثناء.
+         الذاتي DATALENS_TRACE_SLOW_MS، وأي استثناء.
     "1": تتبع كامل (start/complete لكل دالة) — لتشخيص مشكلة محددة فقط.
 DATALENS_TRACE_SLOW_MS = 500 (الافتراضي)
     حد الزمن بالميلي ثانية لاعتبار الدالة "بطيئة" في الوضع الهادئ.
+
+الزمن الذاتي (self time) في trace_calls:
+-----------------------------------------
+الدوال المزينة تتداخل عادةً (صفحة ← تخطيط ← خلية ← رسم)، وكانت كل
+دالة في السلسلة تُسجَّل "بطيئة" بزمنها الكلي لمجرد أن الدالة الأعمق
+بطيئة، فيتكرر نفس التأخير في 5-7 أسطر. الآن تُقاس لكل دالة:
+  - total_ms: الزمن الكلي (شامل الدوال المزينة التي استدعتها).
+  - self_ms : الكلي ناقص زمن الدوال المزينة التي استدعتها مباشرة.
+ويُسجَّل "CALL slow" بحسب self_ms فقط، فيظهر سطر واحد عند الدالة
+الفعلية البطيئة. عند التنفيذ المتوازي (ThreadPoolExecutor مع
+copy_context) قد يتجاوز مجموع أزمنة الأبناء زمن الأب فيُقصّ self_ms
+عند صفر. الدوال async والمولّدات تبقى بزمنها الكلي (self = total)
+لأن ContextVar لا تتتبع حدود الاستئناف فيها بشكل موثوق.
+
+منع تكرار رسائل التهيئة (_OnceFilter):
+-----------------------------------------
+Streamlit يعيد تشغيل main.py مع كل تفاعل، وكل AuthManager()/ProjectDB()
+جديد يكتب سطر "initialized"؛ فتتكرر عشرات المرات بنفس النص. الفلتر
+يُطبَّق على ملف اللوج فقط ويسمح بظهور كل رسالة مطابقة لأحد
+_ONCE_PREFIXES مرة واحدة كل _ONCE_TTL_SECONDS (النص الكامل مفتاحاً، فيظهر
+سطر لكل مشروع). التحذيرات والأخطاء لا تُفلتر أبداً. لإضافة رسالة دورية
+أخرى يكفي إضافة بدايتها إلى _ONCE_PREFIXES.
 
 تكرار الاستثناءات:
 --------------------
@@ -48,7 +71,8 @@ from contextvars import ContextVar
 from functools import wraps
 from pathlib import Path
 from threading import Lock
-from time import perf_counter
+from time import monotonic, perf_counter
+from typing import Optional
 from warnings import filterwarnings
 
 from config import DATA_DIR
@@ -68,10 +92,26 @@ try:
 except ValueError:
     TRACE_SLOW_MS = 500.0
 
+# ── منع تكرار رسائل التهيئة الدورية (راجع _OnceFilter) ──────────
+# بدايات الرسائل التي تتكرر مع كل rerun في Streamlit دون قيمة تشخيصية
+# عند تكرارها. المقارنة على بداية نص الرسالة بعد التنسيق.
+_ONCE_PREFIXES = (
+    "Application startup",
+    "RTL layout applied",
+    "users.db initialized",
+    "ProjectDB initialized",
+)
+# أقل فاصل (ثوانٍ) بين ظهورين لنفس الرسالة؛ بعده تظهر من جديد
+_ONCE_TTL_SECONDS = 600
+
 _DEFAULT_USERNAME = "-"
 _current_username: ContextVar[str] = ContextVar(
     "current_username", default=_DEFAULT_USERNAME
 )
+
+# مُجمِّع زمن الأبناء للدالة المزينة الجارية (لحساب self_ms في trace_calls).
+# القيمة: قائمة من عنصر واحد [مجموع أزمنة الدوال المزينة التي استدعتها هذه الدالة]
+_child_time: ContextVar[Optional[list]] = ContextVar("trace_child_time", default=None)
 
 # طابور رسائل الواجهة: لا يُملأ إلا بسجلات opt-in (راجع _UIQueueHandler)
 _UI_MESSAGES = deque(maxlen=100)
@@ -100,6 +140,38 @@ def clear_log_username() -> None:
 class _UsernameFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         record.username = _current_username.get()
+        return True
+
+
+class _OnceFilter(logging.Filter):
+    """
+    يسمح بظهور رسائل التهيئة الدورية (_ONCE_PREFIXES) مرة واحدة كل
+    _ONCE_TTL_SECONDS في ملف اللوج، ويمنع تكرارها مع كل rerun.
+    لا يمس WARNING فأعلى ولا أي رسالة لا تبدأ بأحد المقاطع المعرَّفة.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._last_seen: dict = {}
+        self._lock = Lock()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.WARNING:
+            return True
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        if not message.startswith(_ONCE_PREFIXES):
+            return True
+
+        key = (record.name, message)
+        now = monotonic()
+        with self._lock:
+            last = self._last_seen.get(key)
+            if last is not None and now - last < _ONCE_TTL_SECONDS:
+                return False
+            self._last_seen[key] = now
         return True
 
 
@@ -175,11 +247,58 @@ def _log_failure(log: logging.Logger, function_name: str, exc: BaseException) ->
         pass  # بعض الاستثناءات المدمجة لا تقبل إضافة خصائص — نتجاوز الوسم
 
 
+def _report_timing(log: logging.Logger, function_name: str,
+                   total_s: float, self_s: float) -> None:
+    """
+    تسجيل زمن دالة عند DEBUG: كل الدوال في وضع التتبع الكامل، وإلا فقط
+    ما تجاوز زمنه الذاتي (self) الحد TRACE_SLOW_MS — فلا تتكرر نفس
+    الحالة البطيئة عند كل دالة تحتها في سلسلة الاستدعاء.
+    """
+    if not log.isEnabledFor(logging.DEBUG):
+        return
+    total_ms, self_ms = total_s * 1000, self_s * 1000
+    if TRACE_ALL_CALLS:
+        log.debug(
+            "CALL complete | function=%s | total_ms=%.2f | self_ms=%.2f",
+            function_name, total_ms, self_ms,
+        )
+    elif self_ms >= TRACE_SLOW_MS:
+        log.debug(
+            "CALL slow | function=%s | self_ms=%.2f | total_ms=%.2f",
+            function_name, self_ms, total_ms,
+        )
+
+
+def _enter_call() -> tuple:
+    """بدء قياس دالة متزامنة: تسجيل مُجمِّع أبنائها كسياق جارٍ."""
+    parent = _child_time.get()
+    acc = [0.0]
+    token = _child_time.set(acc)
+    return perf_counter(), parent, acc, token
+
+
+def _leave_call(state: tuple) -> tuple:
+    """
+    إنهاء القياس واسترجاع سياق الأب. يرجع (الزمن الكلي، الزمن الذاتي)
+    بالثواني، ويضيف الزمن الكلي لمُجمِّع الأب ليخصمه من زمنه الذاتي.
+    """
+    started, parent, acc, token = state
+    try:
+        _child_time.reset(token)
+    except ValueError:
+        pass  # السياق تغيّر (thread مختلف) — القياس يبقى صالحاً دون استرجاع
+    total = perf_counter() - started
+    if parent is not None:
+        parent[0] += total
+    return total, max(0.0, total - acc[0])
+
+
 def trace_calls(func):
     """
     Decorator لتتبع الدوال بأسلوب هادئ (راجع توثيق الوحدة أعلاه):
-    - افتراضياً: يسجل عند DEBUG فقط الدوال التي تجاوزت TRACE_SLOW_MS،
-      بالإضافة إلى الاستثناءات (Stack Trace مرة واحدة لكل استثناء).
+    - افتراضياً: يسجل عند DEBUG فقط الدوال التي تجاوز زمنها الذاتي
+      TRACE_SLOW_MS، بالإضافة إلى الاستثناءات (Stack Trace مرة واحدة
+      لكل استثناء).
     - مع DATALENS_TRACE_CALLS=1: start/complete لكل دالة.
     لا يسجل args أو kwargs أو قيم الإرجاع منعاً لتسريب بيانات المستخدم.
     يعيد رفع الاستثناءات كما هي، وكلها تُكتب في ملف اللوج فقط.
@@ -190,30 +309,16 @@ def trace_calls(func):
     log = logging.getLogger(func.__module__)
     function_name = func.__qualname__
 
-    def _started():
+    def _log_start():
         if TRACE_ALL_CALLS and log.isEnabledFor(logging.DEBUG):
             log.debug("CALL start | function=%s", function_name)
-        return perf_counter()
 
-    def _finished(started):
-        if not log.isEnabledFor(logging.DEBUG):
-            return
-        elapsed_ms = (perf_counter() - started) * 1000
-        if TRACE_ALL_CALLS:
-            log.debug(
-                "CALL complete | function=%s | duration_ms=%.2f",
-                function_name, elapsed_ms,
-            )
-        elif elapsed_ms >= TRACE_SLOW_MS:
-            log.debug(
-                "CALL slow | function=%s | duration_ms=%.2f",
-                function_name, elapsed_ms,
-            )
-
+    # ── async / generators: زمن كلي فقط (self = total) ──
     if inspect.isasyncgenfunction(func):
         @wraps(func)
         async def async_generator_wrapper(*args, **kwargs):
-            started = _started()
+            _log_start()
+            started = perf_counter()
             try:
                 async for item in func(*args, **kwargs):
                     yield item
@@ -221,45 +326,54 @@ def trace_calls(func):
                 _log_failure(log, function_name, exc)
                 raise
             else:
-                _finished(started)
+                elapsed = perf_counter() - started
+                _report_timing(log, function_name, elapsed, elapsed)
         wrapper = async_generator_wrapper
 
     elif inspect.iscoroutinefunction(func):
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
-            started = _started()
+            _log_start()
+            started = perf_counter()
             try:
                 result = await func(*args, **kwargs)
             except Exception as exc:
                 _log_failure(log, function_name, exc)
                 raise
-            _finished(started)
+            elapsed = perf_counter() - started
+            _report_timing(log, function_name, elapsed, elapsed)
             return result
         wrapper = async_wrapper
 
     elif inspect.isgeneratorfunction(func):
         @wraps(func)
         def generator_wrapper(*args, **kwargs):
-            started = _started()
+            _log_start()
+            started = perf_counter()
             try:
                 yield from func(*args, **kwargs)
             except Exception as exc:
                 _log_failure(log, function_name, exc)
                 raise
             else:
-                _finished(started)
+                elapsed = perf_counter() - started
+                _report_timing(log, function_name, elapsed, elapsed)
         wrapper = generator_wrapper
 
+    # ── الدوال العادية: زمن كلي + ذاتي ──
     else:
         @wraps(func)
         def sync_wrapper(*args, **kwargs):
-            started = _started()
+            _log_start()
+            state = _enter_call()
             try:
                 result = func(*args, **kwargs)
             except Exception as exc:
+                _leave_call(state)
                 _log_failure(log, function_name, exc)
                 raise
-            _finished(started)
+            total, self_time = _leave_call(state)
+            _report_timing(log, function_name, total, self_time)
             return result
         wrapper = sync_wrapper
 
@@ -297,6 +411,7 @@ def setup_logging(level: int = logging.INFO) -> None:
     file_handler.setLevel(level)
     file_handler.setFormatter(formatter)
     file_handler.addFilter(_UsernameFilter())
+    file_handler.addFilter(_OnceFilter())
     file_handler._datalens_handler = True
     root_logger.addHandler(file_handler)
 
